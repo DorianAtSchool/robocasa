@@ -1,4 +1,6 @@
 from robosuite.environments.base import make
+import os
+import re
 
 # Manipulation environments
 from robocasa.environments.kitchen.kitchen import Kitchen
@@ -1014,7 +1016,41 @@ assert numpy.__version__ in [
 
 import robosuite
 
-robosuite_version = [int(e) for e in robosuite.__version__.split(".")]
+# Editable/submodule layouts can expose robosuite as a namespace package
+# with no __file__. Some robosuite utilities construct config paths from
+# robosuite.__file__, so provide a stable fallback when needed.
+if getattr(robosuite, "__file__", None) is None and getattr(robosuite, "__path__", None):
+    for base in list(robosuite.__path__):
+        candidates = [
+            os.path.join(base, "__init__.py"),
+            os.path.join(base, "robosuite", "__init__.py"),
+        ]
+        for candidate in candidates:
+            if os.path.exists(candidate):
+                robosuite.__file__ = candidate
+                break
+        if getattr(robosuite, "__file__", None) is not None:
+            break
+
+robosuite_version_str = getattr(robosuite, "__version__", None)
+if robosuite_version_str is None:
+    try:
+        from importlib import metadata as importlib_metadata
+
+        robosuite_version_str = importlib_metadata.version("robosuite")
+    except Exception:
+        robosuite_version_str = None
+
+assert robosuite_version_str is not None, (
+    "Could not determine robosuite version. "
+    "Please ensure robosuite is installed (e.g., pip install -e ./robosuite)."
+)
+
+# Parse semantic versions like "1.5.2" and tolerate suffixes like "1.5.2.dev0".
+robosuite_version = [int(e) for e in re.findall(r"\d+", robosuite_version_str)[:3]]
+while len(robosuite_version) < 3:
+    robosuite_version.append(0)
+
 robosuite_check = True
 if robosuite_version[0] < 1:
     robosuite_check = False

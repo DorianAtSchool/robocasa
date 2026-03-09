@@ -376,7 +376,9 @@ def get_combined_counters_2d_bbox_corners(env, counter_names):
     return abs_sites
 
 
-def compute_robot_base_placement_pose(env, ref_fixture, ref_object=None, offset=None):
+def compute_robot_base_placement_pose(
+    env, ref_fixture, ref_object=None, offset=None, robot_idx=0
+):
     """
     steps:
     1. find the nearest counter to this fixture
@@ -783,7 +785,7 @@ def compute_robot_base_placement_pose(env, ref_fixture, ref_object=None, offset=
                     )
 
     # apply robot-specific offset relative to the base fixture for x,y dims
-    robot_model = env.robots[0].robot_model
+    robot_model = env.robots[robot_idx].robot_model
     robot_class_name = robot_model.__class__.__name__
     if robot_class_name in _ROBOT_POS_OFFSETS:
         for dimension in range(0, 2):
@@ -1328,7 +1330,7 @@ def _get_placement_initializer(env, cfg_list, z_offset=0.01):
     return placement_initializer
 
 
-def init_robot_base_pose(env):
+def init_robot_base_pose(env, robot_idx=0, offset=None):
     """
     helper function to initialize robot base pose
     """
@@ -1362,15 +1364,18 @@ def init_robot_base_pose(env):
             break
 
     ref_object = None
-    for cfg in env.object_cfgs:
-        if cfg.get("init_robot_here", None) is True:
-            ref_object = cfg.get("name")
-            break
+    if robot_idx == 0:
+        for cfg in env.object_cfgs:
+            if cfg.get("init_robot_here", None) is True:
+                ref_object = cfg.get("name")
+                break
 
     robot_base_pos, robot_base_ori = compute_robot_base_placement_pose(
         env,
         ref_fixture=ref_fixture,
         ref_object=ref_object,
+        offset=offset,
+        robot_idx=robot_idx,
     )
 
     return robot_base_pos, robot_base_ori
@@ -1504,24 +1509,38 @@ def no_collision(sim):
         sim.model.geom_conaffinity = original_conaffinity
 
 
-def detect_robot_collision(env):
+def detect_robot_collision(env, robot_idx=0):
     """
-    Checks if the robot has a collision with any placed fixtures/objects.
+    Checks whether robot @robot_idx collides with anything outside its own body.
+
+    This includes collisions against fixtures / objects and collisions against
+    other robots in multi-robot scenes.
+
     Returns:
-        bool: True if a collision is detected between the robot and any other fixtures/objects, False otherwise.
+        bool: True if any contact involves one geom from robot @robot_idx and
+            one geom not belonging to that same robot. Contacts only between
+            geoms of the same robot are ignored.
     """
     if env.robot_geom_ids is None:
-        env.robot_geom_ids = set()
+        env.robot_geom_ids = {}
+    elif isinstance(env.robot_geom_ids, set):
+        env.robot_geom_ids = {0: env.robot_geom_ids}
+
+    if robot_idx not in env.robot_geom_ids:
+        env.robot_geom_ids[robot_idx] = set()
         robot_geoms = find_elements(
-            root=env.robots[0].robot_model.root, tags="geom", return_first=False
+            root=env.robots[robot_idx].robot_model.root, tags="geom", return_first=False
         )
         for robot_geom in robot_geoms:
-            env.robot_geom_ids.add(env.sim.model.geom_name2id(robot_geom.get("name")))
+            env.robot_geom_ids[robot_idx].add(
+                env.sim.model.geom_name2id(robot_geom.get("name"))
+            )
+    robot_geom_ids = env.robot_geom_ids[robot_idx]
     for i in range(env.sim.data.ncon):
         geom1 = env.sim.data.contact[i].geom1
         geom2 = env.sim.data.contact[i].geom2
-        if (geom1 in env.robot_geom_ids and geom2 not in env.robot_geom_ids) or (
-            geom2 in env.robot_geom_ids and geom1 not in env.robot_geom_ids
+        if (geom1 in robot_geom_ids and geom2 not in robot_geom_ids) or (
+            geom2 in robot_geom_ids and geom1 not in robot_geom_ids
         ):
             return True
     return False
@@ -1539,31 +1558,66 @@ def generate_random_robot_pos(env, anchor_pos, anchor_ori, pos_dev_x, pos_dev_y)
     return anchor_pos + global_deviation
 
 
-def set_robot_to_position(env, global_pos):
+def _joint_exists(sim_model, joint_name):
+    try:
+        sim_model.joint_name2id(joint_name)
+        return True
+    except Exception:
+        return False
+
+
+def _get_mobile_base_joints(env, robot_idx=0):
+    """
+    Returns joint names for a robot's mobile base translation and yaw joints.
+    """
+    base_prefix = f"mobilebase{robot_idx}_joint_mobile_"
+    forward = f"{base_prefix}forward"
+    side = f"{base_prefix}side"
+    yaw = f"{base_prefix}yaw"
+    if all(_joint_exists(env.sim.model, name) for name in (forward, side, yaw)):
+        return forward, side, yaw
+
+    # Backward-compat fallback for the first robot.
+    if robot_idx == 0:
+        legacy = (
+            "mobilebase0_joint_mobile_forward",
+            "mobilebase0_joint_mobile_side",
+            "mobilebase0_joint_mobile_yaw",
+        )
+        if all(_joint_exists(env.sim.model, name) for name in legacy):
+            return legacy
+    return None
+
+
+def _get_robot_anchor_ori(env, robot_idx=0):
+    if hasattr(env, "init_robot_base_ori_anchors"):
+        return env.init_robot_base_ori_anchors[robot_idx]
+    return env.init_robot_base_ori_anchor
+
+
+def set_robot_to_position(env, global_pos, robot_idx=0):
+    base_joints = _get_mobile_base_joints(env, robot_idx=robot_idx)
+    if base_joints is None:
+        return False
+    forward_jnt_name, side_jnt_name, _ = base_joints
+    anchor_ori = _get_robot_anchor_ori(env, robot_idx=robot_idx)
+
     local_pos = np.matmul(
-        T.matrix_inverse(T.euler2mat(env.init_robot_base_ori_anchor)), global_pos
+        T.matrix_inverse(T.euler2mat(anchor_ori)), global_pos
     )
     undo_pos = np.matmul(
-        T.matrix_inverse(T.euler2mat(env.init_robot_base_ori_anchor)),
+        T.matrix_inverse(T.euler2mat(anchor_ori)),
         [-10.0, -10.0, 0.0],
     )
 
     # check the axis of the mobile base joints to determine which
     # joint moves in the x direction and which moves in the y
-    x_jnt_name, y_jnt_name = (
-        "mobilebase0_joint_mobile_forward",
-        "mobilebase0_joint_mobile_side",
-    )
+    x_jnt_name, y_jnt_name = (forward_jnt_name, side_jnt_name)
     if (
-        env.sim.model.jnt_axis[
-            env.sim.model.joint_name2id("mobilebase0_joint_mobile_forward")
-        ]
+        env.sim.model.jnt_axis[env.sim.model.joint_name2id(forward_jnt_name)]
         == np.array([0, 1, 0])
     ).all():
-        x_jnt_name, y_jnt_name = (
-            "mobilebase0_joint_mobile_side",
-            "mobilebase0_joint_mobile_forward",
-        )
+        x_jnt_name, y_jnt_name = (side_jnt_name, forward_jnt_name)
 
     with no_collision(env.sim):
         env.sim.data.qpos[env.sim.model.get_joint_qpos_addr(x_jnt_name)] = (
@@ -1574,6 +1628,7 @@ def set_robot_to_position(env, global_pos):
         )
 
         env.sim.forward()
+    return True
 
 
 def set_robot_base(
@@ -1583,6 +1638,7 @@ def set_robot_base(
     rot_dev,
     pos_dev_x,
     pos_dev_y,
+    robot_idx=0,
 ):
     """
     Sets the initial state of the robot by randomizing its position and orientation within defined deviation limits.
@@ -1591,14 +1647,17 @@ def set_robot_base(
     Raises:
         RandomizationError: If the robot cannot be placed without collisions.
     """
-    assert len(env.robots) == 1
     # assert isinstance(self.robots[0].robot_model, PandaOmron) or isinstance(
     #     self.robots[0].robot_model, GR1FloatingBody
     # )
+    base_joints = _get_mobile_base_joints(env, robot_idx=robot_idx)
+    if base_joints is None:
+        return np.array(anchor_pos).copy()
+    _, _, yaw_jnt_name = base_joints
 
     with no_collision(env.sim):
         env.sim.data.qpos[
-            env.sim.model.get_joint_qpos_addr("mobilebase0_joint_mobile_yaw")
+            env.sim.model.get_joint_qpos_addr(yaw_jnt_name)
         ] = env.rng.uniform(-rot_dev, rot_dev)
         # l_elbow_pitch_id = self.sim.model.get_joint_qpos_addr("robot0_l_elbow_pitch")
         # l_elbow_pitch_range = self.sim.model.jnt_range[l_elbow_pitch_id]
@@ -1626,9 +1685,9 @@ def set_robot_base(
                 pos_dev_x=cur_dev_pos_x,
                 pos_dev_y=cur_dev_pos_y,
             )
-            set_robot_to_position(env, robot_pos)
+            set_robot_to_position(env, robot_pos, robot_idx=robot_idx)
             env.sim.forward()
-            if not detect_robot_collision(env):
+            if not detect_robot_collision(env, robot_idx=robot_idx):
                 found_valid = True
                 break
 

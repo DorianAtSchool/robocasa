@@ -7,6 +7,7 @@ from collections import OrderedDict
 import numpy as np
 import robosuite
 from robosuite.controllers import load_composite_controller_config
+from robosuite.environments.base import make
 from robosuite.wrappers import VisualizationWrapper
 from termcolor import colored
 
@@ -82,6 +83,13 @@ if __name__ == "__main__":
     parser.add_argument("--style", type=int, help="kitchen style (choose number 1-60)")
     parser.add_argument("--robot", type=str, help="robot", default="PandaOmron")
     parser.add_argument(
+        "--num_robots",
+        type=int,
+        default=1,
+        choices=[1, 2],
+        help="number of robots to instantiate (default: 1)",
+    )
+    parser.add_argument(
         "--show-walls",
         action="store_true",
         help="render enclosing walls (default is to hide walls with enclosing_wall: true)",
@@ -114,9 +122,10 @@ if __name__ == "__main__":
         styles[k] = raw_styles[k]
 
     # Create argument configuration
+    robots = args.robot if args.num_robots == 1 else [args.robot] * args.num_robots
     config = {
         "env_name": args.task,
-        "robots": args.robot,
+        "robots": robots,
         "controller_configs": load_composite_controller_config(robot=args.robot),
         "translucent_robot": False,
     }
@@ -125,7 +134,7 @@ if __name__ == "__main__":
 
     print(colored("Initializing environment...", "yellow"))
 
-    env = robosuite.make(
+    env = make(
         **config,
         has_renderer=True,
         has_offscreen_renderer=False,
@@ -144,11 +153,23 @@ if __name__ == "__main__":
     # initialize device
     device = args.device
     if device == "keyboard":
-        from robosuite.devices import Keyboard
+        try:
+            from robosuite.devices import Keyboard
+        except ImportError as e:
+            raise RuntimeError(
+                "Keyboard teleop requires an active X display. "
+                "Set DISPLAY (e.g., via local desktop, SSH -X/-Y, or VNC) and retry."
+            ) from e
 
         device = Keyboard(env=env, pos_sensitivity=4.0, rot_sensitivity=4.0)
     elif device == "spacemouse":
-        from robosuite.devices import SpaceMouse
+        try:
+            from robosuite.devices import SpaceMouse
+        except ImportError as e:
+            raise RuntimeError(
+                "SpaceMouse teleop requires an active X display and input backend. "
+                "Set DISPLAY and verify device access, then retry."
+            ) from e
 
         device = SpaceMouse(
             env=env,

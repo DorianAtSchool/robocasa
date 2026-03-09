@@ -453,6 +453,7 @@ class Kitchen(ManipulationEnv, metaclass=KitchenEnvMeta):
         self.use_distractors = use_distractors
         self.translucent_robot = translucent_robot
         self.randomize_cameras = randomize_cameras
+        self.secondary_robot_spawn_offset = (0.0, -1.25)
 
         if isinstance(robots, str):
             robots = [robots]
@@ -461,7 +462,15 @@ class Kitchen(ManipulationEnv, metaclass=KitchenEnvMeta):
         for i in range(len(robots)):
             if robots[i] == "PandaMobile":
                 robots[i] = "PandaOmron"
-        assert len(robots) == 1
+        if len(robots) == 0:
+            raise ValueError("Must provide at least one robot")
+        if len(robots) > 2:
+            raise ValueError("Kitchen currently supports at most 2 robots")
+        if len(robots) == 2 and not all(robot == "PandaOmron" for robot in robots):
+            raise ValueError(
+                "Dual-robot mode currently supports PandaOmron only. "
+                "Use robots=['PandaOmron', 'PandaOmron']."
+            )
 
         # intialize cameras
         self.use_cotraining_cameras = use_cotraining_cameras
@@ -832,15 +841,26 @@ class Kitchen(ManipulationEnv, metaclass=KitchenEnvMeta):
 
         self.object_placements = object_placements
 
-        (
-            self.init_robot_base_pos_anchor,
-            self.init_robot_base_ori_anchor,
-        ) = EnvUtils.init_robot_base_pose(self)
+        self.init_robot_base_pos_anchors = []
+        self.init_robot_base_ori_anchors = []
+        for robot_idx, robot in enumerate(self.robots):
+            spawn_offset = (
+                self.secondary_robot_spawn_offset if robot_idx > 0 else None
+            )
+            base_pos, base_ori = EnvUtils.init_robot_base_pose(
+                self, robot_idx=robot_idx, offset=spawn_offset
+            )
+            self.init_robot_base_pos_anchors.append(base_pos)
+            self.init_robot_base_ori_anchors.append(base_ori)
 
-        robot_model = self.robots[0].robot_model
-        # set the robot way out of the scene at the start, it will be placed correctly later
-        robot_model.set_base_xpos([10.0, 10.0, self.init_robot_base_pos_anchor[2]])
-        robot_model.set_base_ori(self.init_robot_base_ori_anchor)
+            # set the robot way out of the scene at the start, it will be placed correctly later
+            robot_model = robot.robot_model
+            robot_model.set_base_xpos([10.0, 10.0, base_pos[2]])
+            robot_model.set_base_ori(base_ori)
+
+        # backward-compatible aliases for codepaths expecting single-robot anchors
+        self.init_robot_base_pos_anchor = self.init_robot_base_pos_anchors[0]
+        self.init_robot_base_ori_anchor = self.init_robot_base_ori_anchors[0]
 
         self.robot_geom_ids = None
 
@@ -1114,23 +1134,78 @@ class Kitchen(ManipulationEnv, metaclass=KitchenEnvMeta):
                     np.concatenate([np.array(obj_pos), np.array(obj_quat)]),
                 )
 
-        # set the robot here
-        if "init_robot_base_pos" in self._ep_meta:
-            self.init_robot_base_pos = self._ep_meta["init_robot_base_pos"]
-            self.init_robot_base_ori = self._ep_meta["init_robot_base_ori"]
-            EnvUtils.set_robot_to_position(self, self.init_robot_base_pos)
+        # set robot base pose(s)
+        if (
+            "init_robot_base_pos_all" in self._ep_meta
+            and "init_robot_base_ori_all" in self._ep_meta
+        ):
+            self.init_robot_base_pos_all = [
+                np.array(pos) for pos in self._ep_meta["init_robot_base_pos_all"]
+            ]
+            self.init_robot_base_ori_all = [
+                np.array(ori) for ori in self._ep_meta["init_robot_base_ori_all"]
+            ]
+            for robot_idx, robot_pos in enumerate(self.init_robot_base_pos_all):
+                EnvUtils.set_robot_to_position(self, robot_pos, robot_idx=robot_idx)
+            for robot_idx in range(len(self.init_robot_base_pos_all), len(self.robots)):
+                robot_pos = EnvUtils.set_robot_base(
+                    env=self,
+                    anchor_pos=self.init_robot_base_pos_anchors[robot_idx],
+                    anchor_ori=self.init_robot_base_ori_anchors[robot_idx],
+                    rot_dev=self.robot_spawn_deviation_rot,
+                    pos_dev_x=self.robot_spawn_deviation_pos_x,
+                    pos_dev_y=self.robot_spawn_deviation_pos_y,
+                    robot_idx=robot_idx,
+                )
+                self.init_robot_base_pos_all.append(robot_pos)
+                self.init_robot_base_ori_all.append(
+                    self.init_robot_base_ori_anchors[robot_idx]
+                )
+            self.sim.forward()
+        elif "init_robot_base_pos" in self._ep_meta:
+            self.init_robot_base_pos_all = [
+                np.array(self._ep_meta["init_robot_base_pos"])
+            ]
+            self.init_robot_base_ori_all = [
+                np.array(self._ep_meta["init_robot_base_ori"])
+            ]
+            EnvUtils.set_robot_to_position(self, self.init_robot_base_pos_all[0])
+            for robot_idx in range(1, len(self.robots)):
+                robot_pos = EnvUtils.set_robot_base(
+                    env=self,
+                    anchor_pos=self.init_robot_base_pos_anchors[robot_idx],
+                    anchor_ori=self.init_robot_base_ori_anchors[robot_idx],
+                    rot_dev=self.robot_spawn_deviation_rot,
+                    pos_dev_x=self.robot_spawn_deviation_pos_x,
+                    pos_dev_y=self.robot_spawn_deviation_pos_y,
+                    robot_idx=robot_idx,
+                )
+                self.init_robot_base_pos_all.append(robot_pos)
+                self.init_robot_base_ori_all.append(
+                    self.init_robot_base_ori_anchors[robot_idx]
+                )
             self.sim.forward()
         else:
-            robot_pos = EnvUtils.set_robot_base(
-                env=self,
-                anchor_pos=self.init_robot_base_pos_anchor,
-                anchor_ori=self.init_robot_base_ori_anchor,
-                rot_dev=self.robot_spawn_deviation_rot,
-                pos_dev_x=self.robot_spawn_deviation_pos_x,
-                pos_dev_y=self.robot_spawn_deviation_pos_y,
-            )
-            self.init_robot_base_pos = robot_pos
-            self.init_robot_base_ori = self.init_robot_base_ori_anchor
+            self.init_robot_base_pos_all = []
+            self.init_robot_base_ori_all = []
+            for robot_idx in range(len(self.robots)):
+                robot_pos = EnvUtils.set_robot_base(
+                    env=self,
+                    anchor_pos=self.init_robot_base_pos_anchors[robot_idx],
+                    anchor_ori=self.init_robot_base_ori_anchors[robot_idx],
+                    rot_dev=self.robot_spawn_deviation_rot,
+                    pos_dev_x=self.robot_spawn_deviation_pos_x,
+                    pos_dev_y=self.robot_spawn_deviation_pos_y,
+                    robot_idx=robot_idx,
+                )
+                self.init_robot_base_pos_all.append(robot_pos)
+                self.init_robot_base_ori_all.append(
+                    self.init_robot_base_ori_anchors[robot_idx]
+                )
+
+        # backward-compatible aliases for codepaths expecting single-robot base pose
+        self.init_robot_base_pos = self.init_robot_base_pos_all[0]
+        self.init_robot_base_ori = self.init_robot_base_ori_all[0]
 
         # step through a few timesteps to settle objects
         action = np.zeros(self.action_spec[0].shape)  # apply empty action
@@ -1208,8 +1283,14 @@ class Kitchen(ManipulationEnv, metaclass=KitchenEnvMeta):
             }
         )
         ep_meta["cam_configs"] = deepcopy(self._cam_configs)
-        ep_meta["init_robot_base_pos"] = list(self.init_robot_base_pos)
-        ep_meta["init_robot_base_ori"] = list(self.init_robot_base_ori)
+        ep_meta["init_robot_base_pos_all"] = [
+            list(np.array(pos)) for pos in self.init_robot_base_pos_all
+        ]
+        ep_meta["init_robot_base_ori_all"] = [
+            list(np.array(ori)) for ori in self.init_robot_base_ori_all
+        ]
+        ep_meta["init_robot_base_pos"] = list(ep_meta["init_robot_base_pos_all"][0])
+        ep_meta["init_robot_base_ori"] = list(ep_meta["init_robot_base_ori_all"][0])
 
         return ep_meta
 

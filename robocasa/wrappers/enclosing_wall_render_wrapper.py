@@ -5,7 +5,15 @@ from typing import Dict, Optional
 import numpy as np
 import yaml
 from robosuite.wrappers import Wrapper
-from pynput.keyboard import Key, Listener
+from termcolor import colored
+
+try:
+    from pynput.keyboard import Key, Listener
+
+    _PYNPUT_AVAILABLE = True
+except Exception as _PYNPUT_IMPORT_ERROR:  # pragma: no cover
+    Key, Listener = None, None
+    _PYNPUT_AVAILABLE = False
 
 import robocasa.models.scenes.scene_registry as SceneRegistry
 
@@ -306,6 +314,16 @@ def install_enclosing_wall_hotkeys(env):
 
     env._toggle_enclosing_walls = False
     env._force_enclosing_walls_opaque = False
+
+    if not _PYNPUT_AVAILABLE:
+        print(
+            colored(
+                "WARNING: enclosing-wall hotkeys disabled because pynput is unavailable "
+                "(likely no DISPLAY / X server).",
+                "yellow",
+            )
+        )
+        return
 
     def _on_release(key):
         if key == Key.esc:
