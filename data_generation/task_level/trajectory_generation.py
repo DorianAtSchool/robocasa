@@ -44,6 +44,7 @@ from data_generation.task_level.client import (
     GenerationUsage,
     TrajectoryGenerationError,
     VERTEX_AI_PRICING_URL,
+    _resolve_pricing_tier,
     build_generation_usage,
     build_generation_client,
     load_dotenv_file,
@@ -218,6 +219,40 @@ def _scaled_total_cost(
     return sum(scaled_costs)
 
 
+def _shared_pricing(
+    generation_usages: list[dict[str, Any]],
+    *,
+    model: str | None = None,
+) -> dict[str, Any] | None:
+    if not generation_usages:
+        return None
+
+    resolved_pricings: list[dict[str, Any]] = []
+    for generation_usage in generation_usages:
+        pricing = generation_usage.get("pricing")
+        if not isinstance(pricing, dict):
+            if model is None:
+                return None
+            pricing_tier = _resolve_pricing_tier(
+                model,
+                generation_usage.get("traffic_type"),
+            )
+            if pricing_tier is None:
+                return None
+            pricing = {
+                "model": pricing_tier.model,
+                "input_usd_per_million_tokens": pricing_tier.input_usd_per_million_tokens,
+                "output_usd_per_million_tokens": pricing_tier.output_usd_per_million_tokens,
+            }
+        resolved_pricings.append(pricing)
+
+    first_pricing = resolved_pricings[0]
+    if any(pricing != first_pricing for pricing in resolved_pricings[1:]):
+        return None
+
+    return dict(first_pricing)
+
+
 def _best_case_cost_estimate_note(attempt_counts: list[int]) -> str:
     if any(attempt_count > 1 for attempt_count in attempt_counts):
         return (
@@ -257,11 +292,15 @@ def _build_cost_estimate_summary_from_generation_usages(
         generation_usages,
         worst_case_attempt_counts,
     )
+    shared_pricing = _shared_pricing(
+        generation_usages,
+        model=runtime_config.model,
+    )
     pricing_supported = (
         best_case_total_cost is not None and worst_case_total_cost is not None
     )
 
-    return {
+    summary = {
         "currency": "USD",
         "pricing_reference": VERTEX_AI_PRICING_URL,
         "pricing_supported": pricing_supported,
@@ -294,6 +333,9 @@ def _build_cost_estimate_summary_from_generation_usages(
             "Token counts use Vertex usage metadata when available and otherwise fall back to a local character-based estimate.",
         ],
     }
+    if shared_pricing is not None:
+        summary["pricing"] = shared_pricing
+    return summary
 
 
 def _build_cost_summary_from_generation_usages(
@@ -308,6 +350,7 @@ def _build_cost_summary_from_generation_usages(
     )
     total_tokens = sum(usage["total_tokens"] for usage in generation_usages)
     usage_sources = sorted({usage["usage_source"] for usage in generation_usages})
+    shared_pricing = _shared_pricing(generation_usages)
     pricing_supported = all("pricing" in usage for usage in generation_usages)
 
     input_cost = None
@@ -327,7 +370,7 @@ def _build_cost_summary_from_generation_usages(
         )
         total_cost = input_cost + output_cost
 
-    return {
+    summary = {
         "currency": "USD",
         "pricing_reference": VERTEX_AI_PRICING_URL,
         "pricing_supported": pricing_supported,
@@ -356,6 +399,9 @@ def _build_cost_summary_from_generation_usages(
             "Retry attempts that did not produce a saved trajectory are not included.",
         ],
     }
+    if shared_pricing is not None:
+        summary["pricing"] = shared_pricing
+    return summary
 
 
 def _historical_cost_paths(runtime_config: RuntimeConfig) -> list[Path]:
@@ -419,7 +465,7 @@ def _mean_generation_usage(
 ) -> dict[str, Any]:
     sample_count = len(historical_usages)
     preferred_usage_source = historical_usages[0].get("usage_source")
-    return {
+    mean_usage = {
         "successful_attempt_number": 1,
         "prompt_tokens": round(
             sum(usage["prompt_tokens"] for usage in historical_usages) / sample_count
@@ -441,6 +487,10 @@ def _mean_generation_usage(
             / sample_count
         ),
     }
+    shared_pricing = _shared_pricing(historical_usages)
+    if shared_pricing is not None:
+        mean_usage["pricing"] = shared_pricing
+    return mean_usage
 
 
 def _build_historical_preflight_generation_usage(
@@ -798,6 +848,13 @@ def _cost_summary_message(
 ) -> str | None:
     best_case_cost = cost_estimate["best_case_total_usd"]
     worst_case_cost = cost_estimate["worst_case_total_usd"]
+    if runtime_config.disable_validation:
+        if best_case_cost is None:
+            return None
+        return (
+            f"{label}: "
+            f"{format_cost_usd(best_case_cost, decimal_places=COST_DECIMAL_PLACES)}"
+        )
     if best_case_cost is None or worst_case_cost is None:
         return None
     return (
@@ -828,6 +885,71 @@ def _update_completed_trajectory_progress(
     if not is_valid:
         cost_text = f"{cost_text} invalid"
     trajectory_progress.set_postfix_str(cost_text)
+
+
+def _trajectory_generation_status(
+    runtime_config: RuntimeConfig,
+    *,
+    attempt_number: int,
+) -> str:
+    if runtime_config.disable_validation:
+        return "generating"
+    return f"attempt {attempt_number}/{runtime_config.max_retries} generating"
+
+
+def _trajectory_retry_status(
+    runtime_config: RuntimeConfig,
+    *,
+    attempt_number: int,
+) -> str:
+    if runtime_config.disable_validation:
+        return "retrying"
+    return f"attempt {attempt_number}/{runtime_config.max_retries} retry"
+
+
+def _trajectory_completion_log_message(
+    runtime_config: RuntimeConfig,
+    *,
+    trajectory_id: str,
+    generation_usage: dict[str, Any],
+) -> str:
+    if runtime_config.disable_validation:
+        return f"Generated {trajectory_id}"
+    return (
+        f"Generated {trajectory_id} "
+        f"(attempt {generation_usage['successful_attempt_number']}/"
+        f"{runtime_config.max_retries})"
+    )
+
+
+def _sanitize_generation_usage_for_output(
+    generation_usage: dict[str, Any],
+    *,
+    disable_validation: bool,
+) -> dict[str, Any]:
+    if not disable_validation:
+        return generation_usage
+    return {
+        key: value
+        for key, value in generation_usage.items()
+        if key != "successful_attempt_number"
+    }
+
+
+def _sanitize_trajectory_for_output(
+    trajectory: dict[str, Any],
+    *,
+    disable_validation: bool,
+) -> dict[str, Any]:
+    if not disable_validation:
+        return trajectory
+    return {
+        **trajectory,
+        "generation_usage": _sanitize_generation_usage_for_output(
+            trajectory["generation_usage"],
+            disable_validation=disable_validation,
+        ),
+    }
 
 
 def _validate_runtime_config(runtime_config: RuntimeConfig) -> None:
@@ -872,6 +994,13 @@ def _build_generation_payload(
     generation_usages = [
         trajectory["generation_usage"] for trajectory in ordered_trajectories
     ]
+    output_trajectories = [
+        _sanitize_trajectory_for_output(
+            trajectory,
+            disable_validation=runtime_config.disable_validation,
+        )
+        for trajectory in ordered_trajectories
+    ]
     return {
         "composite_task": runtime_config.composite_task,
         "sdk": runtime_config.sdk,
@@ -883,7 +1012,7 @@ def _build_generation_payload(
         "cost_summary": _build_cost_summary_from_generation_usages(
             generation_usages
         ),
-        "trajectories": ordered_trajectories,
+        "trajectories": output_trajectories,
     }
 
 
@@ -935,7 +1064,10 @@ def generate_single_trajectory(
         prompt = task_definition.build_prompt(variation_key)
         if trajectory_progress is not None:
             trajectory_progress.set_postfix_str(
-                f"attempt {attempt_index + 1}/{runtime_config.max_retries} generating"
+                _trajectory_generation_status(
+                    runtime_config,
+                    attempt_number=attempt_index + 1,
+                )
             )
         try:
             raw_response = client.generate(
@@ -960,7 +1092,8 @@ def generate_single_trajectory(
 
             if trajectory_progress is not None:
                 trajectory_progress.update(1)
-                trajectory_progress.set_postfix_str("valid")
+                if not runtime_config.disable_validation:
+                    trajectory_progress.set_postfix_str("valid")
             if overall_progress is not None:
                 overall_progress.update(1)
             generation_usage = build_generation_usage(
@@ -991,7 +1124,10 @@ def generate_single_trajectory(
             if trajectory_progress is not None:
                 trajectory_progress.update(1)
                 trajectory_progress.set_postfix_str(
-                    f"attempt {attempt_index + 1}/{runtime_config.max_retries} retry"
+                    _trajectory_retry_status(
+                        runtime_config,
+                        attempt_number=attempt_index + 1,
+                    )
                 )
 
     raise TrajectoryGenerationError(
@@ -1059,10 +1195,11 @@ def generate_trajectories(
             results[trajectory_index] = trajectory_record
             generation_usage = trajectory_record["generation_usage"]
             _log_runtime_message(
-                "Generated "
-                f"{trajectory_record['trajectory_id']} "
-                f"(attempt {generation_usage['successful_attempt_number']}/"
-                f"{runtime_config.max_retries})",
+                _trajectory_completion_log_message(
+                    runtime_config,
+                    trajectory_id=trajectory_record["trajectory_id"],
+                    generation_usage=generation_usage,
+                ),
                 enabled=show_progress,
                 writer=progress_handles.log_writer,
             )
@@ -1105,7 +1242,7 @@ def parse_args(argv: list[str] | None = None) -> RuntimeConfig:
         "--n",
         type=int,
         default=1,
-        help="Number of valid trajectories to generate.",
+        help="Number of trajectories to generate.",
     )
     parser.add_argument(
         "--output",
@@ -1162,10 +1299,18 @@ def parse_args(argv: list[str] | None = None) -> RuntimeConfig:
         default=5,
         help="Maximum generation attempts per trajectory.",
     )
+    parser.set_defaults(disable_validation=True)
+    parser.add_argument(
+        "--enable-validation",
+        action="store_false",
+        dest="disable_validation",
+        help="Reject trajectories that fail symbolic validation. Validation is disabled by default.",
+    )
     parser.add_argument(
         "--disable-validation",
         action="store_true",
-        help="Do not reject trajectories that fail symbolic validation; keep the validation error in the output instead.",
+        dest="disable_validation",
+        help=argparse.SUPPRESS,
     )
     args = parser.parse_args(argv)
 
@@ -1237,7 +1382,7 @@ def main(argv: list[str] | None = None) -> int:
         f"Wrote {len(written_trajectory_paths)} trajectory files to "
         f"{output_paths.trajectory_dir}"
     )
-    print(f"Wrote cost estimates to {output_paths.cost_path}")
+    print(f"Wrote cost summary to {output_paths.cost_path}")
     return 0
 
 
