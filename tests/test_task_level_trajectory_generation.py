@@ -264,9 +264,13 @@ class DotenvLoadingTests(unittest.TestCase):
             runtime_config.cost_output_path, Path("/tmp/custom_costs.json")
         )
 
-    def test_parse_args_accepts_disable_validation(self):
-        runtime_config = parse_args(["--disable-validation"])
+    def test_parse_args_disables_validation_by_default(self):
+        runtime_config = parse_args([])
         self.assertTrue(runtime_config.disable_validation)
+
+    def test_parse_args_accepts_enable_validation(self):
+        runtime_config = parse_args(["--enable-validation"])
+        self.assertFalse(runtime_config.disable_validation)
 
     def test_resolve_dataset_output_path_adds_timestamped_subdirectory_for_default_output(
         self,
@@ -705,6 +709,14 @@ class GenerationTests(unittest.TestCase):
             0.0013,
         )
         self.assertEqual(
+            payload["cost_summary"]["pricing"],
+            {
+                "model": "gemini-3-flash-preview",
+                "input_usd_per_million_tokens": 0.5,
+                "output_usd_per_million_tokens": 3.0,
+            },
+        )
+        self.assertEqual(
             payload["cost_summary"]["usage_sources"],
             ["api_usage_metadata"],
         )
@@ -813,6 +825,48 @@ class GenerationTests(unittest.TestCase):
         )
         trajectory_progress.refresh.assert_called_once()
 
+    def test_generate_single_trajectory_hides_attempt_counts_when_validation_disabled(self):
+        runtime_config = RuntimeConfig(
+            composite_task="PrepareCoffee",
+            num_trajectories=1,
+            output_path=mock.sentinel.output_path,
+            model="gemini-3-flash-preview",
+            sdk="google-genai",
+            project="demo-project",
+            location="global",
+            temperature=0.5,
+            max_workers=1,
+            max_retries=2,
+            disable_validation=True,
+        )
+        trajectory_progress = mock.Mock()
+        trajectory_progress.total = runtime_config.max_retries
+
+        trajectory = generate_single_trajectory(
+            trajectory_index=0,
+            runtime_config=runtime_config,
+            task_definition=PREPARE_COFFEE_TASK,
+            client_factory=lambda: SequencedFakeClient(
+                [
+                    "not valid json",
+                    make_invalid_candidate_missing_initial_communication(),
+                ]
+            ),
+            overall_progress=mock.Mock(),
+            trajectory_progress=trajectory_progress,
+        )
+
+        self.assertFalse(trajectory["validation"]["is_valid"])
+        status_updates = [
+            call.args[0] for call in trajectory_progress.set_postfix_str.call_args_list
+        ]
+        self.assertEqual(status_updates[0], "generating")
+        self.assertIn("retrying", status_updates)
+        self.assertNotIn("valid", status_updates)
+        self.assertTrue(status_updates[-1].startswith("done $"))
+        self.assertTrue(status_updates[-1].endswith(" invalid"))
+        self.assertTrue(all("attempt " not in status for status in status_updates))
+
     def test_cost_summary_falls_back_to_heuristic_without_usage_metadata(self):
         runtime_config = RuntimeConfig(
             composite_task="PrepareCoffee",
@@ -841,6 +895,14 @@ class GenerationTests(unittest.TestCase):
             ["heuristic_4_chars_per_token"],
         )
         self.assertTrue(payload["cost_summary"]["pricing_supported"])
+        self.assertEqual(
+            payload["cost_summary"]["pricing"],
+            {
+                "model": "gemini-3-flash-preview",
+                "input_usd_per_million_tokens": 0.5,
+                "output_usd_per_million_tokens": 3.0,
+            },
+        )
         self.assertNotIn("cost_estimate", payload)
 
     def test_preflight_cost_estimate_uses_historical_usage_mean_when_available(self):
@@ -914,6 +976,14 @@ class GenerationTests(unittest.TestCase):
         )
         self.assertAlmostEqual(summary["best_case_total_usd"], 0.0391)
         self.assertAlmostEqual(summary["worst_case_total_usd"], 0.0782)
+        self.assertEqual(
+            summary["pricing"],
+            {
+                "model": "gemini-3-flash-preview",
+                "input_usd_per_million_tokens": 0.5,
+                "output_usd_per_million_tokens": 3.0,
+            },
+        )
         self.assertIn("historical saved trajectories", summary["notes"][0])
 
     def test_post_run_cost_summary_excludes_failed_retries(self):
@@ -1006,6 +1076,24 @@ class GenerationTests(unittest.TestCase):
             trajectory["validation"]["error"],
         )
         self.assertEqual(len(trajectory["steps"]), 4)
+        self.assertNotIn(
+            "successful_attempt_number",
+            trajectory["generation_usage"],
+        )
+        self.assertIn("observed_cost_usd", trajectory["generation_usage"])
+        self.assertEqual(
+            payload["cost_summary"]["total_cost_usd"],
+            trajectory["generation_usage"]["observed_cost_usd"],
+        )
+        for field in (
+            "prompt_tokens",
+            "output_tokens",
+            "total_tokens",
+            "input_cost_usd",
+            "output_cost_usd",
+            "total_cost_usd",
+        ):
+            self.assertIn(field, payload["cost_summary"])
 
     def test_disable_validation_skips_duplicate_rejection(self):
         runtime_config = RuntimeConfig(
@@ -1036,6 +1124,80 @@ class GenerationTests(unittest.TestCase):
         self.assertEqual(
             payload["trajectories"][0]["validation"]["error"],
             payload["trajectories"][1]["validation"]["error"],
+        )
+
+    def test_disable_validation_logs_single_projected_cost_without_attempt_details(self):
+        runtime_config = RuntimeConfig(
+            composite_task="PrepareCoffee",
+            num_trajectories=1,
+            output_path=mock.sentinel.output_path,
+            model="gemini-3-flash-preview",
+            sdk="google-genai",
+            project="demo-project",
+            location="global",
+            temperature=0.5,
+            max_workers=1,
+            max_retries=2,
+            disable_validation=True,
+        )
+
+        with mock.patch(
+            "data_generation.task_level.trajectory_generation._log_runtime_message"
+        ) as log_runtime_message:
+            generate_trajectories(
+                runtime_config,
+                client_factory=lambda: SequencedFakeClient(
+                    [make_invalid_candidate_missing_initial_communication()]
+                ),
+                show_progress=True,
+            )
+
+        logged_messages = [call.args[0] for call in log_runtime_message.call_args_list]
+        self.assertEqual(len(logged_messages), 2)
+        self.assertTrue(logged_messages[0].startswith("Projected cost: $"))
+        self.assertNotIn("best case", logged_messages[0])
+        self.assertNotIn("worst case", logged_messages[0])
+        self.assertNotIn("attempt ", logged_messages[0])
+        self.assertEqual(logged_messages[1], "Generated traj_000")
+        self.assertNotIn("attempt ", logged_messages[1])
+
+    def test_disable_validation_output_payloads_omit_attempt_number(self):
+        runtime_config = RuntimeConfig(
+            composite_task="PrepareCoffee",
+            num_trajectories=1,
+            output_path=Path("/tmp/prepare_coffee_trajectories.json"),
+            model="gemini-3-flash-preview",
+            sdk="google-genai",
+            project="demo-project",
+            location="global",
+            temperature=0.5,
+            max_workers=1,
+            max_retries=1,
+            disable_validation=True,
+        )
+        payload = generate_trajectories(
+            runtime_config,
+            client_factory=lambda: SequencedFakeClient(
+                [make_invalid_candidate_missing_initial_communication()]
+            ),
+            show_progress=False,
+        )
+
+        summary_payload = build_summary_output_payload(payload)
+        cost_payload = build_cost_output_payload(
+            payload,
+            trajectory_output_path=runtime_config.output_path,
+        )
+
+        self.assertEqual(summary_payload["cost_summary"], payload["cost_summary"])
+        self.assertNotIn("cost_estimate", summary_payload)
+        self.assertNotIn(
+            "successful_attempt_number",
+            cost_payload["trajectory_costs"][0]["generation_usage"],
+        )
+        self.assertEqual(
+            cost_payload["trajectory_costs"][0]["generation_usage"]["observed_cost_usd"],
+            payload["trajectories"][0]["generation_usage"]["observed_cost_usd"],
         )
 
     def test_resolve_cost_output_path_defaults_to_output_stem_with_costs_suffix(self):
