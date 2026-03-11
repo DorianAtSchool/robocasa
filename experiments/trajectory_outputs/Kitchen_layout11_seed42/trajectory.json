@@ -1,0 +1,54 @@
+{
+  "task": "KitchenExplore",
+  "steps": [
+    {
+      "action": "communicate",
+      "args": {
+        "to": "agent_1",
+        "message": "Let's explore the kitchen. I'll check the cabinet and fridge."
+      }
+    },
+    {
+      "action": "communicate",
+      "args": {
+        "to": "agent_0",
+        "message": "I'll open the drawers."
+      }
+    },
+    {
+      "action": "interact",
+      "args": {
+        "fixture": "cab_1_main_group",
+        "action": "open"
+      }
+    },
+    {
+      "action": "interact",
+      "args": {
+        "fixture": "fridge_right_group",
+        "action": "open"
+      }
+    },
+    {
+      "action": "interact",
+      "args": {
+        "fixture": "stack_1_main_group_1",
+        "action": "open"
+      }
+    },
+    {
+      "action": "interact",
+      "args": {
+        "fixture": "cab_1_main_group",
+        "action": "close"
+      }
+    },
+    {
+      "action": "interact",
+      "args": {
+        "fixture": "fridge_right_group",
+        "action": "close"
+      }
+    }
+  ]
+}

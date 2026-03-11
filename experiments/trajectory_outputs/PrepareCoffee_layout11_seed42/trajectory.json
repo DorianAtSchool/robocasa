@@ -1,0 +1,49 @@
+{
+  "task": "PrepareCoffee",
+  "steps": [
+    {
+      "action": "communicate",
+      "args": {
+        "to": "agent_1",
+        "message": "I'll get the mug from the cabinet and put it on the counter."
+      }
+    },
+    {
+      "action": "communicate",
+      "args": {
+        "to": "agent_0",
+        "message": "Got it. I'll start the coffee machine once the mug is in position."
+      }
+    },
+    {
+      "action": "interact",
+      "args": {
+        "fixture": "cab_1_main_group",
+        "action": "open"
+      }
+    },
+    {
+      "action": "move_object",
+      "args": {
+        "object": "obj",
+        "from": "cab_1_main_group",
+        "to": "counter_1_main_group"
+      }
+    },
+    {
+      "action": "move_object",
+      "args": {
+        "object": "obj",
+        "from": "counter_1_main_group",
+        "to": "coffee_machine_left_group"
+      }
+    },
+    {
+      "action": "interact",
+      "args": {
+        "fixture": "coffee_machine_left_group",
+        "action": "turn_on"
+      }
+    }
+  ]
+}

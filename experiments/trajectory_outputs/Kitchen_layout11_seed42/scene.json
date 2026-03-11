@@ -1,0 +1,647 @@
+{
+  "task": "",
+  "fixtures": {
+    "stool_2_room": {
+      "fixture_id": "stool_2_room",
+      "fixture_type": "stool",
+      "position": [
+        -0.78,
+        -1.4,
+        0.45
+      ],
+      "interactions": [],
+      "can_place_objects": false,
+      "nearby_fixtures": [
+        "stool_1_room",
+        "dining_dining_group"
+      ]
+    },
+    "stool_1_room": {
+      "fixture_id": "stool_1_room",
+      "fixture_type": "stool",
+      "position": [
+        -0.78,
+        -2.3,
+        0.45
+      ],
+      "interactions": [],
+      "can_place_objects": false,
+      "nearby_fixtures": [
+        "stool_2_room",
+        "counter_left_group",
+        "dining_dining_group"
+      ]
+    },
+    "counter_corner_main_group": {
+      "fixture_id": "counter_corner_main_group",
+      "fixture_type": "counter_non_dining",
+      "position": [
+        0.325,
+        -0.325,
+        0.46
+      ],
+      "interactions": [],
+      "can_place_objects": true,
+      "nearby_fixtures": [
+        "counter_1_main_group",
+        "stack_1_main_group_1",
+        "stack_1_main_group_2",
+        "stack_1_main_group_3",
+        "stack_1_main_group_4",
+        "cab_1_main_group",
+        "toaster_main_group",
+        "stack_2_left_group_2"
+      ]
+    },
+    "counter_1_main_group": {
+      "fixture_id": "counter_1_main_group",
+      "fixture_type": "counter_non_dining",
+      "position": [
+        1.216,
+        -0.325,
+        0.46
+      ],
+      "interactions": [],
+      "can_place_objects": true,
+      "nearby_fixtures": [
+        "counter_corner_main_group",
+        "stove_1_main_group",
+        "stack_1_main_group_1",
+        "stack_1_main_group_2",
+        "stack_1_main_group_3",
+        "stack_1_main_group_4",
+        "stack_2_main_group_2",
+        "cab_1_main_group",
+        "microwave_main_group",
+        "toaster_main_group"
+      ]
+    },
+    "stove_1_main_group": {
+      "fixture_id": "stove_1_main_group",
+      "fixture_type": "stove",
+      "position": [
+        2.161,
+        -0.36,
+        0.528
+      ],
+      "interactions": [
+        "open",
+        "close",
+        "turn_on"
+      ],
+      "can_place_objects": true,
+      "nearby_fixtures": [
+        "counter_1_main_group",
+        "counter_2_main_group",
+        "stack_2_main_group_2",
+        "stack_3_main_group_2",
+        "cab_1_main_group",
+        "microwave_main_group",
+        "cab_3_main_group"
+      ]
+    },
+    "counter_2_main_group": {
+      "fixture_id": "counter_2_main_group",
+      "fixture_type": "counter_non_dining",
+      "position": [
+        3.107,
+        -0.325,
+        0.46
+      ],
+      "interactions": [],
+      "can_place_objects": true,
+      "nearby_fixtures": [
+        "stove_1_main_group",
+        "stack_3_main_group_2",
+        "stack_4_main_group_1",
+        "stack_4_main_group_2",
+        "stack_4_main_group_3",
+        "stack_4_main_group_4",
+        "microwave_main_group",
+        "cab_3_main_group"
+      ]
+    },
+    "stack_1_main_group_1": {
+      "fixture_id": "stack_1_main_group_1",
+      "fixture_type": "drawer",
+      "position": [
+        0.975,
+        -0.3,
+        0.155
+      ],
+      "interactions": [
+        "open",
+        "close"
+      ],
+      "can_place_objects": true,
+      "nearby_fixtures": [
+        "counter_corner_main_group",
+        "counter_1_main_group",
+        "stack_1_main_group_2",
+        "stack_1_main_group_3",
+        "stack_1_main_group_4",
+        "stack_2_main_group_2",
+        "cab_1_main_group",
+        "toaster_main_group",
+        "stack_2_left_group_2"
+      ]
+    },
+    "stack_1_main_group_2": {
+      "fixture_id": "stack_1_main_group_2",
+      "fixture_type": "drawer",
+      "position": [
+        0.975,
+        -0.3,
+        0.365
+      ],
+      "interactions": [
+        "open",
+        "close"
+      ],
+      "can_place_objects": true,
+      "nearby_fixtures": [
+        "counter_corner_main_group",
+        "counter_1_main_group",
+        "stack_1_main_group_1",
+        "stack_1_main_group_3",
+        "stack_1_main_group_4",
+        "stack_2_main_group_2",
+        "cab_1_main_group",
+        "toaster_main_group",
+        "stack_2_left_group_2"
+      ]
+    },
+    "stack_1_main_group_3": {
+      "fixture_id": "stack_1_main_group_3",
+      "fixture_type": "drawer",
+      "position": [
+        0.975,
+        -0.3,
+        0.575
+      ],
+      "interactions": [
+        "open",
+        "close"
+      ],
+      "can_place_objects": true,
+      "nearby_fixtures": [
+        "counter_corner_main_group",
+        "counter_1_main_group",
+        "stack_1_main_group_1",
+        "stack_1_main_group_2",
+        "stack_1_main_group_4",
+        "stack_2_main_group_2",
+        "cab_1_main_group",
+        "toaster_main_group",
+        "stack_2_left_group_2"
+      ]
+    },
+    "stack_1_main_group_4": {
+      "fixture_id": "stack_1_main_group_4",
+      "fixture_type": "top_drawer",
+      "position": [
+        0.975,
+        -0.3,
+        0.785
+      ],
+      "interactions": [
+        "open",
+        "close"
+      ],
+      "can_place_objects": true,
+      "nearby_fixtures": [
+        "counter_corner_main_group",
+        "counter_1_main_group",
+        "stack_1_main_group_1",
+        "stack_1_main_group_2",
+        "stack_1_main_group_3",
+        "stack_2_main_group_2",
+        "cab_1_main_group",
+        "toaster_main_group",
+        "stack_2_left_group_2"
+      ]
+    },
+    "stack_2_main_group_2": {
+      "fixture_id": "stack_2_main_group_2",
+      "fixture_type": "top_drawer",
+      "position": [
+        1.541,
+        -0.3,
+        0.785
+      ],
+      "interactions": [
+        "open",
+        "close"
+      ],
+      "can_place_objects": true,
+      "nearby_fixtures": [
+        "counter_1_main_group",
+        "stove_1_main_group",
+        "stack_1_main_group_1",
+        "stack_1_main_group_2",
+        "stack_1_main_group_3",
+        "stack_1_main_group_4",
+        "cab_1_main_group",
+        "microwave_main_group",
+        "toaster_main_group"
+      ]
+    },
+    "stack_3_main_group_2": {
+      "fixture_id": "stack_3_main_group_2",
+      "fixture_type": "top_drawer",
+      "position": [
+        2.766,
+        -0.3,
+        0.785
+      ],
+      "interactions": [
+        "open",
+        "close"
+      ],
+      "can_place_objects": true,
+      "nearby_fixtures": [
+        "stove_1_main_group",
+        "counter_2_main_group",
+        "stack_4_main_group_1",
+        "stack_4_main_group_2",
+        "stack_4_main_group_3",
+        "stack_4_main_group_4",
+        "microwave_main_group",
+        "cab_3_main_group"
+      ]
+    },
+    "stack_4_main_group_1": {
+      "fixture_id": "stack_4_main_group_1",
+      "fixture_type": "drawer",
+      "position": [
+        3.331,
+        -0.3,
+        0.155
+      ],
+      "interactions": [
+        "open",
+        "close"
+      ],
+      "can_place_objects": true,
+      "nearby_fixtures": [
+        "counter_2_main_group",
+        "stack_3_main_group_2",
+        "stack_4_main_group_2",
+        "stack_4_main_group_3",
+        "stack_4_main_group_4",
+        "cab_3_main_group"
+      ]
+    },
+    "stack_4_main_group_2": {
+      "fixture_id": "stack_4_main_group_2",
+      "fixture_type": "drawer",
+      "position": [
+        3.331,
+        -0.3,
+        0.365
+      ],
+      "interactions": [
+        "open",
+        "close"
+      ],
+      "can_place_objects": true,
+      "nearby_fixtures": [
+        "counter_2_main_group",
+        "stack_3_main_group_2",
+        "stack_4_main_group_1",
+        "stack_4_main_group_3",
+        "stack_4_main_group_4",
+        "cab_3_main_group"
+      ]
+    },
+    "stack_4_main_group_3": {
+      "fixture_id": "stack_4_main_group_3",
+      "fixture_type": "drawer",
+      "position": [
+        3.331,
+        -0.3,
+        0.575
+      ],
+      "interactions": [
+        "open",
+        "close"
+      ],
+      "can_place_objects": true,
+      "nearby_fixtures": [
+        "counter_2_main_group",
+        "stack_3_main_group_2",
+        "stack_4_main_group_1",
+        "stack_4_main_group_2",
+        "stack_4_main_group_4",
+        "cab_3_main_group"
+      ]
+    },
+    "stack_4_main_group_4": {
+      "fixture_id": "stack_4_main_group_4",
+      "fixture_type": "top_drawer",
+      "position": [
+        3.331,
+        -0.3,
+        0.785
+      ],
+      "interactions": [
+        "open",
+        "close"
+      ],
+      "can_place_objects": true,
+      "nearby_fixtures": [
+        "counter_2_main_group",
+        "stack_3_main_group_2",
+        "stack_4_main_group_1",
+        "stack_4_main_group_2",
+        "stack_4_main_group_3",
+        "cab_3_main_group"
+      ]
+    },
+    "cab_1_main_group": {
+      "fixture_id": "cab_1_main_group",
+      "fixture_type": "cabinet_double_door",
+      "position": [
+        1.22,
+        -0.2,
+        1.84
+      ],
+      "interactions": [
+        "open",
+        "close"
+      ],
+      "can_place_objects": true,
+      "nearby_fixtures": [
+        "counter_corner_main_group",
+        "counter_1_main_group",
+        "stove_1_main_group",
+        "stack_1_main_group_1",
+        "stack_1_main_group_2",
+        "stack_1_main_group_3",
+        "stack_1_main_group_4",
+        "stack_2_main_group_2",
+        "microwave_main_group",
+        "toaster_main_group"
+      ]
+    },
+    "microwave_main_group": {
+      "fixture_id": "microwave_main_group",
+      "fixture_type": "microwave",
+      "position": [
+        2.165,
+        -0.24,
+        1.615
+      ],
+      "interactions": [
+        "open",
+        "close",
+        "turn_on"
+      ],
+      "can_place_objects": true,
+      "nearby_fixtures": [
+        "counter_1_main_group",
+        "stove_1_main_group",
+        "counter_2_main_group",
+        "stack_2_main_group_2",
+        "stack_3_main_group_2",
+        "cab_1_main_group",
+        "cab_3_main_group",
+        "toaster_main_group"
+      ]
+    },
+    "cab_3_main_group": {
+      "fixture_id": "cab_3_main_group",
+      "fixture_type": "cabinet_double_door",
+      "position": [
+        3.108,
+        -0.2,
+        1.84
+      ],
+      "interactions": [
+        "open",
+        "close"
+      ],
+      "can_place_objects": true,
+      "nearby_fixtures": [
+        "stove_1_main_group",
+        "counter_2_main_group",
+        "stack_3_main_group_2",
+        "stack_4_main_group_1",
+        "stack_4_main_group_2",
+        "stack_4_main_group_3",
+        "stack_4_main_group_4",
+        "microwave_main_group"
+      ]
+    },
+    "toaster_main_group": {
+      "fixture_id": "toaster_main_group",
+      "fixture_type": "toaster",
+      "position": [
+        1.172,
+        -0.177,
+        1.028
+      ],
+      "interactions": [
+        "turn_on"
+      ],
+      "can_place_objects": false,
+      "nearby_fixtures": [
+        "counter_corner_main_group",
+        "counter_1_main_group",
+        "stack_1_main_group_1",
+        "stack_1_main_group_2",
+        "stack_1_main_group_3",
+        "stack_1_main_group_4",
+        "stack_2_main_group_2",
+        "cab_1_main_group",
+        "microwave_main_group"
+      ]
+    },
+    "sink_left_group": {
+      "fixture_id": "sink_left_group",
+      "fixture_type": "sink",
+      "position": [
+        0.3,
+        -1.796,
+        0.986
+      ],
+      "interactions": [
+        "turn_on"
+      ],
+      "can_place_objects": true,
+      "nearby_fixtures": [
+        "counter_1_left_group",
+        "counter_left_group",
+        "dishwasher_left_group",
+        "stack_2_left_group_2",
+        "coffee_machine_left_group",
+        "dining_dining_group"
+      ]
+    },
+    "counter_1_left_group": {
+      "fixture_id": "counter_1_left_group",
+      "fixture_type": "counter_non_dining",
+      "position": [
+        0.325,
+        -1.844,
+        0.46
+      ],
+      "interactions": [],
+      "can_place_objects": true,
+      "nearby_fixtures": [
+        "sink_left_group",
+        "counter_left_group",
+        "dishwasher_left_group",
+        "stack_2_left_group_2",
+        "coffee_machine_left_group",
+        "dining_dining_group"
+      ]
+    },
+    "counter_left_group": {
+      "fixture_id": "counter_left_group",
+      "fixture_type": "counter_non_dining",
+      "position": [
+        -0.067,
+        -2.241,
+        0.53
+      ],
+      "interactions": [],
+      "can_place_objects": true,
+      "nearby_fixtures": [
+        "stool_1_room",
+        "sink_left_group",
+        "counter_1_left_group",
+        "dishwasher_left_group",
+        "coffee_machine_left_group",
+        "dining_dining_group"
+      ]
+    },
+    "dishwasher_left_group": {
+      "fixture_id": "dishwasher_left_group",
+      "fixture_type": "dishwasher",
+      "position": [
+        0.331,
+        -2.638,
+        0.445
+      ],
+      "interactions": [
+        "open",
+        "close",
+        "turn_on"
+      ],
+      "can_place_objects": false,
+      "nearby_fixtures": [
+        "sink_left_group",
+        "counter_1_left_group",
+        "counter_left_group",
+        "coffee_machine_left_group"
+      ]
+    },
+    "stack_2_left_group_2": {
+      "fixture_id": "stack_2_left_group_2",
+      "fixture_type": "top_drawer",
+      "position": [
+        0.3,
+        -0.969,
+        0.785
+      ],
+      "interactions": [
+        "open",
+        "close"
+      ],
+      "can_place_objects": true,
+      "nearby_fixtures": [
+        "counter_corner_main_group",
+        "stack_1_main_group_1",
+        "stack_1_main_group_2",
+        "stack_1_main_group_3",
+        "stack_1_main_group_4",
+        "sink_left_group",
+        "counter_1_left_group"
+      ]
+    },
+    "coffee_machine_left_group": {
+      "fixture_id": "coffee_machine_left_group",
+      "fixture_type": "coffee_machine",
+      "position": [
+        0.289,
+        -2.363,
+        1.083
+      ],
+      "interactions": [
+        "turn_on"
+      ],
+      "can_place_objects": true,
+      "nearby_fixtures": [
+        "sink_left_group",
+        "counter_1_left_group",
+        "counter_left_group",
+        "dishwasher_left_group",
+        "dining_dining_group"
+      ]
+    },
+    "fridge_right_group": {
+      "fixture_id": "fridge_right_group",
+      "fixture_type": "fridge",
+      "position": [
+        4.761,
+        -1.11,
+        0.875
+      ],
+      "interactions": [
+        "open",
+        "close"
+      ],
+      "can_place_objects": true,
+      "nearby_fixtures": []
+    },
+    "dining_dining_group": {
+      "fixture_id": "dining_dining_group",
+      "fixture_type": "dining_counter",
+      "position": [
+        -0.445,
+        -1.95,
+        0.46
+      ],
+      "interactions": [],
+      "can_place_objects": true,
+      "nearby_fixtures": [
+        "stool_2_room",
+        "stool_1_room",
+        "sink_left_group",
+        "counter_1_left_group",
+        "counter_left_group",
+        "coffee_machine_left_group"
+      ]
+    }
+  },
+  "objects": {},
+  "cameras": [
+    "robot0_agentview_center",
+    "robot0_agentview_left",
+    "robot0_agentview_right",
+    "robot0_frontview",
+    "robot0_robotview",
+    "robot0_eye_in_hand",
+    "robot1_robotview",
+    "robot1_eye_in_hand"
+  ],
+  "robots": [
+    {
+      "robot_id": "agent_0",
+      "position": [
+        10.0,
+        10.0,
+        0.0
+      ]
+    },
+    {
+      "robot_id": "agent_1",
+      "position": [
+        10.0,
+        10.0,
+        0.0
+      ]
+    }
+  ]
+}

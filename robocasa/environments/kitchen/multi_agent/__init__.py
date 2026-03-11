@@ -1,0 +1,1 @@
+from robocasa.environments.kitchen.multi_agent.dual_pick_place import DualPickPlace

@@ -1,0 +1,48 @@
+{
+  "task": "MicrowaveThawing",
+  "steps": [
+    {
+      "action": "communicate",
+      "args": {
+        "to": "agent_1",
+        "message": "I'll move the food to the microwave. You start it."
+      }
+    },
+    {
+      "action": "communicate",
+      "args": {
+        "to": "agent_0",
+        "message": "OK, I'll open the microwave and start it."
+      }
+    },
+    {
+      "action": "interact",
+      "args": {
+        "fixture": "microwave_main_group",
+        "action": "open"
+      }
+    },
+    {
+      "action": "move_object",
+      "args": {
+        "object": "obj",
+        "from": "counter_corner_main_group",
+        "to": "microwave_main_group"
+      }
+    },
+    {
+      "action": "interact",
+      "args": {
+        "fixture": "microwave_main_group",
+        "action": "close"
+      }
+    },
+    {
+      "action": "interact",
+      "args": {
+        "fixture": "microwave_main_group",
+        "action": "turn_on"
+      }
+    }
+  ]
+}

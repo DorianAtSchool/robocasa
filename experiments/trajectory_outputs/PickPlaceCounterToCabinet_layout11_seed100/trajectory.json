@@ -1,0 +1,41 @@
+{
+  "task": "PickPlaceCounterToCabinet",
+  "steps": [
+    {
+      "action": "communicate",
+      "args": {
+        "to": "agent_1",
+        "message": "I'll open the cabinet. You move the object in."
+      }
+    },
+    {
+      "action": "communicate",
+      "args": {
+        "to": "agent_0",
+        "message": "Ready when you are."
+      }
+    },
+    {
+      "action": "interact",
+      "args": {
+        "fixture": "cab_1_main_group",
+        "action": "open"
+      }
+    },
+    {
+      "action": "move_object",
+      "args": {
+        "object": "obj",
+        "from": "counter_corner_main_group",
+        "to": "cab_1_main_group"
+      }
+    },
+    {
+      "action": "interact",
+      "args": {
+        "fixture": "cab_1_main_group",
+        "action": "close"
+      }
+    }
+  ]
+}
