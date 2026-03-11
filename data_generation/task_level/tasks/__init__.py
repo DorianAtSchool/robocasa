@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 from data_generation.task_level.tasks.base import (
+    DuplicateTrajectoryValidationError,
+    ResponseFormatValidationError,
+    TaskSemanticValidationError,
     TaskDefinition,
     TaskValidator,
+    TrajectoryStructureValidationError,
     TrajectoryValidationError,
 )
 from data_generation.task_level.tasks.prepare_coffee import (

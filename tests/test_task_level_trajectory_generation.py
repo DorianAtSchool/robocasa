@@ -1,4 +1,6 @@
 import json
+import sys
+import threading
 import unittest
 from unittest import mock
 from datetime import datetime, timezone
@@ -15,7 +17,11 @@ from data_generation.task_level.client import (
     validate_google_auth,
 )
 from data_generation.task_level.tasks import (
+    DuplicateTrajectoryValidationError,
     PREPARE_COFFEE_TASK,
+    ResponseFormatValidationError,
+    TaskSemanticValidationError,
+    TrajectoryStructureValidationError,
     TrajectoryValidationError,
 )
 from data_generation.task_level.tasks.prepare_coffee import (
@@ -23,17 +29,24 @@ from data_generation.task_level.tasks.prepare_coffee import (
     build_prepare_coffee_prompt,
 )
 from data_generation.task_level.tool_calls import discover_atomic_tools
+from data_generation.task_level.batch_generation import BatchRunContext
 from data_generation.task_level.trajectory_generation import (
+    BATCH_INTERRUPTED_MESSAGE,
     DEFAULT_OUTPUT_DIR,
     DEFAULT_OUTPUT_PATH,
     INTERRUPTED_EXIT_CODE,
     INTERRUPTED_MESSAGE,
+    PROGRESS_BAR_WIDTH,
+    RichProgressDisplay,
+    TQDM_BAR_FORMAT,
     ProgressHandles,
     RuntimeConfig,
     _build_preflight_cost_estimate_summary,
     _is_non_retryable_generation_error,
+    _maybe_reserve_signature,
     build_cost_output_payload,
     build_summary_output_payload,
+    extract_json_candidate,
     generate_trajectories,
     generate_single_trajectory,
     main,
@@ -166,6 +179,124 @@ class FakeGoogleGenAIClientError(Exception):
     pass
 
 
+def make_batch_job(name, *, state="JOB_STATE_SUCCEEDED", error=None):
+    return types.SimpleNamespace(
+        name=name,
+        state=types.SimpleNamespace(value=state),
+        error=error,
+    )
+
+
+def make_batch_usage_metadata(
+    *,
+    prompt_tokens=1000,
+    candidate_tokens=200,
+    thoughts_tokens=50,
+    total_tokens=1250,
+):
+    return {
+        "promptTokenCount": prompt_tokens,
+        "candidatesTokenCount": candidate_tokens,
+        "thoughtsTokenCount": thoughts_tokens,
+        "totalTokenCount": total_tokens,
+    }
+
+
+def make_batch_output_row(
+    variation_key,
+    *,
+    candidate=None,
+    status="",
+    usage_metadata=None,
+):
+    row = {
+        "request": {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [{"text": build_prepare_coffee_prompt(variation_key)}],
+                }
+            ]
+        },
+        "status": status,
+    }
+    if candidate is not None:
+        row["response"] = {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [{"text": json.dumps(candidate)}],
+                    }
+                }
+            ]
+        }
+        if usage_metadata is not None:
+            row["response"]["usageMetadata"] = usage_metadata
+    return row
+
+
+def make_batch_download(blob_uri, rows):
+    return [
+        (
+            blob_uri,
+            "\n".join(json.dumps(row, sort_keys=True) for row in rows) + "\n",
+        )
+    ]
+
+
+class FakeBatchService:
+    def __init__(self, created_jobs, *, job_sequences=None, get_side_effect=None):
+        self._created_jobs = list(created_jobs)
+        self._job_sequences = dict(job_sequences or {})
+        self._get_side_effect = get_side_effect
+        self.create_calls = []
+        self.get_calls = []
+        self.cancel_calls = []
+
+    def create_job(self, *, model, input_uri, output_prefix, display_name):
+        self.create_calls.append(
+            {
+                "model": model,
+                "input_uri": input_uri,
+                "output_prefix": output_prefix,
+                "display_name": display_name,
+            }
+        )
+        if not self._created_jobs:
+            raise AssertionError("No fake batch jobs configured.")
+        job = self._created_jobs.pop(0)
+        self._job_sequences.setdefault(job.name, [job])
+        return job
+
+    def get_job(self, *, name):
+        self.get_calls.append(name)
+        if self._get_side_effect is not None:
+            raise self._get_side_effect
+        sequence = self._job_sequences.get(name)
+        if not sequence:
+            raise AssertionError(f"No fake batch job sequence configured for {name}.")
+        if len(sequence) > 1:
+            return sequence.pop(0)
+        return sequence[0]
+
+    def cancel_job(self, *, name):
+        self.cancel_calls.append(name)
+
+
+class FakeBatchStorage:
+    def __init__(self, downloads_by_prefix=None):
+        self.downloads_by_prefix = dict(downloads_by_prefix or {})
+        self.upload_calls = []
+        self.download_calls = []
+
+    def upload_text(self, *, text, gcs_uri):
+        self.upload_calls.append({"gcs_uri": gcs_uri, "text": text})
+
+    def download_texts(self, *, gcs_prefix):
+        self.download_calls.append(gcs_prefix)
+        return list(self.downloads_by_prefix.get(gcs_prefix, []))
+
+
 def make_fake_google_genai_modules(client_cls):
     fake_google_module = types.ModuleType("google")
     fake_google_genai_module = types.ModuleType("google.genai")
@@ -271,6 +402,61 @@ class DotenvLoadingTests(unittest.TestCase):
     def test_parse_args_accepts_enable_validation(self):
         runtime_config = parse_args(["--enable-validation"])
         self.assertFalse(runtime_config.disable_validation)
+
+    def test_parse_args_accepts_num_trajectories_flag_and_alias(self):
+        dashed_runtime_config = parse_args(["--num-trajectories", "7"])
+        underscored_runtime_config = parse_args(["--num_trajectories", "9"])
+
+        self.assertEqual(dashed_runtime_config.num_trajectories, 7)
+        self.assertEqual(underscored_runtime_config.num_trajectories, 9)
+
+    def test_parse_args_accepts_task_flag_and_legacy_aliases(self):
+        task_runtime_config = parse_args(["--task", "PrepareCoffee"])
+        dashed_legacy_runtime_config = parse_args(
+            ["--composite-task", "PrepareCoffee"]
+        )
+        underscored_legacy_runtime_config = parse_args(
+            ["--composite_task", "PrepareCoffee"]
+        )
+
+        self.assertEqual(task_runtime_config.composite_task, "PrepareCoffee")
+        self.assertEqual(
+            dashed_legacy_runtime_config.composite_task,
+            "PrepareCoffee",
+        )
+        self.assertEqual(
+            underscored_legacy_runtime_config.composite_task,
+            "PrepareCoffee",
+        )
+
+    def test_parse_args_accepts_batch_processing_and_env_batch_prefix(self):
+        with mock.patch.dict(
+            "os.environ",
+            {"GOOGLE_CLOUD_BATCH_GCS_PREFIX": "gs://env-bucket/batch-prefix"},
+            clear=True,
+        ):
+            runtime_config = parse_args(["--batch-processing"])
+
+        self.assertTrue(runtime_config.batch_processing)
+        self.assertEqual(
+            runtime_config.batch_gcs_prefix,
+            "gs://env-bucket/batch-prefix",
+        )
+
+    def test_parse_args_accepts_batch_processing_underscore_aliases(self):
+        runtime_config = parse_args(
+            [
+                "--batch_processing",
+                "--batch_gcs_prefix",
+                "gs://cli-bucket/alias-prefix",
+            ]
+        )
+
+        self.assertTrue(runtime_config.batch_processing)
+        self.assertEqual(
+            runtime_config.batch_gcs_prefix,
+            "gs://cli-bucket/alias-prefix",
+        )
 
     def test_resolve_dataset_output_path_adds_timestamped_subdirectory_for_default_output(
         self,
@@ -448,7 +634,7 @@ class PrepareCoffeeValidatorTests(unittest.TestCase):
             "target_fixture_id": "coffee_machine_1",
         }
 
-        with self.assertRaises(TrajectoryValidationError):
+        with self.assertRaises(TaskSemanticValidationError):
             self.validator.validate(candidate)
 
     def test_validator_rejects_broken_entity_continuity(self):
@@ -470,8 +656,23 @@ class PrepareCoffeeValidatorTests(unittest.TestCase):
         candidate = make_valid_candidate()
         candidate["steps"][2]["reasoning"] = ""
 
-        with self.assertRaises(TrajectoryValidationError):
+        with self.assertRaises(TrajectoryStructureValidationError):
             self.validator.validate(candidate)
+
+    def test_extract_json_candidate_uses_response_format_error_for_invalid_payload(self):
+        with self.assertRaises(ResponseFormatValidationError):
+            extract_json_candidate("not json")
+
+    def test_duplicate_signature_uses_specific_validation_error(self):
+        validation = self.validator.validate(make_valid_candidate())
+
+        with self.assertRaises(DuplicateTrajectoryValidationError):
+            _maybe_reserve_signature(
+                validation,
+                disable_validation=False,
+                seen_signatures={validation["signature"]},
+                seen_signatures_lock=threading.Lock(),
+            )
 
 
 class GenerationTests(unittest.TestCase):
@@ -551,6 +752,442 @@ class GenerationTests(unittest.TestCase):
             cancel_futures=True,
         )
         close_progress_handles.assert_called_once()
+
+    def test_batch_processing_requires_gcs_prefix(self):
+        runtime_config = RuntimeConfig(
+            composite_task="PrepareCoffee",
+            num_trajectories=1,
+            output_path=Path("/tmp/prepare_coffee_trajectories.json"),
+            model="gemini-3-flash-preview",
+            sdk="google-genai",
+            project="demo-project",
+            location="global",
+            temperature=0.5,
+            max_workers=1,
+            max_retries=1,
+            batch_processing=True,
+        )
+
+        with self.assertRaises(TrajectoryGenerationError) as raised:
+            generate_trajectories(runtime_config, show_progress=False)
+
+        self.assertIn("--batch-gcs-prefix", str(raised.exception))
+
+    def test_batch_processing_single_round_success_preserves_order(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_config = RuntimeConfig(
+                composite_task="PrepareCoffee",
+                num_trajectories=2,
+                output_path=Path(tmpdir) / "prepare_coffee_trajectories.json",
+                model="gemini-3-flash-preview",
+                sdk="google-genai",
+                project="demo-project",
+                location="global",
+                temperature=0.5,
+                max_workers=8,
+                max_retries=2,
+                batch_processing=True,
+                batch_gcs_prefix="gs://demo-bucket/batch-prefix",
+            )
+            batch_run_context = BatchRunContext(
+                run_id="20260311T000000Z",
+                local_staging_dir=Path(tmpdir) / "batch" / "20260311T000000Z",
+                gcs_run_prefix="gs://demo-bucket/batch-prefix/prepare_coffee/20260311T000000Z",
+            )
+            round_output_prefix = (
+                "gs://demo-bucket/batch-prefix/prepare_coffee/20260311T000000Z/"
+                "round-01/output"
+            )
+            batch_storage = FakeBatchStorage(
+                {
+                    round_output_prefix: make_batch_download(
+                        "gs://demo-bucket/output/predictions.jsonl",
+                        [
+                            make_batch_output_row(
+                                "traj-001-attempt-00",
+                                candidate=make_valid_candidate(
+                                    communicate_messages=(
+                                        "I will handle the machine.",
+                                        "I will clear the cabinet route.",
+                                    ),
+                                    action_agents=("agent_1", "agent_0", "agent_0"),
+                                ),
+                            ),
+                            make_batch_output_row(
+                                "traj-000-attempt-00",
+                                candidate=make_valid_candidate(),
+                            ),
+                        ],
+                    )
+                }
+            )
+            batch_service = FakeBatchService([make_batch_job("batchJobs/round-01")])
+
+            with mock.patch(
+                "data_generation.task_level.batch_generation._build_batch_run_context",
+                return_value=batch_run_context,
+            ):
+                with mock.patch(
+                    "data_generation.task_level.batch_generation._build_batch_service_from_runtime",
+                    return_value=batch_service,
+                ):
+                    with mock.patch(
+                        "data_generation.task_level.batch_generation._build_batch_storage_from_runtime",
+                        return_value=batch_storage,
+                    ):
+                        payload = generate_trajectories(
+                            runtime_config,
+                            show_progress=False,
+                        )
+
+        self.assertEqual(
+            [trajectory["trajectory_id"] for trajectory in payload["trajectories"]],
+            ["traj_000", "traj_001"],
+        )
+        self.assertEqual(
+            payload["trajectories"][0]["generation_usage"]["successful_attempt_number"],
+            1,
+        )
+        self.assertEqual(
+            payload["trajectories"][1]["generation_usage"]["successful_attempt_number"],
+            1,
+        )
+        self.assertEqual(len(batch_storage.upload_calls), 1)
+        self.assertIn("traj-000-attempt-00", batch_storage.upload_calls[0]["text"])
+        self.assertIn("traj-001-attempt-00", batch_storage.upload_calls[0]["text"])
+        self.assertEqual(batch_service.create_calls[0]["output_prefix"], round_output_prefix)
+
+    def test_batch_processing_retries_only_outstanding_trajectories(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_config = RuntimeConfig(
+                composite_task="PrepareCoffee",
+                num_trajectories=2,
+                output_path=Path(tmpdir) / "prepare_coffee_trajectories.json",
+                model="gemini-3-flash-preview",
+                sdk="google-genai",
+                project="demo-project",
+                location="global",
+                temperature=0.5,
+                max_workers=3,
+                max_retries=2,
+                batch_processing=True,
+                batch_gcs_prefix="gs://demo-bucket/batch-prefix",
+            )
+            batch_run_context = BatchRunContext(
+                run_id="20260311T000000Z",
+                local_staging_dir=Path(tmpdir) / "batch" / "20260311T000000Z",
+                gcs_run_prefix="gs://demo-bucket/batch-prefix/prepare_coffee/20260311T000000Z",
+            )
+            round_one_output_prefix = (
+                "gs://demo-bucket/batch-prefix/prepare_coffee/20260311T000000Z/"
+                "round-01/output"
+            )
+            round_two_output_prefix = (
+                "gs://demo-bucket/batch-prefix/prepare_coffee/20260311T000000Z/"
+                "round-02/output"
+            )
+            batch_storage = FakeBatchStorage(
+                {
+                    round_one_output_prefix: make_batch_download(
+                        "gs://demo-bucket/output/round-01.jsonl",
+                        [
+                            make_batch_output_row(
+                                "traj-000-attempt-00",
+                                candidate=make_valid_candidate(),
+                            ),
+                            make_batch_output_row(
+                                "traj-001-attempt-00",
+                                status="internal error",
+                            ),
+                        ],
+                    ),
+                    round_two_output_prefix: make_batch_download(
+                        "gs://demo-bucket/output/round-02.jsonl",
+                        [
+                            make_batch_output_row(
+                                "traj-001-attempt-01",
+                                candidate=make_valid_candidate(
+                                    communicate_messages=(
+                                        "I will take the cabinet.",
+                                        "I will set up the machine.",
+                                    ),
+                                    action_agents=("agent_1", "agent_0", "agent_0"),
+                                ),
+                            )
+                        ],
+                    ),
+                }
+            )
+            batch_service = FakeBatchService(
+                [
+                    make_batch_job("batchJobs/round-01"),
+                    make_batch_job("batchJobs/round-02"),
+                ]
+            )
+
+            with mock.patch(
+                "data_generation.task_level.batch_generation._build_batch_run_context",
+                return_value=batch_run_context,
+            ):
+                with mock.patch(
+                    "data_generation.task_level.batch_generation._build_batch_service_from_runtime",
+                    return_value=batch_service,
+                ):
+                    with mock.patch(
+                        "data_generation.task_level.batch_generation._build_batch_storage_from_runtime",
+                        return_value=batch_storage,
+                    ):
+                        payload = generate_trajectories(
+                            runtime_config,
+                            show_progress=False,
+                        )
+
+        self.assertEqual(len(batch_service.create_calls), 2)
+        self.assertEqual(
+            payload["trajectories"][1]["generation_usage"]["successful_attempt_number"],
+            2,
+        )
+        self.assertIn("traj-001-attempt-01", batch_storage.upload_calls[1]["text"])
+        self.assertNotIn("traj-000-attempt-01", batch_storage.upload_calls[1]["text"])
+
+    def test_batch_processing_disable_validation_keeps_invalid_trajectory(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_config = RuntimeConfig(
+                composite_task="PrepareCoffee",
+                num_trajectories=1,
+                output_path=Path(tmpdir) / "prepare_coffee_trajectories.json",
+                model="gemini-3-flash-preview",
+                sdk="google-genai",
+                project="demo-project",
+                location="global",
+                temperature=0.5,
+                max_workers=2,
+                max_retries=2,
+                disable_validation=True,
+                batch_processing=True,
+                batch_gcs_prefix="gs://demo-bucket/batch-prefix",
+            )
+            batch_run_context = BatchRunContext(
+                run_id="20260311T000000Z",
+                local_staging_dir=Path(tmpdir) / "batch" / "20260311T000000Z",
+                gcs_run_prefix="gs://demo-bucket/batch-prefix/prepare_coffee/20260311T000000Z",
+            )
+            round_output_prefix = (
+                "gs://demo-bucket/batch-prefix/prepare_coffee/20260311T000000Z/"
+                "round-01/output"
+            )
+            batch_storage = FakeBatchStorage(
+                {
+                    round_output_prefix: make_batch_download(
+                        "gs://demo-bucket/output/round-01.jsonl",
+                        [
+                            make_batch_output_row(
+                                "traj-000-attempt-00",
+                                candidate=make_invalid_candidate_missing_initial_communication(),
+                            )
+                        ],
+                    )
+                }
+            )
+            batch_service = FakeBatchService([make_batch_job("batchJobs/round-01")])
+
+            with mock.patch(
+                "data_generation.task_level.batch_generation._build_batch_run_context",
+                return_value=batch_run_context,
+            ):
+                with mock.patch(
+                    "data_generation.task_level.batch_generation._build_batch_service_from_runtime",
+                    return_value=batch_service,
+                ):
+                    with mock.patch(
+                        "data_generation.task_level.batch_generation._build_batch_storage_from_runtime",
+                        return_value=batch_storage,
+                    ):
+                        payload = generate_trajectories(
+                            runtime_config,
+                            show_progress=False,
+                        )
+
+        self.assertEqual(len(batch_service.create_calls), 1)
+        self.assertFalse(payload["trajectories"][0]["validation"]["is_valid"])
+        self.assertTrue(payload["trajectories"][0]["validation"]["validation_disabled"])
+        self.assertNotIn(
+            "successful_attempt_number",
+            payload["trajectories"][0]["generation_usage"],
+        )
+
+    def test_batch_processing_uses_flex_pricing_for_cost_summary(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_config = RuntimeConfig(
+                composite_task="PrepareCoffee",
+                num_trajectories=1,
+                output_path=Path(tmpdir) / "prepare_coffee_trajectories.json",
+                model="gemini-3-flash-preview",
+                sdk="google-genai",
+                project="demo-project",
+                location="global",
+                temperature=0.5,
+                max_workers=1,
+                max_retries=1,
+                batch_processing=True,
+                batch_gcs_prefix="gs://demo-bucket/batch-prefix",
+            )
+            batch_run_context = BatchRunContext(
+                run_id="20260311T000000Z",
+                local_staging_dir=Path(tmpdir) / "batch" / "20260311T000000Z",
+                gcs_run_prefix="gs://demo-bucket/batch-prefix/prepare_coffee/20260311T000000Z",
+            )
+            round_output_prefix = (
+                "gs://demo-bucket/batch-prefix/prepare_coffee/20260311T000000Z/"
+                "round-01/output"
+            )
+            batch_storage = FakeBatchStorage(
+                {
+                    round_output_prefix: make_batch_download(
+                        "gs://demo-bucket/output/round-01.jsonl",
+                        [
+                            make_batch_output_row(
+                                "traj-000-attempt-00",
+                                candidate=make_valid_candidate(),
+                                usage_metadata=make_batch_usage_metadata(),
+                            )
+                        ],
+                    )
+                }
+            )
+            batch_service = FakeBatchService([make_batch_job("batchJobs/round-01")])
+
+            with mock.patch(
+                "data_generation.task_level.batch_generation._build_batch_run_context",
+                return_value=batch_run_context,
+            ):
+                with mock.patch(
+                    "data_generation.task_level.batch_generation._build_batch_service_from_runtime",
+                    return_value=batch_service,
+                ):
+                    with mock.patch(
+                        "data_generation.task_level.batch_generation._build_batch_storage_from_runtime",
+                        return_value=batch_storage,
+                    ):
+                        payload = generate_trajectories(
+                            runtime_config,
+                            show_progress=False,
+                        )
+
+        self.assertEqual(
+            payload["trajectories"][0]["generation_usage"]["traffic_type"],
+            "ON_DEMAND_FLEX",
+        )
+        self.assertEqual(
+            payload["cost_summary"]["pricing"],
+            {
+                "model": "gemini-3-flash-preview",
+                "input_usd_per_million_tokens": 0.25,
+                "output_usd_per_million_tokens": 1.5,
+            },
+        )
+        self.assertAlmostEqual(
+            payload["cost_summary"]["total_cost_usd"],
+            0.0006,
+        )
+
+    def test_batch_processing_cancels_active_jobs_on_keyboard_interrupt(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_config = RuntimeConfig(
+                composite_task="PrepareCoffee",
+                num_trajectories=1,
+                output_path=Path(tmpdir) / "prepare_coffee_trajectories.json",
+                model="gemini-3-flash-preview",
+                sdk="google-genai",
+                project="demo-project",
+                location="global",
+                temperature=0.5,
+                max_workers=1,
+                max_retries=1,
+                batch_processing=True,
+                batch_gcs_prefix="gs://demo-bucket/batch-prefix",
+            )
+            batch_run_context = BatchRunContext(
+                run_id="20260311T000000Z",
+                local_staging_dir=Path(tmpdir) / "batch" / "20260311T000000Z",
+                gcs_run_prefix="gs://demo-bucket/batch-prefix/prepare_coffee/20260311T000000Z",
+            )
+            batch_storage = FakeBatchStorage()
+            batch_service = FakeBatchService(
+                [make_batch_job("batchJobs/interrupt", state="JOB_STATE_RUNNING")],
+                get_side_effect=KeyboardInterrupt(),
+            )
+
+            with mock.patch(
+                "data_generation.task_level.batch_generation._build_batch_run_context",
+                return_value=batch_run_context,
+            ):
+                with mock.patch(
+                    "data_generation.task_level.batch_generation._build_batch_service_from_runtime",
+                    return_value=batch_service,
+                ):
+                    with mock.patch(
+                        "data_generation.task_level.batch_generation._build_batch_storage_from_runtime",
+                        return_value=batch_storage,
+                    ):
+                        with self.assertRaises(KeyboardInterrupt) as raised:
+                            generate_trajectories(
+                                runtime_config,
+                                show_progress=False,
+                            )
+
+        self.assertEqual(str(raised.exception), BATCH_INTERRUPTED_MESSAGE)
+        self.assertEqual(batch_service.cancel_calls, ["batchJobs/interrupt"])
+
+    def test_batch_processing_job_failure_raises_clear_error(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_config = RuntimeConfig(
+                composite_task="PrepareCoffee",
+                num_trajectories=1,
+                output_path=Path(tmpdir) / "prepare_coffee_trajectories.json",
+                model="gemini-3-flash-preview",
+                sdk="google-genai",
+                project="demo-project",
+                location="global",
+                temperature=0.5,
+                max_workers=1,
+                max_retries=1,
+                batch_processing=True,
+                batch_gcs_prefix="gs://demo-bucket/batch-prefix",
+            )
+            batch_run_context = BatchRunContext(
+                run_id="20260311T000000Z",
+                local_staging_dir=Path(tmpdir) / "batch" / "20260311T000000Z",
+                gcs_run_prefix="gs://demo-bucket/batch-prefix/prepare_coffee/20260311T000000Z",
+            )
+            batch_storage = FakeBatchStorage()
+            failed_job = make_batch_job(
+                "batchJobs/failed",
+                state="JOB_STATE_FAILED",
+                error="permission denied",
+            )
+            batch_service = FakeBatchService([failed_job])
+
+            with mock.patch(
+                "data_generation.task_level.batch_generation._build_batch_run_context",
+                return_value=batch_run_context,
+            ):
+                with mock.patch(
+                    "data_generation.task_level.batch_generation._build_batch_service_from_runtime",
+                    return_value=batch_service,
+                ):
+                    with mock.patch(
+                        "data_generation.task_level.batch_generation._build_batch_storage_from_runtime",
+                        return_value=batch_storage,
+                    ):
+                        with self.assertRaises(TrajectoryGenerationError) as raised:
+                            generate_trajectories(
+                                runtime_config,
+                                show_progress=False,
+                            )
+
+        self.assertIn("JOB_STATE_FAILED", str(raised.exception))
+        self.assertIn("permission denied", str(raised.exception))
 
     def test_saved_valid_trajectory_uses_agent_ids_and_communication_tool_args(self):
         runtime_config = RuntimeConfig(
@@ -777,6 +1414,8 @@ class GenerationTests(unittest.TestCase):
         self.assertEqual(trajectory_log.kwargs["enabled"], True)
 
     def test_generate_single_trajectory_updates_progress_status_with_cost(self):
+        self.assertEqual(PROGRESS_BAR_WIDTH, 30)
+        self.assertIn("{bar:30}", TQDM_BAR_FORMAT)
         runtime_config = RuntimeConfig(
             composite_task="PrepareCoffee",
             num_trajectories=1,
@@ -821,9 +1460,46 @@ class GenerationTests(unittest.TestCase):
         )
         self.assertEqual(
             trajectory_progress.set_postfix_str.call_args_list[-1].args[0],
-            "done $0.0013",
+            "done $0.0013 calls=5",
         )
         trajectory_progress.refresh.assert_called_once()
+
+    def test_generate_single_trajectory_retry_status_includes_tool_call_count(self):
+        runtime_config = RuntimeConfig(
+            composite_task="PrepareCoffee",
+            num_trajectories=1,
+            output_path=mock.sentinel.output_path,
+            model="gemini-3-flash-preview",
+            sdk="google-genai",
+            project="demo-project",
+            location="global",
+            temperature=0.5,
+            max_workers=1,
+            max_retries=2,
+        )
+        trajectory_progress = mock.Mock()
+        trajectory_progress.total = runtime_config.max_retries
+
+        generate_single_trajectory(
+            trajectory_index=0,
+            runtime_config=runtime_config,
+            task_definition=PREPARE_COFFEE_TASK,
+            client_factory=lambda: SequencedFakeClient(
+                [
+                    make_invalid_candidate_missing_initial_communication(),
+                    make_valid_candidate(),
+                ]
+            ),
+            overall_progress=mock.Mock(),
+            trajectory_progress=trajectory_progress,
+        )
+
+        status_updates = [
+            call.args[0] for call in trajectory_progress.set_postfix_str.call_args_list
+        ]
+        self.assertIn("attempt 1/2 retry calls=4", status_updates)
+        self.assertTrue(status_updates[-1].startswith("done $"))
+        self.assertTrue(status_updates[-1].endswith(" calls=5"))
 
     def test_generate_single_trajectory_hides_attempt_counts_when_validation_disabled(self):
         runtime_config = RuntimeConfig(
@@ -864,8 +1540,72 @@ class GenerationTests(unittest.TestCase):
         self.assertIn("retrying", status_updates)
         self.assertNotIn("valid", status_updates)
         self.assertTrue(status_updates[-1].startswith("done $"))
-        self.assertTrue(status_updates[-1].endswith(" invalid"))
+        self.assertIn("calls=4", status_updates[-1])
+        self.assertTrue(
+            status_updates[-1].endswith(" invalid TaskSemanticValidationError")
+        )
         self.assertTrue(all("attempt " not in status for status in status_updates))
+
+    def test_rich_progress_display_uses_non_expanding_layout(self):
+        runtime_config = RuntimeConfig(
+            composite_task="PrepareCoffee",
+            num_trajectories=2,
+            output_path=mock.sentinel.output_path,
+            model="gemini-3-flash-preview",
+            sdk="google-genai",
+            project="demo-project",
+            location="global",
+            temperature=0.5,
+            max_workers=2,
+            max_retries=3,
+        )
+        fake_progress = mock.Mock()
+        fake_progress.add_task.side_effect = [101, 102, 103]
+
+        with mock.patch(
+            "data_generation.task_level.trajectory_generation.Console",
+            return_value=mock.sentinel.console,
+        ) as console_cls:
+            with mock.patch(
+                "data_generation.task_level.trajectory_generation.SpinnerColumn",
+                return_value=mock.sentinel.spinner_column,
+            ):
+                with mock.patch(
+                    "data_generation.task_level.trajectory_generation.TextColumn",
+                    side_effect=[
+                        mock.sentinel.description_column,
+                        mock.sentinel.status_column,
+                    ],
+                ):
+                    with mock.patch(
+                        "data_generation.task_level.trajectory_generation.BarColumn",
+                        return_value=mock.sentinel.bar_column,
+                    ):
+                        with mock.patch(
+                            "data_generation.task_level.trajectory_generation.TaskProgressColumn",
+                            return_value=mock.sentinel.task_progress_column,
+                        ):
+                            with mock.patch(
+                                "data_generation.task_level.trajectory_generation.MofNCompleteColumn",
+                                return_value=mock.sentinel.mofn_column,
+                            ):
+                                with mock.patch(
+                                    "data_generation.task_level.trajectory_generation.TimeElapsedColumn",
+                                    return_value=mock.sentinel.elapsed_column,
+                                ):
+                                    with mock.patch(
+                                        "data_generation.task_level.trajectory_generation.RichProgress",
+                                        return_value=fake_progress,
+                                    ) as rich_progress:
+                                        display = RichProgressDisplay(runtime_config)
+
+        console_cls.assert_called_once_with(stderr=True)
+        self.assertEqual(rich_progress.call_args.kwargs["console"], mock.sentinel.console)
+        self.assertFalse(rich_progress.call_args.kwargs["expand"])
+        fake_progress.start.assert_called_once()
+        self.assertEqual(fake_progress.add_task.call_count, 3)
+        display.close()
+        fake_progress.stop.assert_called_once()
 
     def test_cost_summary_falls_back_to_heuristic_without_usage_metadata(self):
         runtime_config = RuntimeConfig(
@@ -1071,6 +1811,10 @@ class GenerationTests(unittest.TestCase):
         trajectory = payload["trajectories"][0]
         self.assertFalse(trajectory["validation"]["is_valid"])
         self.assertTrue(trajectory["validation"]["validation_disabled"])
+        self.assertEqual(
+            trajectory["validation"]["error_type"],
+            "TaskSemanticValidationError",
+        )
         self.assertIn(
             "Both agents must coordinate via communication before the first task action.",
             trajectory["validation"]["error"],
@@ -1158,7 +1902,12 @@ class GenerationTests(unittest.TestCase):
         self.assertNotIn("best case", logged_messages[0])
         self.assertNotIn("worst case", logged_messages[0])
         self.assertNotIn("attempt ", logged_messages[0])
-        self.assertEqual(logged_messages[1], "Generated traj_000")
+        self.assertEqual(
+            logged_messages[1],
+            "Generated traj_000 invalid "
+            "TaskSemanticValidationError: Both agents must coordinate via "
+            "communication before the first task action.",
+        )
         self.assertNotIn("attempt ", logged_messages[1])
 
     def test_disable_validation_output_payloads_omit_attempt_number(self):
@@ -1194,6 +1943,10 @@ class GenerationTests(unittest.TestCase):
         self.assertNotIn(
             "successful_attempt_number",
             cost_payload["trajectory_costs"][0]["generation_usage"],
+        )
+        self.assertEqual(
+            payload["trajectories"][0]["validation"]["error_type"],
+            "TaskSemanticValidationError",
         )
         self.assertEqual(
             cost_payload["trajectory_costs"][0]["generation_usage"]["observed_cost_usd"],
@@ -1434,6 +2187,65 @@ class GenerationTests(unittest.TestCase):
         mocked_exit.assert_called_once_with(INTERRUPTED_EXIT_CODE)
         mocked_print.assert_called_once()
         self.assertEqual(mocked_print.call_args.args[0], INTERRUPTED_MESSAGE)
+        self.assertEqual(mocked_print.call_args.kwargs["flush"], True)
+
+    def test_run_cli_uses_custom_keyboard_interrupt_message(self):
+        with mock.patch(
+            "data_generation.task_level.trajectory_generation.main",
+            side_effect=KeyboardInterrupt(BATCH_INTERRUPTED_MESSAGE),
+        ):
+            with mock.patch(
+                "data_generation.task_level.trajectory_generation.os._exit",
+                side_effect=SystemExit(INTERRUPTED_EXIT_CODE),
+            ):
+                with mock.patch("builtins.print") as mocked_print:
+                    with self.assertRaises(SystemExit):
+                        run_cli([])
+
+        mocked_print.assert_called_once()
+        self.assertEqual(mocked_print.call_args.args[0], BATCH_INTERRUPTED_MESSAGE)
+
+    def test_main_does_not_write_outputs_when_generation_is_interrupted(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "trajectories.json"
+
+            with mock.patch(
+                "data_generation.task_level.trajectory_generation.generate_trajectories",
+                side_effect=KeyboardInterrupt(BATCH_INTERRUPTED_MESSAGE),
+            ):
+                with mock.patch(
+                    "data_generation.task_level.trajectory_generation._write_generation_outputs"
+                ) as write_outputs:
+                    with self.assertRaises(KeyboardInterrupt):
+                        main(
+                            [
+                                "--output",
+                                str(output_path),
+                                "--batch-processing",
+                                "--batch-gcs-prefix",
+                                "gs://demo-bucket/batch-prefix",
+                            ]
+                        )
+
+        write_outputs.assert_not_called()
+
+    def test_run_cli_prints_single_line_for_generation_errors(self):
+        with mock.patch(
+            "data_generation.task_level.trajectory_generation.main",
+            side_effect=TrajectoryGenerationError(
+                "TaskSemanticValidationError: invalid trajectory"
+            ),
+        ):
+            with mock.patch("builtins.print") as mocked_print:
+                exit_code = run_cli([])
+
+        self.assertEqual(exit_code, 1)
+        mocked_print.assert_called_once()
+        self.assertEqual(
+            mocked_print.call_args.args[0],
+            "TrajectoryGenerationError: TaskSemanticValidationError: invalid trajectory",
+        )
+        self.assertIs(mocked_print.call_args.kwargs["file"], sys.stderr)
         self.assertEqual(mocked_print.call_args.kwargs["flush"], True)
 
     def test_unsupported_task_raises(self):

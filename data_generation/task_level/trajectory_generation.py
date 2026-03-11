@@ -7,7 +7,7 @@ import re
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -36,6 +36,7 @@ except ImportError:  # pragma: no cover
     TimeElapsedColumn = None
 
 from data_generation.task_level.client import (
+    BATCH_TRAFFIC_TYPE,
     COST_DECIMAL_PLACES,
     DEFAULT_LOCATION,
     DEFAULT_MODEL,
@@ -48,8 +49,11 @@ from data_generation.task_level.client import (
     build_generation_usage,
     build_generation_client,
     load_dotenv_file,
+    reprice_generation_usage,
 )
 from data_generation.task_level.tasks import (
+    DuplicateTrajectoryValidationError,
+    ResponseFormatValidationError,
     TaskDefinition,
     TaskValidator,
     TrajectoryValidationError,
@@ -70,13 +74,23 @@ DEFAULT_OUTPUT_PATH = DEFAULT_OUTPUT_DIR / "trajectories.json"
 DEFAULT_COMPOSITE_TASK = supported_task_names()[0]
 DATASET_RUN_TIMESTAMP_FORMAT = "%Y%m%dT%H%M%SZ"
 TRAJECTORY_DIRECTORY_NAME = "trajectories"
+BATCH_DIRECTORY_NAME = "batch"
 OVERALL_PROGRESS_COLOR = "cyan"
+PROGRESS_BAR_WIDTH = 30
+TQDM_BAR_FORMAT = f"{{l_bar}}{{bar:{PROGRESS_BAR_WIDTH}}}{{r_bar}}"
+GENERATION_ERROR_EXIT_CODE = 1
+BATCH_POLL_INTERVAL_SECONDS = 10
+GOOGLE_CLOUD_BATCH_GCS_PREFIX_ENV_VAR = "GOOGLE_CLOUD_BATCH_GCS_PREFIX"
 # Keep concurrent trajectory bars easy to tell apart in the terminal.
 TRAJECTORY_PROGRESS_COLORS = ("green", "yellow", "blue", "magenta", "red", "cyan")
 INTERRUPTED_EXIT_CODE = 130
 INTERRUPTED_MESSAGE = (
     "Interrupted. Exiting immediately. Queued trajectories were cancelled; "
     "requests already in flight may still be billed."
+)
+BATCH_INTERRUPTED_MESSAGE = (
+    "Interrupted. Active remote batch jobs were cancelled. "
+    "No local outputs were written."
 )
 
 
@@ -108,7 +122,7 @@ def _resolve_task_definition_or_raise(composite_task: str) -> TaskDefinition:
     if task_definition is None:
         supported_tasks = ", ".join(supported_task_names())
         raise TrajectoryGenerationError(
-            f"Unsupported composite task '{composite_task}'. "
+            f"Unsupported task '{composite_task}'. "
             f"Available tasks: {supported_tasks}."
         )
     return task_definition
@@ -128,6 +142,8 @@ class RuntimeConfig:
     max_retries: int
     cost_output_path: Path | None = None
     disable_validation: bool = False
+    batch_processing: bool = False
+    batch_gcs_prefix: str | None = None
 
 
 @dataclass(frozen=True)
@@ -147,6 +163,76 @@ class OutputPaths:
 
 def _candidate_signature(candidate: dict[str, Any]) -> str:
     return stable_json_sha256(candidate, default=str)
+
+
+def _default_traffic_type_for_runtime(runtime_config: RuntimeConfig) -> str:
+    if runtime_config.batch_processing:
+        return BATCH_TRAFFIC_TYPE
+    return "ON_DEMAND"
+
+
+def _build_trajectory_record_from_candidate(
+    *,
+    trajectory_index: int,
+    runtime_config: RuntimeConfig,
+    task_definition: TaskDefinition,
+    candidate: dict[str, Any],
+    prompt: str,
+    usage: GenerationUsage | None,
+    validator: TaskValidator,
+    seen_signatures: set[str] | None,
+    seen_signatures_lock: threading.Lock | None,
+    attempt_number: int,
+) -> dict[str, Any]:
+    validation = _validate_candidate(
+        candidate,
+        validator,
+        enforce_validation=not runtime_config.disable_validation,
+    )
+    _maybe_reserve_signature(
+        validation,
+        disable_validation=runtime_config.disable_validation,
+        seen_signatures=seen_signatures,
+        seen_signatures_lock=seen_signatures_lock,
+    )
+    generation_usage = build_generation_usage(
+        model=runtime_config.model,
+        prompt=prompt,
+        candidate=candidate,
+        usage=usage,
+        attempt_number=attempt_number,
+        default_traffic_type=_default_traffic_type_for_runtime(runtime_config),
+    )
+    return task_definition.build_trajectory_record(
+        candidate=candidate,
+        validation=validation,
+        trajectory_id=f"traj_{trajectory_index:03d}",
+        generation_usage=generation_usage,
+    )
+
+
+def _exception_summary(exc: Exception) -> str:
+    message = str(exc).strip()
+    if message:
+        return f"{type(exc).__name__}: {message}"
+    return type(exc).__name__
+
+
+def _validation_error_type(validation: dict[str, Any]) -> str | None:
+    error_type = validation.get("error_type")
+    if isinstance(error_type, str) and error_type:
+        return error_type
+    return None
+
+
+def _validation_error_summary(validation: dict[str, Any]) -> str | None:
+    error_type = _validation_error_type(validation)
+    error_message = validation.get("error")
+    if isinstance(error_message, str) and error_message:
+        if error_type is not None:
+            return f"{error_type}: {error_message}"
+        return error_message
+    return error_type
 
 
 def _unwrap_generation_response(
@@ -172,6 +258,7 @@ def _validate_candidate(
         return {
             "is_valid": False,
             "validation_disabled": True,
+            "error_type": type(exc).__name__,
             "error": str(exc),
             "checks": [],
             "final_state": None,
@@ -516,6 +603,12 @@ def _build_preflight_cost_estimate_summary(
     historical_profile = _build_historical_preflight_generation_usage(runtime_config)
     if historical_profile is not None:
         generation_usage, sample_count = historical_profile
+        generation_usage = reprice_generation_usage(
+            generation_usage,
+            model=runtime_config.model,
+            traffic_type=_default_traffic_type_for_runtime(runtime_config),
+            round_observed_cost=False,
+        )
         summary = _build_cost_estimate_summary_from_generation_usages(
             [generation_usage] * runtime_config.num_trajectories,
             runtime_config=runtime_config,
@@ -533,6 +626,7 @@ def _build_preflight_cost_estimate_summary(
         candidate=task_definition.preflight_reference_candidate,
         usage=None,
         attempt_number=1,
+        default_traffic_type=_default_traffic_type_for_runtime(runtime_config),
     )
     summary = _build_cost_estimate_summary_from_generation_usages(
         [generation_usage] * runtime_config.num_trajectories,
@@ -727,14 +821,14 @@ class RichProgressDisplay:
         self._progress = RichProgress(
             SpinnerColumn(style="cyan"),
             TextColumn("[bold]{task.description}[/bold]"),
-            BarColumn(bar_width=None),
+            BarColumn(bar_width=PROGRESS_BAR_WIDTH),
             TaskProgressColumn(),
             MofNCompleteColumn(),
             TimeElapsedColumn(),
             TextColumn("[dim]{task.fields[status]}"),
             console=self.console,
             transient=False,
-            expand=True,
+            expand=False,
         )
         self._progress.start()
         overall_task_id = self._progress.add_task(
@@ -782,6 +876,7 @@ def _create_progress_handles(
     overall_progress = tqdm(
         total=runtime_config.num_trajectories,
         desc="Trajectories",
+        bar_format=TQDM_BAR_FORMAT,
         position=0,
         disable=disable_progress,
         dynamic_ncols=True,
@@ -791,6 +886,7 @@ def _create_progress_handles(
         tqdm(
             total=runtime_config.max_retries,
             desc=f"traj {index:03d}",
+            bar_format=TQDM_BAR_FORMAT,
             position=index + 1,
             leave=True,
             disable=disable_progress,
@@ -865,12 +961,23 @@ def _cost_summary_message(
     )
 
 
+def _tool_call_count(payload: Any) -> int | None:
+    if not isinstance(payload, dict):
+        return None
+    steps = payload.get("steps")
+    if not isinstance(steps, list):
+        return None
+    return len(steps)
+
+
 def _update_completed_trajectory_progress(
     trajectory_progress: Any | None,
     *,
     attempt_number: int,
     is_valid: bool,
     observed_cost_usd: float | None,
+    tool_call_count: int | None = None,
+    validation: dict[str, Any] | None = None,
 ) -> None:
     if trajectory_progress is None:
         return
@@ -882,8 +989,14 @@ def _update_completed_trajectory_progress(
             f"{cost_text} "
             f"{format_cost_usd(observed_cost_usd, decimal_places=COST_DECIMAL_PLACES)}"
         )
+    if tool_call_count is not None:
+        cost_text = f"{cost_text} calls={tool_call_count}"
     if not is_valid:
         cost_text = f"{cost_text} invalid"
+        if validation is not None:
+            error_type = _validation_error_type(validation)
+            if error_type is not None:
+                cost_text = f"{cost_text} {error_type}"
     trajectory_progress.set_postfix_str(cost_text)
 
 
@@ -901,10 +1014,15 @@ def _trajectory_retry_status(
     runtime_config: RuntimeConfig,
     *,
     attempt_number: int,
+    tool_call_count: int | None = None,
 ) -> str:
     if runtime_config.disable_validation:
-        return "retrying"
-    return f"attempt {attempt_number}/{runtime_config.max_retries} retry"
+        retry_text = "retrying"
+    else:
+        retry_text = f"attempt {attempt_number}/{runtime_config.max_retries} retry"
+    if tool_call_count is None:
+        return retry_text
+    return f"{retry_text} calls={tool_call_count}"
 
 
 def _trajectory_completion_log_message(
@@ -912,7 +1030,13 @@ def _trajectory_completion_log_message(
     *,
     trajectory_id: str,
     generation_usage: dict[str, Any],
+    validation: dict[str, Any],
 ) -> str:
+    if runtime_config.disable_validation and not validation["is_valid"]:
+        validation_summary = _validation_error_summary(validation)
+        if validation_summary is not None:
+            return f"Generated {trajectory_id} invalid {validation_summary}"
+        return f"Generated {trajectory_id} invalid"
     if runtime_config.disable_validation:
         return f"Generated {trajectory_id}"
     return (
@@ -954,11 +1078,16 @@ def _sanitize_trajectory_for_output(
 
 def _validate_runtime_config(runtime_config: RuntimeConfig) -> None:
     if runtime_config.num_trajectories <= 0:
-        raise TrajectoryGenerationError("--n must be greater than 0.")
+        raise TrajectoryGenerationError("--num-trajectories must be greater than 0.")
     if runtime_config.max_workers <= 0:
         raise TrajectoryGenerationError("--max-workers must be greater than 0.")
     if runtime_config.max_retries <= 0:
         raise TrajectoryGenerationError("--max-retries must be greater than 0.")
+    if runtime_config.batch_processing and not runtime_config.batch_gcs_prefix:
+        raise TrajectoryGenerationError(
+            "--batch-gcs-prefix or GOOGLE_CLOUD_BATCH_GCS_PREFIX is required "
+            "when --batch-processing is enabled."
+        )
 
 
 def _build_generation_client_from_runtime(runtime_config: RuntimeConfig) -> Any:
@@ -983,7 +1112,9 @@ def _maybe_reserve_signature(
     # Enforce uniqueness only for validated trajectories we intend to keep.
     with seen_signatures_lock:
         if signature in seen_signatures:
-            raise TrajectoryValidationError("Duplicate trajectory signature.")
+            raise DuplicateTrajectoryValidationError(
+                "Duplicate trajectory signature."
+            )
         seen_signatures.add(signature)
 
 
@@ -1020,7 +1151,7 @@ def extract_json_candidate(raw_response: Any) -> dict[str, Any]:
     if isinstance(raw_response, dict):
         return raw_response
     if not isinstance(raw_response, str):
-        raise TrajectoryValidationError(
+        raise ResponseFormatValidationError(
             f"Unsupported model response type: {type(raw_response).__name__}"
         )
 
@@ -1032,11 +1163,18 @@ def extract_json_candidate(raw_response: Any) -> dict[str, Any]:
 
     try:
         return json.loads(stripped)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as exc:
         json_match = re.search(r"(\{.*\})", stripped, re.DOTALL)
         if not json_match:
-            raise TrajectoryValidationError("Model response did not contain JSON.")
-        return json.loads(json_match.group(1))
+            raise ResponseFormatValidationError(
+                "Model response did not contain JSON."
+            ) from exc
+        try:
+            return json.loads(json_match.group(1))
+        except json.JSONDecodeError as inner_exc:
+            raise ResponseFormatValidationError(
+                "Model response contained invalid JSON."
+            ) from inner_exc
 
 
 def generate_single_trajectory(
@@ -1050,89 +1188,19 @@ def generate_single_trajectory(
     seen_signatures: set[str] | None = None,
     seen_signatures_lock: threading.Lock | None = None,
 ) -> dict[str, Any]:
-    client = (
-        client_factory()
-        if client_factory is not None
-        else _build_generation_client_from_runtime(runtime_config)
+    from data_generation.task_level.on_demand_generation import (
+        generate_single_trajectory as generate_single_trajectory_on_demand,
     )
-    validator = task_definition.validator_factory()
-    last_error: Exception | None = None
 
-    for attempt_index in range(runtime_config.max_retries):
-        # Variation keys give retries a stable way to ask for distinct traces.
-        variation_key = f"traj-{trajectory_index:03d}-attempt-{attempt_index:02d}"
-        prompt = task_definition.build_prompt(variation_key)
-        if trajectory_progress is not None:
-            trajectory_progress.set_postfix_str(
-                _trajectory_generation_status(
-                    runtime_config,
-                    attempt_number=attempt_index + 1,
-                )
-            )
-        try:
-            raw_response = client.generate(
-                model=runtime_config.model,
-                prompt=prompt,
-                response_schema=task_definition.response_schema,
-                temperature=runtime_config.temperature,
-            )
-            response_payload, usage = _unwrap_generation_response(raw_response)
-            candidate = extract_json_candidate(response_payload)
-            validation = _validate_candidate(
-                candidate,
-                validator,
-                enforce_validation=not runtime_config.disable_validation,
-            )
-            _maybe_reserve_signature(
-                validation,
-                disable_validation=runtime_config.disable_validation,
-                seen_signatures=seen_signatures,
-                seen_signatures_lock=seen_signatures_lock,
-            )
-
-            if trajectory_progress is not None:
-                trajectory_progress.update(1)
-                if not runtime_config.disable_validation:
-                    trajectory_progress.set_postfix_str("valid")
-            if overall_progress is not None:
-                overall_progress.update(1)
-            generation_usage = build_generation_usage(
-                model=runtime_config.model,
-                prompt=prompt,
-                candidate=candidate,
-                usage=usage,
-                attempt_number=attempt_index + 1,
-            )
-            _update_completed_trajectory_progress(
-                trajectory_progress,
-                attempt_number=attempt_index + 1,
-                is_valid=validation["is_valid"],
-                observed_cost_usd=generation_usage["observed_cost_usd"],
-            )
-            return task_definition.build_trajectory_record(
-                candidate=candidate,
-                validation=validation,
-                trajectory_id=f"traj_{trajectory_index:03d}",
-                generation_usage=generation_usage,
-            )
-        except Exception as exc:
-            last_error = exc
-            if _is_non_retryable_generation_error(exc):
-                raise TrajectoryGenerationError(
-                    f"Trajectory generation failed with a non-retryable error: {exc}"
-                ) from exc
-            if trajectory_progress is not None:
-                trajectory_progress.update(1)
-                trajectory_progress.set_postfix_str(
-                    _trajectory_retry_status(
-                        runtime_config,
-                        attempt_number=attempt_index + 1,
-                    )
-                )
-
-    raise TrajectoryGenerationError(
-        f"Unable to generate a valid trajectory for index {trajectory_index} after "
-        f"{runtime_config.max_retries} attempts: {last_error}"
+    return generate_single_trajectory_on_demand(
+        trajectory_index=trajectory_index,
+        runtime_config=runtime_config,
+        task_definition=task_definition,
+        client_factory=client_factory,
+        overall_progress=overall_progress,
+        trajectory_progress=trajectory_progress,
+        seen_signatures=seen_signatures,
+        seen_signatures_lock=seen_signatures_lock,
     )
 
 
@@ -1144,85 +1212,36 @@ def generate_trajectories(
 ) -> dict[str, Any]:
     task_definition = _resolve_task_definition_or_raise(runtime_config.composite_task)
     _validate_runtime_config(runtime_config)
+    if runtime_config.batch_processing:
+        from data_generation.task_level.batch_generation import (
+            generate_trajectories_batch,
+        )
 
-    seen_signatures: set[str] = set()
-    seen_signatures_lock = threading.Lock()
+        return generate_trajectories_batch(
+            runtime_config,
+            task_definition=task_definition,
+            show_progress=show_progress,
+        )
+    from data_generation.task_level.on_demand_generation import (
+        generate_trajectories_on_demand,
+    )
 
-    disable_progress = not show_progress or not os.isatty(2)
-    progress_handles = _create_progress_handles(
+    return generate_trajectories_on_demand(
         runtime_config,
-        disable_progress=disable_progress,
+        task_definition=task_definition,
+        client_factory=client_factory,
+        show_progress=show_progress,
     )
-
-    projected_cost_estimate = _build_preflight_cost_estimate_summary(
-        runtime_config,
-        task_definition,
-    )
-    _log_cost_summary(
-        label="Projected cost",
-        cost_estimate=projected_cost_estimate,
-        runtime_config=runtime_config,
-        enabled=show_progress,
-        writer=progress_handles.log_writer,
-    )
-
-    # Collect by index first so the final JSON stays deterministic under concurrency.
-    results: dict[int, dict[str, Any]] = {}
-    executor = ThreadPoolExecutor(
-        max_workers=min(runtime_config.max_workers, runtime_config.num_trajectories)
-    )
-    futures: dict[Any, int] = {}
-    wait_for_shutdown = True
-    try:
-        futures = {
-            executor.submit(
-                generate_single_trajectory,
-                trajectory_index=index,
-                runtime_config=runtime_config,
-                task_definition=task_definition,
-                client_factory=client_factory,
-                overall_progress=progress_handles.overall_progress,
-                trajectory_progress=progress_handles.trajectory_progress_bars[index],
-                seen_signatures=seen_signatures,
-                seen_signatures_lock=seen_signatures_lock,
-            ): index
-            for index in range(runtime_config.num_trajectories)
-        }
-
-        for future in as_completed(futures):
-            trajectory_index = futures[future]
-            trajectory_record = future.result()
-            results[trajectory_index] = trajectory_record
-            generation_usage = trajectory_record["generation_usage"]
-            _log_runtime_message(
-                _trajectory_completion_log_message(
-                    runtime_config,
-                    trajectory_id=trajectory_record["trajectory_id"],
-                    generation_usage=generation_usage,
-                ),
-                enabled=show_progress,
-                writer=progress_handles.log_writer,
-            )
-    except KeyboardInterrupt:
-        wait_for_shutdown = False
-        for future in futures:
-            future.cancel()
-        executor.shutdown(wait=False, cancel_futures=True)
-        raise
-    finally:
-        if wait_for_shutdown:
-            executor.shutdown(wait=True, cancel_futures=False)
-        _close_progress_handles(progress_handles)
-
-    ordered_trajectories = [results[index] for index in sorted(results)]
-    return _build_generation_payload(runtime_config, ordered_trajectories)
 
 
 def run_cli(argv: list[str] | None = None) -> int:
     try:
         return main(argv)
-    except KeyboardInterrupt:
-        print(INTERRUPTED_MESSAGE, file=sys.stderr, flush=True)
+    except TrajectoryGenerationError as exc:
+        print(_exception_summary(exc), file=sys.stderr, flush=True)
+        return GENERATION_ERROR_EXIT_CODE
+    except KeyboardInterrupt as exc:
+        print(str(exc) or INTERRUPTED_MESSAGE, file=sys.stderr, flush=True)
         os._exit(INTERRUPTED_EXIT_CODE)
 
 
@@ -1233,16 +1252,36 @@ def parse_args(argv: list[str] | None = None) -> RuntimeConfig:
         description="Generate multi-agent task-level trajectories with google-genai on Vertex AI."
     )
     parser.add_argument(
-        "--composite-task",
+        "--task",
         type=str,
         default=DEFAULT_COMPOSITE_TASK,
-        help=f"Composite task name. Available tasks: {supported_tasks}.",
+        dest="composite_task",
+        help=f"Task name. Available tasks: {supported_tasks}.",
     )
     parser.add_argument(
-        "--n",
+        "--composite-task",
+        type=str,
+        dest="composite_task",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--composite_task",
+        type=str,
+        dest="composite_task",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--num-trajectories",
         type=int,
         default=1,
+        dest="num_trajectories",
         help="Number of trajectories to generate.",
+    )
+    parser.add_argument(
+        "--num_trajectories",
+        type=int,
+        dest="num_trajectories",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--output",
@@ -1299,6 +1338,33 @@ def parse_args(argv: list[str] | None = None) -> RuntimeConfig:
         default=5,
         help="Maximum generation attempts per trajectory.",
     )
+    parser.add_argument(
+        "--batch-processing",
+        action="store_true",
+        dest="batch_processing",
+        help="Use Vertex batch processing instead of online requests.",
+    )
+    parser.add_argument(
+        "--batch_processing",
+        action="store_true",
+        dest="batch_processing",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--batch-gcs-prefix",
+        type=str,
+        default=os.environ.get(GOOGLE_CLOUD_BATCH_GCS_PREFIX_ENV_VAR),
+        help=(
+            "GCS prefix for Vertex batch staging and output, for example "
+            "gs://bucket/path."
+        ),
+    )
+    parser.add_argument(
+        "--batch_gcs_prefix",
+        type=str,
+        dest="batch_gcs_prefix",
+        help=argparse.SUPPRESS,
+    )
     parser.set_defaults(disable_validation=True)
     parser.add_argument(
         "--enable-validation",
@@ -1316,7 +1382,7 @@ def parse_args(argv: list[str] | None = None) -> RuntimeConfig:
 
     return RuntimeConfig(
         composite_task=args.composite_task,
-        num_trajectories=args.n,
+        num_trajectories=args.num_trajectories,
         output_path=args.output,
         model=args.model,
         sdk=args.sdk,
@@ -1327,6 +1393,8 @@ def parse_args(argv: list[str] | None = None) -> RuntimeConfig:
         max_retries=args.max_retries,
         cost_output_path=args.cost_output,
         disable_validation=args.disable_validation,
+        batch_processing=args.batch_processing,
+        batch_gcs_prefix=args.batch_gcs_prefix,
     )
 
 
@@ -1372,6 +1440,11 @@ def main(argv: list[str] | None = None) -> int:
     runtime_config = parse_args(argv)
     _resolve_task_definition_or_raise(runtime_config.composite_task)
     output_paths = _resolve_output_paths(runtime_config)
+    runtime_config = replace(
+        runtime_config,
+        output_path=output_paths.summary_path,
+        cost_output_path=output_paths.cost_path,
+    )
     payload = generate_trajectories(runtime_config)
     written_trajectory_paths = _write_generation_outputs(
         payload,

@@ -3,7 +3,11 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from data_generation.task_level.tasks.base import TaskDefinition, TrajectoryValidationError
+from data_generation.task_level.tasks.base import (
+    TaskDefinition,
+    TaskSemanticValidationError,
+    TrajectoryStructureValidationError,
+)
 from data_generation.task_level.tool_calls import (
     discover_atomic_tools,
     render_atomic_tool_catalog,
@@ -318,16 +322,16 @@ Output requirements:
 
 def _normalize_text(value: Any, field_name: str) -> str:
     if not isinstance(value, str):
-        raise TrajectoryValidationError(f"{field_name} must be a string.")
+        raise TrajectoryStructureValidationError(f"{field_name} must be a string.")
     normalized = " ".join(value.strip().split())
     if not normalized:
-        raise TrajectoryValidationError(f"{field_name} must be non-empty.")
+        raise TrajectoryStructureValidationError(f"{field_name} must be non-empty.")
     return normalized
 
 
 def _normalize_mapping(value: Any, field_name: str) -> dict[str, Any]:
     if not isinstance(value, dict):
-        raise TrajectoryValidationError(f"{field_name} must be an object.")
+        raise TrajectoryStructureValidationError(f"{field_name} must be an object.")
     return dict(value)
 
 
@@ -354,11 +358,11 @@ class PrepareCoffeeValidator:
         seen_step_indexes: set[int] = set()
         for expected_index, step in enumerate(steps):
             if step["step_index"] != expected_index:
-                raise TrajectoryValidationError(
+                raise TaskSemanticValidationError(
                     f"step_index {step['step_index']} does not match expected index {expected_index}."
                 )
             if step["step_index"] in seen_step_indexes:
-                raise TrajectoryValidationError(
+                raise TaskSemanticValidationError(
                     f"Duplicate step_index {step['step_index']}."
                 )
             seen_step_indexes.add(step["step_index"])
@@ -369,48 +373,48 @@ class PrepareCoffeeValidator:
                 continue
 
             if communicated_agents != set(AGENT_IDS):
-                raise TrajectoryValidationError(
+                raise TaskSemanticValidationError(
                     "Both agents must coordinate via communication before the first task action."
                 )
 
             first_action_seen = True
             if coffee_machine_started:
-                raise TrajectoryValidationError(
+                raise TaskSemanticValidationError(
                     "No task actions are allowed after the coffee machine has been started."
                 )
 
             if step["tool_name"] == "PickPlaceCabinetToCounter":
                 self._validate_expected_action(step, "PickPlaceCabinetToCounter")
                 if mug_location != "cabinet_1":
-                    raise TrajectoryValidationError(
+                    raise TaskSemanticValidationError(
                         "PickPlaceCabinetToCounter requires mug_1 to start in cabinet_1."
                     )
                 mug_location = "counter_1"
             elif step["tool_name"] == "CoffeeSetupMug":
                 self._validate_expected_action(step, "CoffeeSetupMug")
                 if mug_location != "counter_1":
-                    raise TrajectoryValidationError(
+                    raise TaskSemanticValidationError(
                         "CoffeeSetupMug requires mug_1 to start on counter_1."
                     )
                 mug_location = "coffee_machine_dispenser"
             elif step["tool_name"] == "StartCoffeeMachine":
                 self._validate_expected_action(step, "StartCoffeeMachine")
                 if mug_location != "coffee_machine_dispenser":
-                    raise TrajectoryValidationError(
+                    raise TaskSemanticValidationError(
                         "StartCoffeeMachine requires mug_1 under the coffee machine dispenser."
                     )
                 coffee_machine_started = True
             else:
-                raise TrajectoryValidationError(
+                raise TaskSemanticValidationError(
                     f"Tool {step['tool_name']} is not allowed for PrepareCoffee."
                 )
 
         if not first_action_seen:
-            raise TrajectoryValidationError(
+            raise TaskSemanticValidationError(
                 "Trajectory did not contain any task action steps."
             )
         if not coffee_machine_started:
-            raise TrajectoryValidationError(
+            raise TaskSemanticValidationError(
                 "Trajectory never started the coffee machine."
             )
 
@@ -439,7 +443,7 @@ class PrepareCoffeeValidator:
 
     def _normalize_agents(self, agents_value: Any) -> list[dict[str, str]]:
         if not isinstance(agents_value, list) or len(agents_value) != 2:
-            raise TrajectoryValidationError(
+            raise TrajectoryStructureValidationError(
                 "agents must be a list containing exactly two agents."
             )
 
@@ -447,12 +451,18 @@ class PrepareCoffeeValidator:
         seen_agent_ids: set[str] = set()
         for agent in agents_value:
             if not isinstance(agent, dict):
-                raise TrajectoryValidationError("Each agent entry must be an object.")
+                raise TrajectoryStructureValidationError(
+                    "Each agent entry must be an object."
+                )
             agent_id = _normalize_text(agent.get("agent_id"), "agent_id")
             if agent_id not in AGENT_IDS:
-                raise TrajectoryValidationError(f"Unsupported agent_id {agent_id}.")
+                raise TrajectoryStructureValidationError(
+                    f"Unsupported agent_id {agent_id}."
+                )
             if agent_id in seen_agent_ids:
-                raise TrajectoryValidationError(f"Duplicate agent_id {agent_id}.")
+                raise TrajectoryStructureValidationError(
+                    f"Duplicate agent_id {agent_id}."
+                )
             seen_agent_ids.add(agent_id)
             normalized_agents.append(
                 {
@@ -461,28 +471,30 @@ class PrepareCoffeeValidator:
             )
 
         if seen_agent_ids != set(AGENT_IDS):
-            raise TrajectoryValidationError(
+            raise TrajectoryStructureValidationError(
                 "agents must contain exactly agent_0 and agent_1."
             )
         return normalized_agents
 
     def _normalize_steps(self, steps_value: Any) -> list[dict[str, Any]]:
         if not isinstance(steps_value, list) or not steps_value:
-            raise TrajectoryValidationError("steps must be a non-empty list.")
+            raise TrajectoryStructureValidationError("steps must be a non-empty list.")
 
         normalized_steps: list[dict[str, Any]] = []
         for raw_step in steps_value:
             if not isinstance(raw_step, dict):
-                raise TrajectoryValidationError("Each step must be an object.")
+                raise TrajectoryStructureValidationError("Each step must be an object.")
             if not isinstance(raw_step.get("step_index"), int):
-                raise TrajectoryValidationError("step_index must be an integer.")
+                raise TrajectoryStructureValidationError(
+                    "step_index must be an integer."
+                )
 
             reasoning = _normalize_text(
                 raw_step.get("reasoning"),
                 f"step[{raw_step.get('step_index')}].reasoning",
             )
             if len(reasoning) > MAX_REASONING_CHARS:
-                raise TrajectoryValidationError(
+                raise TrajectoryStructureValidationError(
                     f"Reasoning for step {raw_step['step_index']} exceeds {MAX_REASONING_CHARS} characters."
                 )
 
@@ -516,11 +528,11 @@ class PrepareCoffeeValidator:
         to_agent = tool_args.get("to_agent_id")
         message = tool_args.get("message")
         if to_agent not in AGENT_IDS or to_agent == step["agent_id"]:
-            raise TrajectoryValidationError(
+            raise TaskSemanticValidationError(
                 "communicate requires to_agent_id to reference the other agent."
             )
         if not isinstance(message, str) or not " ".join(message.strip().split()):
-            raise TrajectoryValidationError(
+            raise TaskSemanticValidationError(
                 "communicate requires a non-empty message in tool_args."
             )
 
@@ -529,25 +541,25 @@ class PrepareCoffeeValidator:
             "to_agent_id": to_agent,
         }
         if entity_refs != expected_refs:
-            raise TrajectoryValidationError(
+            raise TaskSemanticValidationError(
                 f"communicate entity_refs must equal {expected_refs}."
             )
         if tool_args != {
             "to_agent_id": to_agent,
             "message": " ".join(message.strip().split()),
         }:
-            raise TrajectoryValidationError(
+            raise TaskSemanticValidationError(
                 "communicate tool_args may only contain to_agent_id and message."
             )
 
     def _validate_expected_action(self, step: dict[str, Any], tool_name: str) -> None:
         expected = PREPARE_COFFEE_EXPECTED_ACTIONS[tool_name]
         if step["tool_args"] != expected["tool_args"]:
-            raise TrajectoryValidationError(
+            raise TaskSemanticValidationError(
                 f"{tool_name} tool_args must equal {expected['tool_args']}."
             )
         if step["entity_refs"] != expected["entity_refs"]:
-            raise TrajectoryValidationError(
+            raise TaskSemanticValidationError(
                 f"{tool_name} entity_refs must equal {expected['entity_refs']}."
             )
 

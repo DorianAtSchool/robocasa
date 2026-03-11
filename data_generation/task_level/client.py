@@ -23,6 +23,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DOTENV_PATH = REPO_ROOT / ".env"
 COST_DECIMAL_PLACES = 4
 DEFAULT_TRAFFIC_TYPE = "ON_DEMAND"
+BATCH_TRAFFIC_TYPE = "ON_DEMAND_FLEX"
 HEURISTIC_CHARS_PER_TOKEN = 4
 VERTEX_AI_PRICING_URL = "https://cloud.google.com/vertex-ai/generative-ai/pricing"
 MODEL_TEXT_PRICING_USD_PER_MILLION = {
@@ -108,6 +109,7 @@ def _build_attempt_usage(
     prompt: str,
     candidate: dict[str, Any],
     usage: GenerationUsage | None,
+    default_traffic_type: str = DEFAULT_TRAFFIC_TYPE,
 ) -> AttemptUsage:
     prompt_tokens = coerce_int(getattr(usage, "prompt_tokens", None))
     if prompt_tokens is not None:
@@ -129,7 +131,7 @@ def _build_attempt_usage(
                 else prompt_tokens + output_tokens + tool_use_prompt_tokens
             ),
             source="api_usage_metadata",
-            traffic_type=getattr(usage, "traffic_type", None) or DEFAULT_TRAFFIC_TYPE,
+            traffic_type=getattr(usage, "traffic_type", None) or default_traffic_type,
         )
 
     output_text = json.dumps(candidate, sort_keys=True, separators=(",", ":"))
@@ -146,7 +148,7 @@ def _build_attempt_usage(
         output_tokens=estimated_output_tokens,
         total_tokens=estimated_prompt_tokens + estimated_output_tokens,
         source=f"heuristic_{HEURISTIC_CHARS_PER_TOKEN}_chars_per_token",
-        traffic_type=DEFAULT_TRAFFIC_TYPE,
+        traffic_type=default_traffic_type,
     )
 
 
@@ -238,6 +240,7 @@ def build_generation_usage(
     candidate: dict[str, Any],
     usage: GenerationUsage | None,
     attempt_number: int,
+    default_traffic_type: str = DEFAULT_TRAFFIC_TYPE,
 ) -> dict[str, Any]:
     return _serialize_generation_usage(
         attempt_number=attempt_number,
@@ -246,10 +249,48 @@ def build_generation_usage(
                 prompt=prompt,
                 candidate=candidate,
                 usage=usage,
+                default_traffic_type=default_traffic_type,
             ),
             model=model,
         ),
     )
+
+
+def reprice_generation_usage(
+    generation_usage: dict[str, Any],
+    *,
+    model: str,
+    traffic_type: str,
+    round_observed_cost: bool = True,
+) -> dict[str, Any]:
+    updated_usage = dict(generation_usage)
+    updated_usage["traffic_type"] = traffic_type
+    pricing = _resolve_pricing_tier(model, traffic_type)
+    if pricing is None:
+        updated_usage.pop("pricing", None)
+        updated_usage["observed_cost_usd"] = None
+        return updated_usage
+
+    prompt_tokens = coerce_int(updated_usage.get("prompt_tokens")) or 0
+    output_tokens = coerce_int(updated_usage.get("output_tokens")) or 0
+    total_cost = (
+        (prompt_tokens / 1_000_000) * pricing.input_usd_per_million_tokens
+        + (output_tokens / 1_000_000) * pricing.output_usd_per_million_tokens
+    )
+    updated_usage["pricing"] = {
+        "model": pricing.model,
+        "input_usd_per_million_tokens": pricing.input_usd_per_million_tokens,
+        "output_usd_per_million_tokens": pricing.output_usd_per_million_tokens,
+    }
+    updated_usage["observed_cost_usd"] = (
+        round_cost(
+            total_cost,
+            decimal_places=COST_DECIMAL_PLACES,
+        )
+        if round_observed_cost
+        else total_cost
+    )
+    return updated_usage
 
 
 def load_dotenv_file(
@@ -323,22 +364,62 @@ def validate_google_auth(project: str | None) -> None:
         )
 
 
+def build_generation_usage_metadata(
+    usage_metadata: Any,
+    *,
+    default_traffic_type: str = DEFAULT_TRAFFIC_TYPE,
+) -> GenerationUsage | None:
+    if usage_metadata is None:
+        return None
+    return GenerationUsage(
+        prompt_tokens=usage_field(
+            usage_metadata, "prompt_token_count", "promptTokenCount"
+        ),
+        candidates_tokens=usage_field(
+            usage_metadata,
+            "candidates_token_count",
+            "candidatesTokenCount",
+        ),
+        thoughts_tokens=usage_field(
+            usage_metadata, "thoughts_token_count", "thoughtsTokenCount"
+        ),
+        tool_use_prompt_tokens=usage_field(
+            usage_metadata,
+            "tool_use_prompt_token_count",
+            "toolUsePromptTokenCount",
+        ),
+        total_tokens=usage_field(
+            usage_metadata, "total_token_count", "totalTokenCount"
+        ),
+        traffic_type=(
+            normalize_traffic_type(
+                usage_field(usage_metadata, "traffic_type", "trafficType")
+            )
+            or default_traffic_type
+        ),
+    )
+
+
+def build_raw_google_genai_client(project: str | None, location: str) -> Any:
+    try:
+        from google import genai
+        from google.genai.types import HttpOptions
+    except ImportError as exc:
+        raise TrajectoryGenerationError(
+            "google-genai is not installed. Install it with "
+            "`uv pip install google-genai`."
+        ) from exc
+
+    configure_google_genai_environment(project=project, location=location)
+    validate_google_auth(project)
+    return genai.Client(
+        http_options=HttpOptions(api_version="v1"),
+    )
+
+
 class GoogleGenAIClient(BaseGenerationClient):
     def __init__(self, project: str | None, location: str):
-        try:
-            from google import genai
-            from google.genai.types import HttpOptions
-        except ImportError as exc:
-            raise TrajectoryGenerationError(
-                "google-genai is not installed. Install it with "
-                "`uv pip install google-genai`."
-            ) from exc
-
-        configure_google_genai_environment(project=project, location=location)
-        validate_google_auth(project)
-        self._client = genai.Client(
-            http_options=HttpOptions(api_version="v1"),
-        )
+        self._client = build_raw_google_genai_client(project=project, location=location)
 
     def generate(
         self,
@@ -373,33 +454,7 @@ class GoogleGenAIClient(BaseGenerationClient):
                 ) from exc
             raise
         # Usage metadata is optional and field names vary a bit across SDK releases.
-        usage_metadata = getattr(response, "usage_metadata", None)
-        usage = None
-        if usage_metadata is not None:
-            usage = GenerationUsage(
-                prompt_tokens=usage_field(
-                    usage_metadata, "prompt_token_count", "promptTokenCount"
-                ),
-                candidates_tokens=usage_field(
-                    usage_metadata,
-                    "candidates_token_count",
-                    "candidatesTokenCount",
-                ),
-                thoughts_tokens=usage_field(
-                    usage_metadata, "thoughts_token_count", "thoughtsTokenCount"
-                ),
-                tool_use_prompt_tokens=usage_field(
-                    usage_metadata,
-                    "tool_use_prompt_token_count",
-                    "toolUsePromptTokenCount",
-                ),
-                total_tokens=usage_field(
-                    usage_metadata, "total_token_count", "totalTokenCount"
-                ),
-                traffic_type=normalize_traffic_type(
-                    usage_field(usage_metadata, "traffic_type", "trafficType")
-                ),
-            )
+        usage = build_generation_usage_metadata(getattr(response, "usage_metadata", None))
         return GenerationResult(
             payload=getattr(response, "text", None) or str(response),
             usage=usage,

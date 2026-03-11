@@ -8,6 +8,22 @@ class TrajectoryValidationError(ValueError):
     pass
 
 
+class ResponseFormatValidationError(TrajectoryValidationError):
+    pass
+
+
+class DuplicateTrajectoryValidationError(TrajectoryValidationError):
+    pass
+
+
+class TrajectoryStructureValidationError(TrajectoryValidationError):
+    pass
+
+
+class TaskSemanticValidationError(TrajectoryValidationError):
+    pass
+
+
 class TaskValidator(Protocol):
     def validate(self, candidate: dict[str, Any]) -> dict[str, Any]:
         ...
