@@ -1317,6 +1317,14 @@ class GenerationTests(unittest.TestCase):
             payload["trajectories"][0]["generation_usage"]["usage_source"],
             "api_usage_metadata",
         )
+        self.assertEqual(
+            payload["trajectories"][0]["generation_usage"]["output_tokens"],
+            200,
+        )
+        self.assertEqual(
+            payload["trajectories"][0]["generation_usage"]["reasoning_tokens"],
+            50,
+        )
         self.assertAlmostEqual(
             payload["trajectories"][0]["generation_usage"]["observed_cost_usd"],
             0.0013,
@@ -1327,7 +1335,11 @@ class GenerationTests(unittest.TestCase):
         )
         self.assertEqual(
             payload["cost_summary"]["output_tokens"],
-            250,
+            200,
+        )
+        self.assertEqual(
+            payload["cost_summary"]["reasoning_tokens"],
+            50,
         )
         self.assertEqual(
             payload["cost_summary"]["total_tokens"],
@@ -1353,15 +1365,14 @@ class GenerationTests(unittest.TestCase):
                 "output_usd_per_million_tokens": 3.0,
             },
         )
-        self.assertEqual(
-            payload["cost_summary"]["usage_sources"],
-            ["api_usage_metadata"],
+        self.assertNotIn("usage_sources", payload["cost_summary"])
+        self.assertNotIn(
+            "all_trajectories_used_api_usage_metadata",
+            payload["cost_summary"],
         )
-        self.assertTrue(
-            payload["cost_summary"][
-                "all_trajectories_used_api_usage_metadata"
-            ]
-        )
+        self.assertNotIn("pricing_supported", payload["cost_summary"])
+        self.assertNotIn("pricing_reference", payload["cost_summary"])
+        self.assertNotIn("currency", payload["cost_summary"])
         self.assertNotIn("cost_estimate", payload)
 
     def test_generate_trajectories_logs_cost_when_progress_enabled(self):
@@ -1631,10 +1642,14 @@ class GenerationTests(unittest.TestCase):
             "heuristic_4_chars_per_token",
         )
         self.assertEqual(
-            payload["cost_summary"]["usage_sources"],
-            ["heuristic_4_chars_per_token"],
+            payload["trajectories"][0]["generation_usage"]["reasoning_tokens"],
+            0,
         )
-        self.assertTrue(payload["cost_summary"]["pricing_supported"])
+        self.assertNotIn("usage_sources", payload["cost_summary"])
+        self.assertEqual(payload["cost_summary"]["reasoning_tokens"], 0)
+        self.assertNotIn("pricing_supported", payload["cost_summary"])
+        self.assertNotIn("pricing_reference", payload["cost_summary"])
+        self.assertNotIn("currency", payload["cost_summary"])
         self.assertEqual(
             payload["cost_summary"]["pricing"],
             {
@@ -1676,7 +1691,8 @@ class GenerationTests(unittest.TestCase):
                                 "generation_usage": {
                                     "successful_attempt_number": 1,
                                     "prompt_tokens": 3000,
-                                    "output_tokens": 5000,
+                                    "output_tokens": 4500,
+                                    "reasoning_tokens": 500,
                                     "total_tokens": 8000,
                                     "usage_source": "api_usage_metadata",
                                     "traffic_type": "ON_DEMAND",
@@ -1688,7 +1704,8 @@ class GenerationTests(unittest.TestCase):
                                 "generation_usage": {
                                     "successful_attempt_number": 1,
                                     "prompt_tokens": 3200,
-                                    "output_tokens": 7000,
+                                    "output_tokens": 6400,
+                                    "reasoning_tokens": 600,
                                     "total_tokens": 10200,
                                     "usage_source": "api_usage_metadata",
                                     "traffic_type": "ON_DEMAND",
@@ -1712,7 +1729,7 @@ class GenerationTests(unittest.TestCase):
 
         self.assertEqual(
             summary["best_case_tokens"],
-            {"prompt": 6200, "output": 12000, "total": 18200},
+            {"prompt": 6200, "output": 10900, "reasoning": 1100, "total": 18200},
         )
         self.assertAlmostEqual(summary["best_case_total_usd"], 0.0391)
         self.assertAlmostEqual(summary["worst_case_total_usd"], 0.0782)
@@ -1832,6 +1849,7 @@ class GenerationTests(unittest.TestCase):
         for field in (
             "prompt_tokens",
             "output_tokens",
+            "reasoning_tokens",
             "total_tokens",
             "input_cost_usd",
             "output_cost_usd",
@@ -1940,6 +1958,16 @@ class GenerationTests(unittest.TestCase):
 
         self.assertEqual(summary_payload["cost_summary"], payload["cost_summary"])
         self.assertNotIn("cost_estimate", summary_payload)
+        self.assertNotIn("project", summary_payload)
+        self.assertNotIn("location", summary_payload)
+        self.assertNotIn("usage_sources", summary_payload["cost_summary"])
+        self.assertNotIn(
+            "all_trajectories_used_api_usage_metadata",
+            summary_payload["cost_summary"],
+        )
+        self.assertNotIn("pricing_supported", summary_payload["cost_summary"])
+        self.assertNotIn("pricing_reference", summary_payload["cost_summary"])
+        self.assertNotIn("currency", summary_payload["cost_summary"])
         self.assertNotIn(
             "successful_attempt_number",
             cost_payload["trajectory_costs"][0]["generation_usage"],
@@ -2000,11 +2028,18 @@ class GenerationTests(unittest.TestCase):
             cost_payload["trajectory_costs"][0]["generation_usage"],
             payload["trajectories"][0]["generation_usage"],
         )
-        self.assertEqual(
-            cost_payload["cost_summary"],
-            payload["cost_summary"],
-        )
+        self.assertEqual(cost_payload["cost_summary"], payload["cost_summary"])
         self.assertNotIn("cost_estimate", cost_payload)
+        self.assertNotIn("project", cost_payload)
+        self.assertNotIn("location", cost_payload)
+        self.assertNotIn("usage_sources", cost_payload["cost_summary"])
+        self.assertNotIn(
+            "all_trajectories_used_api_usage_metadata",
+            cost_payload["cost_summary"],
+        )
+        self.assertNotIn("pricing_supported", cost_payload["cost_summary"])
+        self.assertNotIn("pricing_reference", cost_payload["cost_summary"])
+        self.assertNotIn("currency", cost_payload["cost_summary"])
 
     def test_build_summary_output_payload_extracts_summary_and_manifest(self):
         runtime_config = RuntimeConfig(
@@ -2028,11 +2063,18 @@ class GenerationTests(unittest.TestCase):
         summary_payload = build_summary_output_payload(payload)
 
         self.assertEqual(summary_payload["composite_task"], payload["composite_task"])
-        self.assertEqual(
-            summary_payload["cost_summary"],
-            payload["cost_summary"],
-        )
+        self.assertEqual(summary_payload["cost_summary"], payload["cost_summary"])
         self.assertNotIn("cost_estimate", summary_payload)
+        self.assertNotIn("project", summary_payload)
+        self.assertNotIn("location", summary_payload)
+        self.assertNotIn("usage_sources", summary_payload["cost_summary"])
+        self.assertNotIn(
+            "all_trajectories_used_api_usage_metadata",
+            summary_payload["cost_summary"],
+        )
+        self.assertNotIn("pricing_supported", summary_payload["cost_summary"])
+        self.assertNotIn("pricing_reference", summary_payload["cost_summary"])
+        self.assertNotIn("currency", summary_payload["cost_summary"])
         self.assertEqual(summary_payload["trajectory_directory"], "trajectories")
         self.assertEqual(
             summary_payload["trajectory_files"],
@@ -2109,8 +2151,6 @@ class GenerationTests(unittest.TestCase):
                     "composite_task": "PrepareCoffee",
                     "sdk": "google-genai",
                     "model": "gemini-3-flash-preview",
-                    "project": "demo-project",
-                    "location": "global",
                     "num_trajectories": 1,
                     "generated_at": "2026-03-10T00:00:00+00:00",
                     "cost_summary": {
@@ -2128,6 +2168,8 @@ class GenerationTests(unittest.TestCase):
                     ],
                 },
             )
+            self.assertNotIn("project", summary_payload)
+            self.assertNotIn("location", summary_payload)
             self.assertEqual(
                 cost_payload["trajectory_output_path"],
                 str(output_path),
@@ -2136,6 +2178,8 @@ class GenerationTests(unittest.TestCase):
                 cost_payload["trajectory_directory"],
                 str(trajectory_output_dir),
             )
+            self.assertNotIn("project", cost_payload)
+            self.assertNotIn("location", cost_payload)
             self.assertEqual(
                 cost_payload["cost_summary"],
                 fixed_payload["cost_summary"],

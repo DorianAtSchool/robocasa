@@ -44,7 +44,6 @@ from data_generation.task_level.client import (
     GenerationResult,
     GenerationUsage,
     TrajectoryGenerationError,
-    VERTEX_AI_PRICING_URL,
     _resolve_pricing_tier,
     build_generation_usage,
     build_generation_client,
@@ -62,6 +61,7 @@ from data_generation.task_level.tasks import (
 )
 from data_generation.utils import (
     camel_to_snake_case,
+    coerce_int,
     format_cost_usd,
     round_cost,
     stable_json_sha256,
@@ -273,6 +273,16 @@ def _successful_attempt_count(generation_usage: dict[str, Any]) -> int:
     return successful_attempt_number
 
 
+def _reasoning_token_count(generation_usage: dict[str, Any]) -> int:
+    """Read reasoning tokens from persisted usage, defaulting old payloads to zero."""
+    return coerce_int(generation_usage.get("reasoning_tokens")) or 0
+
+
+def _billable_output_token_count(generation_usage: dict[str, Any]) -> int:
+    """Reasoning tokens share the standard output-token billing tier."""
+    return generation_usage["output_tokens"] + _reasoning_token_count(generation_usage)
+
+
 def _scaled_token_totals(
     generation_usages: list[dict[str, Any]],
     attempt_counts: list[int],
@@ -284,6 +294,10 @@ def _scaled_token_totals(
         ),
         "output": sum(
             generation_usage["output_tokens"] * attempt_count
+            for generation_usage, attempt_count in zip(generation_usages, attempt_counts)
+        ),
+        "reasoning": sum(
+            _reasoning_token_count(generation_usage) * attempt_count
             for generation_usage, attempt_count in zip(generation_usages, attempt_counts)
         ),
         "total": sum(
@@ -383,14 +397,8 @@ def _build_cost_estimate_summary_from_generation_usages(
         generation_usages,
         model=runtime_config.model,
     )
-    pricing_supported = (
-        best_case_total_cost is not None and worst_case_total_cost is not None
-    )
 
     summary = {
-        "currency": "USD",
-        "pricing_reference": VERTEX_AI_PRICING_URL,
-        "pricing_supported": pricing_supported,
         "best_case_total_usd": round_cost(
             best_case_total_cost,
             decimal_places=COST_DECIMAL_PLACES,
@@ -435,8 +443,10 @@ def _build_cost_summary_from_generation_usages(
     total_output_tokens = sum(
         usage["output_tokens"] for usage in generation_usages
     )
+    total_reasoning_tokens = sum(
+        _reasoning_token_count(usage) for usage in generation_usages
+    )
     total_tokens = sum(usage["total_tokens"] for usage in generation_usages)
-    usage_sources = sorted({usage["usage_source"] for usage in generation_usages})
     shared_pricing = _shared_pricing(generation_usages)
     pricing_supported = all("pricing" in usage for usage in generation_usages)
 
@@ -444,25 +454,23 @@ def _build_cost_summary_from_generation_usages(
     output_cost = None
     total_cost = None
     if pricing_supported:
-        # Sum the saved input/output usage directly instead of retry projections.
+        # Sum the saved prompt and billed output usage directly instead of retry projections.
         input_cost = sum(
             (usage["prompt_tokens"] / 1_000_000)
             * usage["pricing"]["input_usd_per_million_tokens"]
             for usage in generation_usages
         )
         output_cost = sum(
-            (usage["output_tokens"] / 1_000_000)
+            (_billable_output_token_count(usage) / 1_000_000)
             * usage["pricing"]["output_usd_per_million_tokens"]
             for usage in generation_usages
         )
         total_cost = input_cost + output_cost
 
     summary = {
-        "currency": "USD",
-        "pricing_reference": VERTEX_AI_PRICING_URL,
-        "pricing_supported": pricing_supported,
         "prompt_tokens": total_prompt_tokens,
         "output_tokens": total_output_tokens,
+        "reasoning_tokens": total_reasoning_tokens,
         "total_tokens": total_tokens,
         "input_cost_usd": round_cost(
             input_cost,
@@ -475,11 +483,6 @@ def _build_cost_summary_from_generation_usages(
         "total_cost_usd": round_cost(
             total_cost,
             decimal_places=COST_DECIMAL_PLACES,
-        ),
-        "usage_sources": usage_sources,
-        "all_trajectories_used_api_usage_metadata": all(
-            usage["usage_source"] == "api_usage_metadata"
-            for usage in generation_usages
         ),
         "notes": [
             "Cost summary sums the saved token counts from each completed trajectory.",
@@ -528,6 +531,9 @@ def _is_complete_generation_usage(generation_usage: Any) -> bool:
         return False
     if generation_usage.get("observed_cost_usd") is None:
         return False
+    reasoning_tokens = generation_usage.get("reasoning_tokens")
+    if reasoning_tokens is not None and not isinstance(reasoning_tokens, int):
+        return False
     return all(
         isinstance(generation_usage.get(token_field), int)
         for token_field in ("prompt_tokens", "output_tokens", "total_tokens")
@@ -559,6 +565,10 @@ def _mean_generation_usage(
         ),
         "output_tokens": round(
             sum(usage["output_tokens"] for usage in historical_usages) / sample_count
+        ),
+        "reasoning_tokens": round(
+            sum(_reasoning_token_count(usage) for usage in historical_usages)
+            / sample_count
         ),
         "total_tokens": round(
             sum(usage["total_tokens"] for usage in historical_usages) / sample_count
@@ -683,8 +693,6 @@ def _payload_run_metadata(payload: dict[str, Any]) -> dict[str, Any]:
         "composite_task": payload["composite_task"],
         "sdk": payload["sdk"],
         "model": payload["model"],
-        "project": payload["project"],
-        "location": payload["location"],
         "num_trajectories": payload["num_trajectories"],
         "generated_at": payload["generated_at"],
     }
@@ -1136,8 +1144,6 @@ def _build_generation_payload(
         "composite_task": runtime_config.composite_task,
         "sdk": runtime_config.sdk,
         "model": runtime_config.model,
-        "project": runtime_config.project,
-        "location": runtime_config.location,
         "num_trajectories": runtime_config.num_trajectories,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "cost_summary": _build_cost_summary_from_generation_usages(

@@ -70,9 +70,14 @@ class GenerationResult:
 class AttemptUsage:
     prompt_tokens: int
     output_tokens: int
+    reasoning_tokens: int
     total_tokens: int
     source: str
     traffic_type: str
+
+    def billable_output_tokens(self) -> int:
+        """Return all tokens billed at the model output rate."""
+        return self.output_tokens + self.reasoning_tokens
 
 
 @dataclass(frozen=True)
@@ -114,21 +119,34 @@ def _build_attempt_usage(
     prompt_tokens = coerce_int(getattr(usage, "prompt_tokens", None))
     if prompt_tokens is not None:
         candidate_tokens = coerce_int(getattr(usage, "candidates_tokens", None)) or 0
-        thoughts_tokens = coerce_int(getattr(usage, "thoughts_tokens", None)) or 0
+        reasoning_tokens = coerce_int(getattr(usage, "thoughts_tokens", None)) or 0
         tool_use_prompt_tokens = (
             coerce_int(getattr(usage, "tool_use_prompt_tokens", None)) or 0
         )
         total_tokens = coerce_int(getattr(usage, "total_tokens", None))
-        output_tokens = candidate_tokens + thoughts_tokens
+        output_tokens = candidate_tokens
+        # Some SDK responses omit candidate token counts, so derive them from totals.
         if output_tokens <= 0 and total_tokens is not None:
-            output_tokens = max(total_tokens - prompt_tokens - tool_use_prompt_tokens, 0)
+            output_tokens = max(
+                total_tokens
+                - prompt_tokens
+                - tool_use_prompt_tokens
+                - reasoning_tokens,
+                0,
+            )
         return AttemptUsage(
             prompt_tokens=prompt_tokens,
             output_tokens=output_tokens,
+            reasoning_tokens=reasoning_tokens,
             total_tokens=(
                 total_tokens
                 if total_tokens is not None
-                else prompt_tokens + output_tokens + tool_use_prompt_tokens
+                else (
+                    prompt_tokens
+                    + output_tokens
+                    + reasoning_tokens
+                    + tool_use_prompt_tokens
+                )
             ),
             source="api_usage_metadata",
             traffic_type=getattr(usage, "traffic_type", None) or default_traffic_type,
@@ -146,6 +164,7 @@ def _build_attempt_usage(
     return AttemptUsage(
         prompt_tokens=estimated_prompt_tokens,
         output_tokens=estimated_output_tokens,
+        reasoning_tokens=0,
         total_tokens=estimated_prompt_tokens + estimated_output_tokens,
         source=f"heuristic_{HEURISTIC_CHARS_PER_TOKEN}_chars_per_token",
         traffic_type=default_traffic_type,
@@ -195,8 +214,9 @@ def _build_attempt_cost_breakdown(
     input_cost = (
         usage.prompt_tokens / 1_000_000
     ) * pricing.input_usd_per_million_tokens
+    # Vertex bills reasoning tokens at the same rate as other output tokens.
     output_cost = (
-        usage.output_tokens / 1_000_000
+        usage.billable_output_tokens() / 1_000_000
     ) * pricing.output_usd_per_million_tokens
     return AttemptCostBreakdown(
         usage=usage,
@@ -216,6 +236,7 @@ def _serialize_generation_usage(
         "successful_attempt_number": attempt_number,
         "prompt_tokens": cost_breakdown.usage.prompt_tokens,
         "output_tokens": cost_breakdown.usage.output_tokens,
+        "reasoning_tokens": cost_breakdown.usage.reasoning_tokens,
         "total_tokens": cost_breakdown.usage.total_tokens,
         "usage_source": cost_breakdown.usage.source,
         "traffic_type": cost_breakdown.usage.traffic_type,
@@ -273,9 +294,12 @@ def reprice_generation_usage(
 
     prompt_tokens = coerce_int(updated_usage.get("prompt_tokens")) or 0
     output_tokens = coerce_int(updated_usage.get("output_tokens")) or 0
+    reasoning_tokens = coerce_int(updated_usage.get("reasoning_tokens")) or 0
     total_cost = (
         (prompt_tokens / 1_000_000) * pricing.input_usd_per_million_tokens
-        + (output_tokens / 1_000_000) * pricing.output_usd_per_million_tokens
+        + (
+            (output_tokens + reasoning_tokens) / 1_000_000
+        ) * pricing.output_usd_per_million_tokens
     )
     updated_usage["pricing"] = {
         "model": pricing.model,
