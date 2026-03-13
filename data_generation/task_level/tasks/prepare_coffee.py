@@ -120,7 +120,7 @@ PREPARE_COFFEE_NON_COMMUNICATE_TOOL_NAMES = tuple(
     if tool_name != "communicate"
 )
 
-# Seeded from the current saved PrepareCoffee runs under data_generation/task_level/data.
+# Tokens approximated using some preliminary runs.
 PREPARE_COFFEE_PREFLIGHT_TOKEN_ESTIMATE = PreflightTokenEstimate(
     prompt_tokens=3110,
     output_tokens=3600,
