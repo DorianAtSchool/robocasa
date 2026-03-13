@@ -1,3 +1,5 @@
+"""Run task-level trajectory generation through the Vertex AI batch API."""
+
 from __future__ import annotations
 
 import json
@@ -11,7 +13,7 @@ from typing import Any, Callable
 
 from tqdm import tqdm
 
-from data_generation.task_level.client import (
+from data_generation.task_level.runtime.client import (
     BATCH_TRAFFIC_TYPE,
     TrajectoryGenerationError,
     build_generation_usage_metadata,

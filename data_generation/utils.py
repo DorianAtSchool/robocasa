@@ -1,3 +1,5 @@
+"""Provide shared utility helpers for token estimates, dotenv parsing, and JSON output."""
+
 from __future__ import annotations
 
 import json

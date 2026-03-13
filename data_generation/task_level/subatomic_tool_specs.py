@@ -1,0 +1,87 @@
+"""Centralize shared task-level subatomic tool metadata and task-specific spec builders."""
+
+from __future__ import annotations
+
+from copy import deepcopy
+from typing import Any, Mapping, Sequence
+
+from data_generation.task_level.subatomic_tool_calls import discover_subatomic_tools
+
+
+def _build_subatomic_allowed_tool_specs() -> dict[str, dict[str, Any]]:
+    """Builds the shared allowed-tool metadata for every subatomic tool."""
+
+    subatomic_allowed_tool_specs: dict[str, dict[str, Any]] = {}
+    for tool_spec in discover_subatomic_tools():
+        argument_names = [argument.name for argument in tool_spec.constructor_args]
+        subatomic_allowed_tool_specs[tool_spec.name] = {
+            "description": tool_spec.description,
+            "tool_args": list(argument_names),
+            "entity_refs": list(argument_names),
+        }
+    return subatomic_allowed_tool_specs
+
+
+# Keep the shared tool metadata centralized so individual task files only add
+# task-specific symbolic constraints such as allowed fixture or object IDs.
+SUBATOMIC_ALLOWED_TOOL_SPECS = _build_subatomic_allowed_tool_specs()
+
+
+TASK_LEVEL_ALLOWED_TOOL_SPECS = {
+    "communicate": {
+        "description": "Send a short coordination message to the other agent.",
+        "tool_args": ["to_agent_id", "message"],
+        "entity_refs": ["from_agent_id", "to_agent_id"],
+    },
+    **SUBATOMIC_ALLOWED_TOOL_SPECS,
+}
+
+
+def build_allowed_tool_specs(
+    tool_names: Sequence[str],
+    overrides: Mapping[str, Mapping[str, Any]] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Builds a task-local allowed-tool map from the shared task-level registry.
+
+    Args:
+        tool_names: Ordered tool names to expose for a specific task, such as
+            ``("communicate", "navigate_to_fixture", "pick_up_object")``.
+        overrides: Optional per-tool metadata patches applied on top of the
+            shared registry entry. Use this to add task-specific symbolic
+            constraints without redefining the base tool spec. For example,
+            ``{"pick_up_object": {"allowed_object_ids": ["mug_1"]}}`` keeps the
+            shared description, ``tool_args``, and ``entity_refs`` fields, then
+            adds the task-specific ``allowed_object_ids`` constraint.
+
+    Returns:
+        A new dictionary containing only the requested tools, with any override
+        fields merged into the copied base specification for each tool.
+
+    Raises:
+        KeyError: If ``tool_names`` includes an unknown tool or if
+            ``overrides`` contains a tool name that was not requested.
+    """
+
+    selected_tool_specs: dict[str, dict[str, Any]] = {}
+    tool_overrides = dict(overrides or {})
+
+    for tool_name in tool_names:
+        if tool_name not in TASK_LEVEL_ALLOWED_TOOL_SPECS:
+            raise KeyError(f"Unknown task-level tool name: {tool_name}")
+        selected_tool_specs[tool_name] = deepcopy(
+            TASK_LEVEL_ALLOWED_TOOL_SPECS[tool_name]
+        )
+        if tool_name in tool_overrides:
+            # Merge task-specific symbolic constraints into the shared base spec.
+            selected_tool_specs[tool_name].update(
+                deepcopy(dict(tool_overrides[tool_name]))
+            )
+
+    unknown_override_names = set(tool_overrides) - set(tool_names)
+    if unknown_override_names:
+        unknown_names = ", ".join(sorted(unknown_override_names))
+        raise KeyError(
+            f"Overrides were provided for unavailable tool names: {unknown_names}"
+        )
+
+    return selected_tool_specs

@@ -1,3 +1,5 @@
+"""Coordinate end-to-end task-level trajectory generation and output writing."""
+
 from __future__ import annotations
 
 import argparse
@@ -6,7 +8,6 @@ import os
 import re
 import sys
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,7 +36,7 @@ except ImportError:  # pragma: no cover
     TextColumn = None
     TimeElapsedColumn = None
 
-from data_generation.task_level.client import (
+from data_generation.task_level.runtime.client import (
     BATCH_TRAFFIC_TYPE,
     COST_DECIMAL_PLACES,
     DEFAULT_LOCATION,
@@ -46,7 +47,6 @@ from data_generation.task_level.client import (
     TrajectoryGenerationError,
     _resolve_pricing_tier,
     build_generation_usage,
-    build_generation_client,
     load_dotenv_file,
     reprice_generation_usage,
 )
@@ -184,7 +184,7 @@ def _build_trajectory_record_from_candidate(
     seen_signatures_lock: threading.Lock | None,
     attempt_number: int,
 ) -> dict[str, Any]:
-    validation = _validate_candidate(
+    validation, normalized_candidate = _validate_candidate(
         candidate,
         validator,
         enforce_validation=not runtime_config.disable_validation,
@@ -204,7 +204,7 @@ def _build_trajectory_record_from_candidate(
         default_traffic_type=_default_traffic_type_for_runtime(runtime_config),
     )
     return task_definition.build_trajectory_record(
-        candidate=candidate,
+        candidate=normalized_candidate,
         validation=validation,
         trajectory_id=f"traj_{trajectory_index:03d}",
         generation_usage=generation_usage,
@@ -248,22 +248,27 @@ def _validate_candidate(
     validator: TaskValidator,
     *,
     enforce_validation: bool,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], dict[str, Any]]:
     try:
-        return validator.validate(candidate)
+        validation = dict(validator.validate(candidate))
+        normalized_candidate = validation.pop("normalized_candidate", candidate)
+        return validation, normalized_candidate
     except TrajectoryValidationError as exc:
         if enforce_validation:
             raise
         # Preserve the invalid trace for inspection when validation is disabled.
-        return {
-            "is_valid": False,
-            "validation_disabled": True,
-            "error_type": type(exc).__name__,
-            "error": str(exc),
-            "checks": [],
-            "final_state": None,
-            "signature": _candidate_signature(candidate),
-        }
+        return (
+            {
+                "is_valid": False,
+                "validation_disabled": True,
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+                "checks": [],
+                "final_state": None,
+                "signature": _candidate_signature(candidate),
+            },
+            candidate,
+        )
 
 
 def _successful_attempt_count(generation_usage: dict[str, Any]) -> int:
@@ -494,158 +499,41 @@ def _build_cost_summary_from_generation_usages(
     return summary
 
 
-def _historical_cost_paths(runtime_config: RuntimeConfig) -> list[Path]:
-    task_output_dir = DEFAULT_OUTPUT_DIR / camel_to_snake_case(
-        runtime_config.composite_task
-    )
-    if not task_output_dir.exists():
-        return []
-    return sorted(task_output_dir.rglob("*_trajectories_costs.json"))
-
-
-def _load_historical_generation_usages(
-    runtime_config: RuntimeConfig,
-) -> list[dict[str, Any]]:
-    historical_usages: list[dict[str, Any]] = []
-    for cost_path in _historical_cost_paths(runtime_config):
-        try:
-            payload = json.loads(cost_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-
-        if payload.get("composite_task") != runtime_config.composite_task:
-            continue
-        if payload.get("model") != runtime_config.model:
-            continue
-
-        for trajectory_cost in payload.get("trajectory_costs", []):
-            generation_usage = trajectory_cost.get("generation_usage")
-            if not _is_complete_generation_usage(generation_usage):
-                continue
-            historical_usages.append(generation_usage)
-    return historical_usages
-
-
-def _is_complete_generation_usage(generation_usage: Any) -> bool:
-    if not isinstance(generation_usage, dict):
-        return False
-    if generation_usage.get("observed_cost_usd") is None:
-        return False
-    reasoning_tokens = generation_usage.get("reasoning_tokens")
-    if reasoning_tokens is not None and not isinstance(reasoning_tokens, int):
-        return False
-    return all(
-        isinstance(generation_usage.get(token_field), int)
-        for token_field in ("prompt_tokens", "output_tokens", "total_tokens")
-    )
-
-
-def _preferred_historical_generation_usages(
-    historical_usages: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    api_usage_metadata = [
-        generation_usage
-        for generation_usage in historical_usages
-        if generation_usage.get("usage_source") == "api_usage_metadata"
-    ]
-    if api_usage_metadata:
-        return api_usage_metadata
-    return historical_usages
-
-
-def _mean_generation_usage(
-    historical_usages: list[dict[str, Any]],
-) -> dict[str, Any]:
-    sample_count = len(historical_usages)
-    preferred_usage_source = historical_usages[0].get("usage_source")
-    mean_usage = {
-        "successful_attempt_number": 1,
-        "prompt_tokens": round(
-            sum(usage["prompt_tokens"] for usage in historical_usages) / sample_count
-        ),
-        "output_tokens": round(
-            sum(usage["output_tokens"] for usage in historical_usages) / sample_count
-        ),
-        "reasoning_tokens": round(
-            sum(_reasoning_token_count(usage) for usage in historical_usages)
-            / sample_count
-        ),
-        "total_tokens": round(
-            sum(usage["total_tokens"] for usage in historical_usages) / sample_count
-        ),
-        "usage_source": (
-            "historical_api_usage_metadata_mean"
-            if preferred_usage_source == "api_usage_metadata"
-            else "historical_mean"
-        ),
-        "traffic_type": historical_usages[0].get("traffic_type", "ON_DEMAND"),
-        "observed_cost_usd": (
-            sum(usage["observed_cost_usd"] for usage in historical_usages)
-            / sample_count
-        ),
-    }
-    shared_pricing = _shared_pricing(historical_usages)
-    if shared_pricing is not None:
-        mean_usage["pricing"] = shared_pricing
-    return mean_usage
-
-
-def _build_historical_preflight_generation_usage(
-    runtime_config: RuntimeConfig,
-) -> tuple[dict[str, Any], int] | None:
-    historical_usages = _load_historical_generation_usages(runtime_config)
-    if not historical_usages:
-        return None
-
-    preferred_historical_usages = _preferred_historical_generation_usages(
-        historical_usages
-    )
-    return (
-        _mean_generation_usage(preferred_historical_usages),
-        len(preferred_historical_usages),
-    )
-
-
 def _build_preflight_cost_estimate_summary(
     runtime_config: RuntimeConfig,
     task_definition: TaskDefinition,
 ) -> dict[str, Any]:
-    historical_profile = _build_historical_preflight_generation_usage(runtime_config)
-    if historical_profile is not None:
-        generation_usage, sample_count = historical_profile
-        generation_usage = reprice_generation_usage(
-            generation_usage,
-            model=runtime_config.model,
-            traffic_type=_default_traffic_type_for_runtime(runtime_config),
-            round_observed_cost=False,
-        )
-        summary = _build_cost_estimate_summary_from_generation_usages(
-            [generation_usage] * runtime_config.num_trajectories,
-            runtime_config=runtime_config,
-        )
-        summary["notes"][0] = (
-            "Best case uses the mean token profile from "
-            f"{sample_count} historical saved trajectories matching this task/model."
-        )
-        return summary
-
-    # Fall back to a task-owned reference trace when no local history is available.
-    generation_usage = build_generation_usage(
+    manual_estimate = task_definition.preflight_token_estimate
+    generation_usage = reprice_generation_usage(
+        {
+            "successful_attempt_number": 1,
+            "prompt_tokens": manual_estimate.prompt_tokens,
+            "output_tokens": manual_estimate.output_tokens,
+            "reasoning_tokens": manual_estimate.reasoning_tokens,
+            "total_tokens": (
+                manual_estimate.prompt_tokens
+                + manual_estimate.output_tokens
+                + manual_estimate.reasoning_tokens
+            ),
+            "usage_source": "manual_task_estimate",
+            "traffic_type": _default_traffic_type_for_runtime(runtime_config),
+            "observed_cost_usd": 0.0,
+        },
         model=runtime_config.model,
-        prompt=task_definition.build_prompt("preflight"),
-        candidate=task_definition.preflight_reference_candidate,
-        usage=None,
-        attempt_number=1,
-        default_traffic_type=_default_traffic_type_for_runtime(runtime_config),
+        traffic_type=_default_traffic_type_for_runtime(runtime_config),
+        round_observed_cost=False,
     )
     summary = _build_cost_estimate_summary_from_generation_usages(
         [generation_usage] * runtime_config.num_trajectories,
         runtime_config=runtime_config,
     )
     summary["notes"][0] = (
-        "Best case falls back to the task reference candidate and a local "
-        "character-based token heuristic because no historical usage profile "
-        "was found."
+        "Best case uses the manual task token estimate maintained in the "
+        "task definition."
+    )
+    summary["notes"][2] = (
+        "Token counts come from the manual task token estimate rather than "
+        "observed API usage metadata."
     )
     return summary
 
@@ -1098,14 +986,6 @@ def _validate_runtime_config(runtime_config: RuntimeConfig) -> None:
         )
 
 
-def _build_generation_client_from_runtime(runtime_config: RuntimeConfig) -> Any:
-    return build_generation_client(
-        sdk=runtime_config.sdk,
-        project=runtime_config.project,
-        location=runtime_config.location,
-    )
-
-
 def _maybe_reserve_signature(
     validation: dict[str, Any],
     *,
@@ -1194,7 +1074,7 @@ def generate_single_trajectory(
     seen_signatures: set[str] | None = None,
     seen_signatures_lock: threading.Lock | None = None,
 ) -> dict[str, Any]:
-    from data_generation.task_level.on_demand_generation import (
+    from data_generation.task_level.runtime.on_demand_generation import (
         generate_single_trajectory as generate_single_trajectory_on_demand,
     )
 
@@ -1219,7 +1099,7 @@ def generate_trajectories(
     task_definition = _resolve_task_definition_or_raise(runtime_config.composite_task)
     _validate_runtime_config(runtime_config)
     if runtime_config.batch_processing:
-        from data_generation.task_level.batch_generation import (
+        from data_generation.task_level.runtime.batch_generation import (
             generate_trajectories_batch,
         )
 
@@ -1228,7 +1108,7 @@ def generate_trajectories(
             task_definition=task_definition,
             show_progress=show_progress,
         )
-    from data_generation.task_level.on_demand_generation import (
+    from data_generation.task_level.runtime.on_demand_generation import (
         generate_trajectories_on_demand,
     )
 

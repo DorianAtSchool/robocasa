@@ -1,11 +1,17 @@
+"""Run task-level trajectory generation through direct on-demand requests."""
+
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
 import threading
 from typing import TYPE_CHECKING, Any
 
 import data_generation.task_level.trajectory_generation as trajectory_generation
-from data_generation.task_level.client import TrajectoryGenerationError
+from data_generation.task_level.runtime.client import (
+    TrajectoryGenerationError,
+    build_generation_client,
+)
 from data_generation.task_level.tasks import TaskDefinition
 
 if TYPE_CHECKING:
@@ -26,7 +32,11 @@ def generate_single_trajectory(
     client = (
         client_factory()
         if client_factory is not None
-        else trajectory_generation._build_generation_client_from_runtime(runtime_config)
+        else build_generation_client(
+            sdk=runtime_config.sdk,
+            project=runtime_config.project,
+            location=runtime_config.location,
+        )
     )
     validator = task_definition.validator_factory()
     last_error: Exception | None = None
@@ -142,7 +152,7 @@ def generate_trajectories_on_demand(
 
     # Collect by index first so the final JSON stays deterministic under concurrency.
     results: dict[int, dict[str, Any]] = {}
-    executor = trajectory_generation.ThreadPoolExecutor(
+    executor = ThreadPoolExecutor(
         max_workers=min(runtime_config.max_workers, runtime_config.num_trajectories)
     )
     futures: dict[Any, int] = {}
@@ -163,7 +173,7 @@ def generate_trajectories_on_demand(
             for index in range(runtime_config.num_trajectories)
         }
 
-        for future in trajectory_generation.as_completed(futures):
+        for future in as_completed(futures):
             trajectory_index = futures[future]
             trajectory_record = future.result()
             results[trajectory_index] = trajectory_record

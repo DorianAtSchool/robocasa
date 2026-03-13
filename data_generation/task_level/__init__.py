@@ -1,15 +1,23 @@
-from data_generation.task_level.tool_calls import (
-    AtomicToolSpec,
-    ConstructorArg,
-    discover_atomic_tools,
-    render_atomic_tool_catalog,
+"""Expose the public task-level generation helpers and shared tool metadata."""
+
+from data_generation.task_level.subatomic_tool_calls import (
+    SubatomicToolArg,
+    SubatomicToolSpec,
+    discover_subatomic_tools,
+    render_subatomic_tool_catalog,
+)
+from data_generation.task_level.subatomic_tool_specs import (
+    TASK_LEVEL_ALLOWED_TOOL_SPECS,
+    build_allowed_tool_specs,
 )
 
 __all__ = [
-    "AtomicToolSpec",
-    "ConstructorArg",
-    "discover_atomic_tools",
-    "render_atomic_tool_catalog",
+    "SubatomicToolArg",
+    "SubatomicToolSpec",
+    "TASK_LEVEL_ALLOWED_TOOL_SPECS",
+    "build_allowed_tool_specs",
+    "discover_subatomic_tools",
+    "render_subatomic_tool_catalog",
     "RuntimeConfig",
     "generate_trajectories",
 ]
