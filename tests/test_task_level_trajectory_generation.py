@@ -619,13 +619,6 @@ class SubatomicToolCatalogTests(unittest.TestCase):
 
 
 class DotenvLoadingTests(unittest.TestCase):
-    def test_legacy_client_module_reexports_runtime_helpers(self):
-        from data_generation.task_level import client as legacy_client
-        from data_generation.task_level.runtime import client as runtime_client
-
-        self.assertEqual(legacy_client.DEFAULT_LOCATION, runtime_client.DEFAULT_LOCATION)
-        self.assertIs(legacy_client.load_dotenv_file, runtime_client.load_dotenv_file)
-
     def test_load_dotenv_file_populates_missing_environment_values(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             dotenv_path = Path(tmpdir) / ".env"

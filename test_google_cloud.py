@@ -3,7 +3,7 @@ import os
 from google import genai
 from google.genai.types import HttpOptions
 
-from data_generation.task_level.client import (
+from data_generation.task_level.runtime.client import (
     DEFAULT_LOCATION,
     load_dotenv_file,
 )
