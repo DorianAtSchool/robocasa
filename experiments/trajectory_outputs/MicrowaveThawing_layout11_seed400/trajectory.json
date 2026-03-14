@@ -2,20 +2,30 @@
   "task": "MicrowaveThawing",
   "steps": [
     {
+      "agent_id": "agent_0",
       "action": "communicate",
       "args": {
         "to": "agent_1",
-        "message": "I'll move the food to the microwave. You start it."
+        "message": "I'll bring the food to the microwave. Open the door for me."
       }
     },
     {
+      "agent_id": "agent_1",
       "action": "communicate",
       "args": {
         "to": "agent_0",
-        "message": "OK, I'll open the microwave and start it."
+        "message": "On it. I'll close the door and start it after."
       }
     },
     {
+      "agent_id": "agent_1",
+      "action": "navigate",
+      "args": {
+        "fixture": "microwave_main_group"
+      }
+    },
+    {
+      "agent_id": "agent_1",
       "action": "interact",
       "args": {
         "fixture": "microwave_main_group",
@@ -23,14 +33,39 @@
       }
     },
     {
+      "agent_id": "agent_0",
+      "action": "navigate",
+      "args": {
+        "fixture": "counter_2_main_group"
+      }
+    },
+    {
+      "agent_id": "agent_0",
+      "action": "move_away",
+      "args": {
+        "object": "obj",
+        "to_agent": "agent_1"
+      }
+    },
+    {
+      "agent_id": "agent_0",
+      "action": "communicate",
+      "args": {
+        "to": "agent_1",
+        "message": "Food's here. Close up and start it."
+      }
+    },
+    {
+      "agent_id": "agent_1",
       "action": "move_object",
       "args": {
         "object": "obj",
-        "from": "counter_corner_main_group",
+        "from": "counter_2_main_group",
         "to": "microwave_main_group"
       }
     },
     {
+      "agent_id": "agent_1",
       "action": "interact",
       "args": {
         "fixture": "microwave_main_group",
@@ -38,6 +73,7 @@
       }
     },
     {
+      "agent_id": "agent_1",
       "action": "interact",
       "args": {
         "fixture": "microwave_main_group",

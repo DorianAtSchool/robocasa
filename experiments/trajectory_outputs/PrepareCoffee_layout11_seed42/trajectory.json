@@ -2,20 +2,37 @@
   "task": "PrepareCoffee",
   "steps": [
     {
+      "agent_id": "agent_0",
       "action": "communicate",
       "args": {
         "to": "agent_1",
-        "message": "I'll get the mug from the cabinet and put it on the counter."
+        "message": "I'll get the mug and bring it to the counter by the coffee machine."
       }
     },
     {
+      "agent_id": "agent_1",
       "action": "communicate",
       "args": {
         "to": "agent_0",
-        "message": "Got it. I'll start the coffee machine once the mug is in position."
+        "message": "Got it. I'll head to the coffee machine and wait."
       }
     },
     {
+      "agent_id": "agent_1",
+      "action": "navigate",
+      "args": {
+        "fixture": "coffee_machine_left_group"
+      }
+    },
+    {
+      "agent_id": "agent_0",
+      "action": "navigate",
+      "args": {
+        "fixture": "cab_1_main_group"
+      }
+    },
+    {
+      "agent_id": "agent_0",
       "action": "interact",
       "args": {
         "fixture": "cab_1_main_group",
@@ -23,22 +40,37 @@
       }
     },
     {
-      "action": "move_object",
+      "agent_id": "agent_1",
+      "action": "wait",
+      "args": {}
+    },
+    {
+      "agent_id": "agent_0",
+      "action": "move_away",
       "args": {
         "object": "obj",
-        "from": "cab_1_main_group",
-        "to": "counter_1_main_group"
+        "to_agent": "agent_1"
       }
     },
     {
+      "agent_id": "agent_0",
+      "action": "communicate",
+      "args": {
+        "to": "agent_1",
+        "message": "Mug is here. Go ahead."
+      }
+    },
+    {
+      "agent_id": "agent_1",
       "action": "move_object",
       "args": {
         "object": "obj",
-        "from": "counter_1_main_group",
+        "from": "counter_left_group",
         "to": "coffee_machine_left_group"
       }
     },
     {
+      "agent_id": "agent_1",
       "action": "interact",
       "args": {
         "fixture": "coffee_machine_left_group",

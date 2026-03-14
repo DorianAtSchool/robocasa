@@ -630,12 +630,9 @@
   "cameras": [
     "robot0_agentview_center",
     "robot0_agentview_left",
-    "robot0_agentview_right",
-    "robot0_frontview",
-    "robot0_robotview",
-    "robot0_eye_in_hand",
-    "robot1_robotview",
-    "robot1_eye_in_hand"
+    "robot1_agentview_center",
+    "robot1_agentview_left",
+    "room_view"
   ],
   "robots": [
     {

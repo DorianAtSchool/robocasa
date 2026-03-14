@@ -2,6 +2,7 @@
   "task": "KitchenExplore",
   "steps": [
     {
+      "agent_id": "agent_0",
       "action": "communicate",
       "args": {
         "to": "agent_1",
@@ -9,13 +10,22 @@
       }
     },
     {
+      "agent_id": "agent_1",
       "action": "communicate",
       "args": {
         "to": "agent_0",
-        "message": "I'll open the drawers."
+        "message": "I'll check the drawers."
       }
     },
     {
+      "agent_id": "agent_0",
+      "action": "navigate",
+      "args": {
+        "fixture": "cab_1_main_group"
+      }
+    },
+    {
+      "agent_id": "agent_0",
       "action": "interact",
       "args": {
         "fixture": "cab_1_main_group",
@@ -23,13 +33,14 @@
       }
     },
     {
-      "action": "interact",
+      "agent_id": "agent_1",
+      "action": "navigate",
       "args": {
-        "fixture": "fridge_right_group",
-        "action": "open"
+        "fixture": "stack_1_main_group_1"
       }
     },
     {
+      "agent_id": "agent_1",
       "action": "interact",
       "args": {
         "fixture": "stack_1_main_group_1",
@@ -37,16 +48,32 @@
       }
     },
     {
-      "action": "interact",
+      "agent_id": "agent_0",
+      "action": "navigate",
       "args": {
-        "fixture": "cab_1_main_group",
-        "action": "close"
+        "fixture": "fridge_right_group"
       }
     },
     {
+      "agent_id": "agent_0",
       "action": "interact",
       "args": {
         "fixture": "fridge_right_group",
+        "action": "open"
+      }
+    },
+    {
+      "agent_id": "agent_0",
+      "action": "navigate",
+      "args": {
+        "fixture": "cab_1_main_group"
+      }
+    },
+    {
+      "agent_id": "agent_0",
+      "action": "interact",
+      "args": {
+        "fixture": "cab_1_main_group",
         "action": "close"
       }
     }

@@ -19,16 +19,16 @@ from robocasa.utils.trajectory_runner import TrajectoryRunner
 
 
 def make_prepare_coffee_trajectory(scene: dict) -> dict:
-    """PrepareCoffee: agent_0 fetches mug from cabinet, agent_1 starts machine."""
+    """PrepareCoffee: agent_0 fetches mug, delivers it to the coffee machine
+    area for agent_1, then moves away so agent_1 can start the machine."""
     fixtures = scene["fixtures"]
     objects = scene["objects"]
 
-    # Find relevant fixtures
-    cabinet = _find_fixture(fixtures, "cabinet")
-    counter = _find_fixture(fixtures, "counter", near=cabinet)
     coffee_machine = _find_fixture(fixtures, "coffee_machine")
+    # Counter nearest to the coffee machine — where agent_0 will place the mug
+    counter = _find_fixture(fixtures, "counter", near=coffee_machine)
+    cabinet = _find_fixture(fixtures, "cabinet")
 
-    # Find the mug
     mug = _find_object(objects, "mug") or _find_object(objects, type_contains="obj")
 
     if not all([cabinet, counter, coffee_machine, mug]):
@@ -41,26 +41,55 @@ def make_prepare_coffee_trajectory(scene: dict) -> dict:
         "task": "PrepareCoffee",
         "steps": [
             {
+                "agent_id": "agent_0",
                 "action": "communicate",
-                "args": {"to": "agent_1", "message": "I'll get the mug from the cabinet and put it on the counter."},
+                "args": {"to": "agent_1", "message": "I'll get the mug and bring it to the counter by the coffee machine."},
             },
             {
+                "agent_id": "agent_1",
                 "action": "communicate",
-                "args": {"to": "agent_0", "message": "Got it. I'll start the coffee machine once the mug is in position."},
+                "args": {"to": "agent_0", "message": "Got it. I'll head to the coffee machine and wait."},
+            },
+            # Both navigate to their starting positions
+            {
+                "agent_id": "agent_1",
+                "action": "navigate",
+                "args": {"fixture": coffee_machine},
             },
             {
+                "agent_id": "agent_0",
+                "action": "navigate",
+                "args": {"fixture": cabinet},
+            },
+            {
+                "agent_id": "agent_0",
                 "action": "interact",
                 "args": {"fixture": cabinet, "action": "open"},
             },
             {
-                "action": "move_object",
-                "args": {"object": mug, "from": cabinet, "to": counter},
+                "agent_id": "agent_1",
+                "action": "wait",
+                "args": {},
+            },
+            # agent_0 hands off mug: teleports it in front of agent_1, then stands beside agent_1
+            {
+                "agent_id": "agent_0",
+                "action": "move_away",
+                "args": {"object": mug, "to_agent": "agent_1"},
             },
             {
+                "agent_id": "agent_0",
+                "action": "communicate",
+                "args": {"to": "agent_1", "message": "Mug is here. Go ahead."},
+            },
+            # agent_1 moves mug from counter to coffee machine
+            {
+                "agent_id": "agent_1",
                 "action": "move_object",
                 "args": {"object": mug, "from": counter, "to": coffee_machine},
             },
             {
+                "agent_id": "agent_1",
                 "action": "interact",
                 "args": {"fixture": coffee_machine, "action": "turn_on"},
             },
@@ -69,12 +98,14 @@ def make_prepare_coffee_trajectory(scene: dict) -> dict:
 
 
 def make_pick_place_cabinet_trajectory(scene: dict) -> dict:
-    """PickPlaceCounterToCabinet: agent_0 opens cabinet, agent_1 moves object."""
+    """PickPlaceCounterToCabinet: agent_1 picks object from counter, agent_0
+    opens cabinet. agent_1 delivers the object and moves away, agent_0 closes."""
     fixtures = scene["fixtures"]
     objects = scene["objects"]
 
     cabinet = _find_fixture(fixtures, "cabinet")
-    counter = _find_fixture(fixtures, "counter")
+    # Counter nearest to the cabinet — where the object should be
+    counter = _find_fixture(fixtures, "counter", near=cabinet)
     obj = _first_object(objects)
 
     if not all([cabinet, counter, obj]):
@@ -87,22 +118,49 @@ def make_pick_place_cabinet_trajectory(scene: dict) -> dict:
         "task": "PickPlaceCounterToCabinet",
         "steps": [
             {
+                "agent_id": "agent_0",
                 "action": "communicate",
-                "args": {"to": "agent_1", "message": "I'll open the cabinet. You move the object in."},
+                "args": {"to": "agent_1", "message": "I'll open the cabinet. Grab the object from the counter and place it inside."},
             },
             {
+                "agent_id": "agent_1",
                 "action": "communicate",
-                "args": {"to": "agent_0", "message": "Ready when you are."},
+                "args": {"to": "agent_0", "message": "Ready. I'll wait for you to open it."},
             },
             {
+                "agent_id": "agent_0",
+                "action": "navigate",
+                "args": {"fixture": cabinet},
+            },
+            {
+                "agent_id": "agent_0",
                 "action": "interact",
                 "args": {"fixture": cabinet, "action": "open"},
             },
             {
+                "agent_id": "agent_1",
+                "action": "navigate",
+                "args": {"fixture": counter},
+            },
+            # agent_1 hands off object in front of agent_0 and stands beside them
+            {
+                "agent_id": "agent_1",
+                "action": "move_away",
+                "args": {"object": obj, "to_agent": "agent_0"},
+            },
+            {
+                "agent_id": "agent_1",
+                "action": "communicate",
+                "args": {"to": "agent_0", "message": "Object is here. Placing it in the cabinet."},
+            },
+            # agent_0 puts object from counter into cabinet
+            {
+                "agent_id": "agent_0",
                 "action": "move_object",
                 "args": {"object": obj, "from": counter, "to": cabinet},
             },
             {
+                "agent_id": "agent_0",
                 "action": "interact",
                 "args": {"fixture": cabinet, "action": "close"},
             },
@@ -111,12 +169,14 @@ def make_pick_place_cabinet_trajectory(scene: dict) -> dict:
 
 
 def make_microwave_thawing_trajectory(scene: dict) -> dict:
-    """MicrowaveThawing: agent_0 gets food, agent_1 operates microwave."""
+    """MicrowaveThawing: agent_0 brings food from a counter near the microwave,
+    delivers it, then moves away so agent_1 can close and start the microwave."""
     fixtures = scene["fixtures"]
     objects = scene["objects"]
 
     microwave = _find_fixture(fixtures, "microwave")
-    counter = _find_fixture(fixtures, "counter")
+    # Counter nearest to the microwave
+    counter = _find_fixture(fixtures, "counter", near=microwave)
     obj = _first_object(objects)
 
     if not all([microwave, counter, obj]):
@@ -129,26 +189,54 @@ def make_microwave_thawing_trajectory(scene: dict) -> dict:
         "task": "MicrowaveThawing",
         "steps": [
             {
+                "agent_id": "agent_0",
                 "action": "communicate",
-                "args": {"to": "agent_1", "message": "I'll move the food to the microwave. You start it."},
+                "args": {"to": "agent_1", "message": "I'll bring the food to the microwave. Open the door for me."},
             },
             {
+                "agent_id": "agent_1",
                 "action": "communicate",
-                "args": {"to": "agent_0", "message": "OK, I'll open the microwave and start it."},
+                "args": {"to": "agent_0", "message": "On it. I'll close the door and start it after."},
             },
             {
+                "agent_id": "agent_1",
+                "action": "navigate",
+                "args": {"fixture": microwave},
+            },
+            {
+                "agent_id": "agent_1",
                 "action": "interact",
                 "args": {"fixture": microwave, "action": "open"},
             },
             {
+                "agent_id": "agent_0",
+                "action": "navigate",
+                "args": {"fixture": counter},
+            },
+            # agent_0 hands off food in front of agent_1 and stands beside them
+            {
+                "agent_id": "agent_0",
+                "action": "move_away",
+                "args": {"object": obj, "to_agent": "agent_1"},
+            },
+            {
+                "agent_id": "agent_0",
+                "action": "communicate",
+                "args": {"to": "agent_1", "message": "Food's here. Close up and start it."},
+            },
+            # agent_1 puts food from counter into the microwave, then closes and starts
+            {
+                "agent_id": "agent_1",
                 "action": "move_object",
                 "args": {"object": obj, "from": counter, "to": microwave},
             },
             {
+                "agent_id": "agent_1",
                 "action": "interact",
                 "args": {"fixture": microwave, "action": "close"},
             },
             {
+                "agent_id": "agent_1",
                 "action": "interact",
                 "args": {"fixture": microwave, "action": "turn_on"},
             },
@@ -166,25 +254,29 @@ def make_kitchen_explore_trajectory(scene: dict) -> dict:
 
     steps = [
         {
+            "agent_id": "agent_0",
             "action": "communicate",
             "args": {"to": "agent_1", "message": "Let's explore the kitchen. I'll check the cabinet and fridge."},
         },
         {
+            "agent_id": "agent_1",
             "action": "communicate",
-            "args": {"to": "agent_0", "message": "I'll open the drawers."},
+            "args": {"to": "agent_0", "message": "I'll check the drawers."},
         },
     ]
 
     if cabinet:
-        steps.append({"action": "interact", "args": {"fixture": cabinet, "action": "open"}})
-    if fridge:
-        steps.append({"action": "interact", "args": {"fixture": fridge, "action": "open"}})
+        steps.append({"agent_id": "agent_0", "action": "navigate", "args": {"fixture": cabinet}})
+        steps.append({"agent_id": "agent_0", "action": "interact", "args": {"fixture": cabinet, "action": "open"}})
     if drawer:
-        steps.append({"action": "interact", "args": {"fixture": drawer, "action": "open"}})
-    if cabinet:
-        steps.append({"action": "interact", "args": {"fixture": cabinet, "action": "close"}})
+        steps.append({"agent_id": "agent_1", "action": "navigate", "args": {"fixture": drawer}})
+        steps.append({"agent_id": "agent_1", "action": "interact", "args": {"fixture": drawer, "action": "open"}})
     if fridge:
-        steps.append({"action": "interact", "args": {"fixture": fridge, "action": "close"}})
+        steps.append({"agent_id": "agent_0", "action": "navigate", "args": {"fixture": fridge}})
+        steps.append({"agent_id": "agent_0", "action": "interact", "args": {"fixture": fridge, "action": "open"}})
+    if cabinet:
+        steps.append({"agent_id": "agent_0", "action": "navigate", "args": {"fixture": cabinet}})
+        steps.append({"agent_id": "agent_0", "action": "interact", "args": {"fixture": cabinet, "action": "close"}})
 
     return {"task": "KitchenExplore", "steps": steps}
 
@@ -289,10 +381,19 @@ def main():
                 json.dump(trajectory, f, indent=2)
 
             result = runner.run(trajectory)
-            result.save(run_dir)
+
+            # Save scene description in the run folder
+            with open(run_dir / "scene.json", "w") as f:
+                json.dump(result.scene, f, indent=2)
+
+            # Save only per-agent views (for VLM training)
+            agent_views = result.split_by_agent()
+            for agent_id, agent_traj in agent_views.items():
+                agent_dir = run_dir / agent_id
+                agent_traj.save(agent_dir)
 
             print(f"  Saved to: {run_dir}/")
-            print(f"  Images:   {1 + len(result.steps) * 2} sets x {len(result.initial_obs)} cameras")
+            print(f"  Agent views: {list(agent_views.keys())}")
 
             runner.close()
 
