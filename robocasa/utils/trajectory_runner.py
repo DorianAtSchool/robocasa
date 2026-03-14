@@ -82,9 +82,17 @@ _PLACEABLE_FIXTURE_TYPES: set[int] = {
 _AGENT_CAMERA_SUFFIXES = [
     "agentview_center",
     "agentview_left",
+    "eye_in_hand",
 ]
 
-_ROOM_VIEW_DISTANCE_SCALE = 1.35
+# Room-view framing parameters. These are intentionally separate from top-view
+# framing so we can keep the oblique room camera tighter around the active task
+# workspace while preserving enough margin to avoid accidental cropping.
+ROOM_VIEW_FIXTURE_RADIUS = 1.35
+ROOM_VIEW_XY_MARGIN = 1.05
+ROOM_VIEW_Z_LOOKAT_FRACTION = 0.45
+ROOM_VIEW_BASE_DISTANCE_SCALE = 0.70
+ROOM_VIEW_MIN_DISTANCE = 3.5
 
 
 def _classify_fixture(fixture: Fixture) -> str | None:
@@ -378,16 +386,6 @@ class TrajectoryRunner:
         self.render_width = render_width
         self.render_height = render_height
 
-        # Room-view free camera config
-        self._room_cam_config = CamUtils.LAYOUT_CAMS.get(
-            self.env.layout_id, CamUtils.DEFAULT_LAYOUT_CAM
-        )
-        self._room_cam_config = dict(self._room_cam_config)
-        self._room_cam_config["distance"] = float(
-            self._room_cam_config["distance"] * _ROOM_VIEW_DISTANCE_SCALE
-        )
-        self._top_cam_config = self._compute_top_cam_config(self._room_cam_config)
-
         # Build camera list: per-robot cameras + room_view
         if camera_names is None:
             self.camera_names = self._build_camera_list()
@@ -396,6 +394,12 @@ class TrajectoryRunner:
 
         # Build fixture index
         self._fixtures: dict[str, Fixture] = dict(self.env.fixtures)
+
+        base_room_cam_config = CamUtils.LAYOUT_CAMS.get(
+            self.env.layout_id, CamUtils.DEFAULT_LAYOUT_CAM
+        )
+        self._room_cam_config = self._compute_room_cam_config(dict(base_room_cam_config))
+        self._top_cam_config = self._compute_top_cam_config(self._room_cam_config)
 
         self._scene: dict | None = None
         self._object_locations: dict[str, str] = {}
@@ -421,21 +425,151 @@ class TrajectoryRunner:
     # Room-view rendering (free camera with EnclosingWallRenderWrapper)
     # ------------------------------------------------------------------
 
+    def _collect_scene_points(
+        self,
+        include_objects: bool = True,
+        include_robots: bool = True,
+        fixture_ids: set[str] | None = None,
+    ) -> np.ndarray:
+        points = []
+
+        for fixture_id, fixture in self.env.fixtures.items():
+            if fixture_ids is not None and fixture_id not in fixture_ids:
+                continue
+            if hasattr(fixture, "get_bbox_points"):
+                try:
+                    bbox_points = np.asarray(fixture.get_bbox_points(), dtype=float)
+                except Exception:
+                    bbox_points = None
+                if bbox_points is not None and bbox_points.ndim == 2 and bbox_points.shape[1] >= 3:
+                    points.append(bbox_points[:, :3])
+                    continue
+
+            if hasattr(fixture, "pos") and fixture.pos is not None:
+                points.append(np.asarray(fixture.pos, dtype=float).reshape(1, 3))
+
+        if include_objects and hasattr(self.env, "obj_body_id"):
+            for object_id, body_id in self.env.obj_body_id.items():
+                try:
+                    obj_pos = self.env.sim.data.body_xpos[body_id].copy()
+                except Exception:
+                    continue
+                points.append(np.asarray(obj_pos, dtype=float).reshape(1, 3))
+
+        if include_robots:
+            for robot_idx in range(self._num_robots):
+                points.append(self._get_robot_position(robot_idx).reshape(1, 3))
+
+        if not points:
+            return np.zeros((0, 3), dtype=float)
+        return np.concatenate(points, axis=0)
+
+    def _collect_room_view_points(self) -> np.ndarray:
+        """Collect a tighter set of points around the active task workspace."""
+        focus_fixture_ids: set[str] = set()
+        focus_centers_xy = []
+
+        if hasattr(self.env, "obj_body_id"):
+            for body_id in self.env.obj_body_id.values():
+                try:
+                    obj_pos = self.env.sim.data.body_xpos[body_id].copy()
+                except Exception:
+                    continue
+                focus_centers_xy.append(obj_pos[:2])
+
+        for robot_idx in range(self._num_robots):
+            focus_centers_xy.append(self._get_robot_position(robot_idx)[:2])
+
+        if not focus_centers_xy:
+            return self._collect_scene_points(include_objects=True, include_robots=True)
+
+        for fixture_id, fixture in self.env.fixtures.items():
+            if not hasattr(fixture, "pos") or fixture.pos is None:
+                continue
+            fixture_xy = np.asarray(fixture.pos[:2], dtype=float)
+            if any(
+                float(np.linalg.norm(fixture_xy - center_xy)) <= ROOM_VIEW_FIXTURE_RADIUS
+                for center_xy in focus_centers_xy
+            ):
+                focus_fixture_ids.add(fixture_id)
+
+        if not focus_fixture_ids:
+            return self._collect_scene_points(include_objects=True, include_robots=True)
+
+        return self._collect_scene_points(
+            include_objects=True,
+            include_robots=True,
+            fixture_ids=focus_fixture_ids,
+        )
+
+    def _compute_room_cam_config(self, base_cam_config: dict) -> dict:
+        """Derive an oblique room camera from the current scene footprint."""
+        scene_points = self._collect_room_view_points()
+        if scene_points.size == 0:
+            return dict(base_cam_config)
+
+        min_xyz = np.min(scene_points, axis=0)
+        max_xyz = np.max(scene_points, axis=0)
+        center_xyz = 0.5 * (min_xyz + max_xyz)
+        z_extent = max_xyz[2] - min_xyz[2]
+
+        fovy_deg = float(getattr(self.env.sim.model.vis.global_, "fovy", 45.0))
+        lookat = np.asarray(base_cam_config["lookat"], dtype=float).copy()
+        lookat[0] = center_xyz[0]
+        lookat[1] = center_xyz[1]
+        lookat[2] = max(
+            lookat[2],
+            float(min_xyz[2] + ROOM_VIEW_Z_LOOKAT_FRACTION * max(z_extent, 1.0)),
+        )
+
+        azimuth_rad = np.deg2rad(float(base_cam_config["azimuth"]))
+        elevation_rad = np.deg2rad(float(base_cam_config["elevation"]))
+        forward = np.array(
+            [
+                -np.cos(elevation_rad) * np.cos(azimuth_rad),
+                -np.cos(elevation_rad) * np.sin(azimuth_rad),
+                -np.sin(elevation_rad),
+            ],
+            dtype=float,
+        )
+        forward /= np.linalg.norm(forward)
+        world_up = np.array([0.0, 0.0, 1.0], dtype=float)
+        right = np.cross(forward, world_up)
+        if np.linalg.norm(right) < 1e-6:
+            right = np.array([1.0, 0.0, 0.0], dtype=float)
+        else:
+            right /= np.linalg.norm(right)
+        up = np.cross(right, forward)
+        up /= np.linalg.norm(up)
+
+        centered_points = scene_points - lookat
+        right_extent = float(np.max(np.abs(centered_points @ right)))
+        up_extent = float(np.max(np.abs(centered_points @ up)))
+
+        half_fovy_rad = np.deg2rad(np.clip(fovy_deg, 1.0, 89.0) / 2.0)
+        aspect = max(float(self.render_width) / float(self.render_height), 1e-6)
+        half_fovx_rad = np.arctan(np.tan(half_fovy_rad) * aspect)
+        required_distance_x = right_extent / max(np.tan(half_fovx_rad), 1e-6)
+        required_distance_y = up_extent / max(np.tan(half_fovy_rad), 1e-6)
+        required_distance = max(required_distance_x, required_distance_y) * ROOM_VIEW_XY_MARGIN
+
+        return dict(
+            lookat=lookat.tolist(),
+            distance=float(
+                max(
+                    ROOM_VIEW_MIN_DISTANCE,
+                    base_cam_config["distance"] * ROOM_VIEW_BASE_DISTANCE_SCALE,
+                    required_distance,
+                )
+            ),
+            azimuth=float(base_cam_config["azimuth"]),
+            elevation=float(base_cam_config["elevation"]),
+        )
+
     def _compute_top_cam_config(self, room_cam_config: dict) -> dict:
         """Derive an overhead camera that keeps the full kitchen footprint in frame."""
-        bbox_xy_points = []
-        for fixture in self.env.fixtures.values():
-            if not hasattr(fixture, "get_bbox_points"):
-                continue
-            try:
-                bbox_points = np.asarray(fixture.get_bbox_points(), dtype=float)
-            except Exception:
-                continue
-            if bbox_points.ndim != 2 or bbox_points.shape[1] < 2:
-                continue
-            bbox_xy_points.append(bbox_points[:, :2])
-
-        if not bbox_xy_points:
+        scene_points = self._collect_scene_points(include_objects=True, include_robots=True)
+        if scene_points.size == 0:
             return dict(
                 lookat=list(room_cam_config["lookat"]),
                 distance=max(room_cam_config["distance"] * 1.8, 8.0),
@@ -443,7 +577,7 @@ class TrajectoryRunner:
                 elevation=-89.0,
             )
 
-        xy_points = np.concatenate(bbox_xy_points, axis=0)
+        xy_points = scene_points[:, :2]
         min_xy = np.min(xy_points, axis=0)
         max_xy = np.max(xy_points, axis=0)
         center_xy = 0.5 * (min_xy + max_xy)

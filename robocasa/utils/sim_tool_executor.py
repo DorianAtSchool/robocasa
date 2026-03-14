@@ -28,6 +28,7 @@ from robocasa.models.fixtures.coffee_machine import CoffeeMachine
 from robocasa.models.fixtures.electric_kettle import ElectricKettle
 from robocasa.models.fixtures.microwave import Microwave
 from robocasa.models.fixtures.toaster import Toaster
+import robocasa.utils.object_utils as OU
 from robocasa.utils.sim_tool_specs import SIM_TOOL_SPEC_BY_NAME
 from robocasa.utils.trajectory_runner import TrajectoryRunner
 
@@ -303,12 +304,15 @@ class SimToolExecutor:
     def _find_nearest_fixture_for_object(
         self,
         object_id: str,
-        preferred_fixture_types: set[str] | None = None,
+        preferred_fixture_types: list[str] | set[str] | tuple[str, ...] | None = None,
         require_placeable: bool = False,
     ) -> str:
         object_pos, _ = self._get_object_pose(object_id)
         scene = self.get_scene_description()
         fixtures = scene.get("fixtures", {})
+        preferred_fixture_types = self._normalize_preferred_fixture_types(
+            preferred_fixture_types
+        )
 
         def candidate_ids() -> list[str]:
             candidates = []
@@ -342,11 +346,15 @@ class SimToolExecutor:
     def _resolve_object_anchor_fixture(
         self,
         object_id: str,
-        preferred_fixture_types: set[str] | None = None,
+        preferred_fixture_types: list[str] | set[str] | tuple[str, ...] | None = None,
         require_placeable: bool = False,
     ) -> str:
         scene = self.get_scene_description()
         fixtures = scene.get("fixtures", {})
+        object_pos, _ = self._get_object_pose(object_id)
+        preferred_fixture_types = self._normalize_preferred_fixture_types(
+            preferred_fixture_types
+        )
 
         def matches(fixture_id: str) -> bool:
             fixture_info = fixtures.get(fixture_id)
@@ -365,21 +373,79 @@ class SimToolExecutor:
         if explicit_location is not None and matches(explicit_location):
             return explicit_location
 
+        candidate_ids = []
         if explicit_location is not None:
-            for nearby_fixture_id in fixtures.get(explicit_location, {}).get("nearby_fixtures", []):
-                if matches(nearby_fixture_id):
-                    return nearby_fixture_id
+            candidate_ids.extend(fixtures.get(explicit_location, {}).get("nearby_fixtures", []))
+        candidate_ids.extend(fixtures.keys())
 
-        return self._find_nearest_fixture_for_object(
-            object_id,
-            preferred_fixture_types=preferred_fixture_types,
-            require_placeable=require_placeable,
-        )
+        deduped_candidate_ids = []
+        seen = set()
+        for fixture_id in candidate_ids:
+            if fixture_id in seen or not matches(fixture_id):
+                continue
+            seen.add(fixture_id)
+            deduped_candidate_ids.append(fixture_id)
+
+        if not deduped_candidate_ids:
+            return self._find_nearest_fixture_for_object(
+                object_id,
+                preferred_fixture_types=preferred_fixture_types,
+                require_placeable=require_placeable,
+            )
+
+        def candidate_score(fixture_id: str) -> tuple[int, int, float]:
+            fixture = self.runner._fixtures.get(fixture_id)
+            contains_object = False
+            if fixture is not None:
+                try:
+                    contains_object = bool(OU.point_in_fixture(object_pos, fixture, only_2d=True))
+                except Exception:
+                    contains_object = False
+
+            fixture_type = fixtures[fixture_id].get("fixture_type")
+            type_priority = self._get_fixture_type_priority(
+                fixture_type,
+                preferred_fixture_types,
+            )
+            distance = float(
+                np.linalg.norm(
+                    object_pos[:2] - np.asarray(fixtures[fixture_id]["position"][:2], dtype=float)
+                )
+            )
+            return (
+                0 if contains_object else 1,
+                type_priority,
+                distance,
+            )
+
+        return min(deduped_candidate_ids, key=candidate_score)
+
+    def _normalize_preferred_fixture_types(
+        self,
+        preferred_fixture_types: list[str] | set[str] | tuple[str, ...] | None,
+    ) -> list[str] | None:
+        if preferred_fixture_types is None:
+            return None
+        if isinstance(preferred_fixture_types, list):
+            return preferred_fixture_types
+        return list(preferred_fixture_types)
+
+    def _get_fixture_type_priority(
+        self,
+        fixture_type: str | None,
+        preferred_fixture_types: list[str] | None,
+    ) -> int:
+        if preferred_fixture_types is None or fixture_type is None:
+            return 0
+        try:
+            return preferred_fixture_types.index(fixture_type)
+        except ValueError:
+            return len(preferred_fixture_types)
 
     def _infer_source_fixture(
         self,
         object_id: str,
-        preferred_fixture_types: set[str] | None = None,
+        preferred_fixture_types: list[str] | set[str] | tuple[str, ...] | None = None,
     ) -> str:
         return self._resolve_object_anchor_fixture(
             object_id,
@@ -390,7 +456,7 @@ class SimToolExecutor:
         self,
         robot_idx: int,
         object_id: str,
-        preferred_fixture_types: set[str] | None = None,
+        preferred_fixture_types: list[str] | set[str] | tuple[str, ...] | None = None,
         require_placeable: bool = False,
     ) -> str:
         fixture_id = self._resolve_object_anchor_fixture(
@@ -490,7 +556,20 @@ class SimToolExecutor:
             {
                 "tool": "place_on_object",
                 "robot_idx": 0,
-                "args": {"object_id": "hotdog_bun", "support_object_id": "plate"},
+                "args": {
+                    "object_id": "hotdog_bun",
+                    "support_object_id": "plate",
+                    "anchor_fixture_id": self._semantic_ref(
+                        "object_anchor_fixture",
+                        object_id="plate",
+                        preferred_fixture_types=[
+                            "dining_counter",
+                            "island",
+                            "counter_non_dining",
+                        ],
+                        require_placeable=True,
+                    ),
+                },
             },
             {
                 "tool": "communicate",
@@ -536,7 +615,20 @@ class SimToolExecutor:
             {
                 "tool": "place_on_object",
                 "robot_idx": 1,
-                "args": {"object_id": "sausage", "support_object_id": "plate"},
+                "args": {
+                    "object_id": "sausage",
+                    "support_object_id": "plate",
+                    "anchor_fixture_id": self._semantic_ref(
+                        "object_anchor_fixture",
+                        object_id="plate",
+                        preferred_fixture_types=[
+                            "dining_counter",
+                            "island",
+                            "counter_non_dining",
+                        ],
+                        require_placeable=True,
+                    ),
+                },
             },
             {
                 "tool": "communicate",
@@ -619,21 +711,15 @@ class SimToolExecutor:
         resolver = ref.get("$ref")
         if resolver == "source_fixture":
             preferred_fixture_types = ref.get("preferred_fixture_types")
-            preferred_fixture_types_set = (
-                set(preferred_fixture_types) if preferred_fixture_types is not None else None
-            )
             return self._infer_source_fixture(
                 ref["object_id"],
-                preferred_fixture_types=preferred_fixture_types_set,
+                preferred_fixture_types=preferred_fixture_types,
             )
         if resolver == "object_anchor_fixture":
             preferred_fixture_types = ref.get("preferred_fixture_types")
-            preferred_fixture_types_set = (
-                set(preferred_fixture_types) if preferred_fixture_types is not None else None
-            )
             return self._resolve_object_anchor_fixture(
                 ref["object_id"],
-                preferred_fixture_types=preferred_fixture_types_set,
+                preferred_fixture_types=preferred_fixture_types,
                 require_placeable=bool(ref.get("require_placeable", False)),
             )
         raise ValueError(f"Unknown semantic resolver {resolver!r}")
@@ -845,6 +931,7 @@ class SimToolExecutor:
         self,
         object_id: str,
         support_object_id: str,
+        anchor_fixture_id: str | None = None,
         robot_idx: int = 0,
     ) -> ToolResult:
         self._require_object(object_id)
@@ -853,12 +940,21 @@ class SimToolExecutor:
         if holder not in {None, robot_idx}:
             raise ValueError(f"Object {object_id!r} is held by robot {holder}")
 
-        self._move_robot_near_object_anchor(
-            robot_idx,
-            support_object_id,
-            preferred_fixture_types={"dining_counter", "island", "counter_non_dining"},
-            require_placeable=True,
-        )
+        if anchor_fixture_id is None:
+            anchor_fixture_id = self._move_robot_near_object_anchor(
+                robot_idx,
+                support_object_id,
+                preferred_fixture_types=["dining_counter", "island", "counter_non_dining"],
+                require_placeable=True,
+            )
+        else:
+            self._require_fixture(anchor_fixture_id)
+            self.runner._move_robot_near_fixture(
+                robot_idx,
+                anchor_fixture_id,
+                ref_object_id=support_object_id,
+            )
+            self._sync_held_object(robot_idx)
         self._place_on_object_center(object_id, support_object_id)
         self._held_objects.pop(robot_idx, None)
         return ToolResult(
@@ -867,6 +963,7 @@ class SimToolExecutor:
             {
                 "object_id": object_id,
                 "support_object_id": support_object_id,
+                "anchor_fixture_id": anchor_fixture_id,
                 "robot_idx": robot_idx,
             },
         )

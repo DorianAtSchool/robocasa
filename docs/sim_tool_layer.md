@@ -42,7 +42,7 @@ Moves a robot base to the working pose associated with a fixture.
 
 - `pick_up_object(object_id, source_id)`
 - `place_in_receptacle(object_id, receptacle_id)`
-- `place_on_object(object_id, support_object_id)`
+- `place_on_object(object_id, support_object_id, anchor_fixture_id)`
 - `place_on_surface(object_id, support_id)`
 - `place_under_dispenser(object_id, dispenser_id)`
 
@@ -76,6 +76,7 @@ These ids must come from the current live scene, not from free-form language:
 - `support_id`
 - `receptacle_id`
 - `support_object_id`
+- `anchor_fixture_id`
 - `dispenser_id`
 - `target_id`
 - `part_id`

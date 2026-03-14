@@ -40,7 +40,7 @@ class TestSimToolSpecs(unittest.TestCase):
             "open_sliding_part": ["target_id", "part_id"],
             "pick_up_object": ["object_id", "source_id"],
             "place_in_receptacle": ["object_id", "receptacle_id"],
-            "place_on_object": ["object_id", "support_object_id"],
+            "place_on_object": ["object_id", "support_object_id", "anchor_fixture_id"],
             "place_on_surface": ["object_id", "support_id"],
             "place_under_dispenser": ["object_id", "dispenser_id"],
             "press_button": ["target_id", "control_id"],

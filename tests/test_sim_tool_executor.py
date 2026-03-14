@@ -79,6 +79,8 @@ class TestSimToolExecutor(unittest.TestCase):
 
                 self.assertIn("top_view", metadata["cameras"])
                 self.assertIn("room_view", metadata["cameras"])
+                self.assertIn("robot0_eye_in_hand", metadata["cameras"])
+                self.assertIn("robot1_eye_in_hand", metadata["cameras"])
                 self.assertTrue((output_dir / "top_view.mp4").exists())
                 self.assertTrue((output_dir / "room_view.mp4").exists())
                 self.assertTrue((output_dir / "metadata.json").exists())
@@ -129,8 +131,10 @@ class TestSimToolExecutor(unittest.TestCase):
                 for step in plan
                 if step["tool"] == "navigate_to_fixture" and "fixture_id" in step["args"]
             ]
+            place_steps = [step for step in plan if step["tool"] == "place_on_object"]
             self.assertIn("island_island_group_1", fixture_ids)
             self.assertTrue(any("fridge" in fixture_id for fixture_id in fixture_ids))
+            self.assertTrue(all("anchor_fixture_id" in step["args"] for step in place_steps))
         finally:
             executor.close()
 
@@ -177,6 +181,15 @@ class TestSimToolExecutor(unittest.TestCase):
             self.assertIn("dining_dining_group", fixture_ids_a)
             self.assertIn("island_island_group_1", fixture_ids_b)
             self.assertNotEqual(fixture_ids_a, fixture_ids_b)
+
+            place_steps_a = [step for step in grounded_a if step["tool"] == "place_on_object"]
+            place_steps_b = [step for step in grounded_b if step["tool"] == "place_on_object"]
+            self.assertTrue(
+                all(step["args"]["anchor_fixture_id"] == "dining_dining_group" for step in place_steps_a)
+            )
+            self.assertTrue(
+                all(step["args"]["anchor_fixture_id"] == "island_island_group_1" for step in place_steps_b)
+            )
         finally:
             executor_a.close()
             executor_b.close()

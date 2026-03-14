@@ -81,6 +81,7 @@ SIM_TOOL_SPECS: list[dict[str, Any]] = [
         "Place an object on top of another movable support object.",
         "object_id",
         "support_object_id",
+        "anchor_fixture_id",
     ),
     _build_tool_spec(
         "place_on_surface",

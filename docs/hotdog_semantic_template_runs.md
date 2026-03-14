@@ -40,7 +40,8 @@ Each run folder contains:
 - `metadata.json`
 - `room_view.mp4`
 - `top_view.mp4`
-- robot camera videos
+- robot agent-view videos
+- robot wrist / `eye_in_hand` videos
 - `frames/`
 
 ## Environment Variables
@@ -93,6 +94,9 @@ and:
 
 Those references are resolved against the live scene at runtime.
 
+The grounded hotdog plan now makes the robot workspace explicit for support
+object placement by adding `anchor_fixture_id` to `place_on_object(...)` steps.
+
 ## What Gets Grounded
 
 For `HotDogSetup`, the runtime grounding step determines:
@@ -129,6 +133,14 @@ current realized layout.
 
 The `plan.json` written into each output directory is the grounded plan that was
 actually executed for that layout. It is not the unresolved semantic template.
+
+For `place_on_object(...)`, that grounded plan includes:
+
+- `support_object_id`
+- `anchor_fixture_id`
+
+This means the executor no longer has to re-guess the robot workspace for that
+step if the grounded plan already specifies it.
 
 If you want the unresolved template itself, use Python:
 
