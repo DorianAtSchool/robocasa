@@ -8,9 +8,10 @@ import os
 import re
 import sys
 import threading
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from time import time
 from typing import Any, Callable
 
 from tqdm import tqdm
@@ -70,13 +71,17 @@ from data_generation.utils import (
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "data_generation" / "task_level" / "data"
-DEFAULT_OUTPUT_PATH = DEFAULT_OUTPUT_DIR / "trajectories.json"
 DEFAULT_COMPOSITE_TASK = supported_task_names()[0]
 DATASET_RUN_TIMESTAMP_FORMAT = "%Y%m%dT%H%M%SZ"
 TRAJECTORY_DIRECTORY_NAME = "trajectories"
+SUMMARY_OUTPUT_FILENAME = "summary.json"
+COST_SUMMARY_OUTPUT_FILENAME = "cost_summary.json"
+ERROR_SUMMARY_OUTPUT_FILENAME = "summary_errors.json"
+TRAJECTORY_ID_DIGITS = 6
 BATCH_DIRECTORY_NAME = "batch"
 OVERALL_PROGRESS_COLOR = "cyan"
 PROGRESS_BAR_WIDTH = 30
+THINKING_LEVEL_CHOICES = ("minimal", "low", "medium", "high")
 TQDM_BAR_FORMAT = f"{{l_bar}}{{bar:{PROGRESS_BAR_WIDTH}}}{{r_bar}}"
 GENERATION_ERROR_EXIT_CODE = 1
 BATCH_POLL_INTERVAL_SECONDS = 10
@@ -92,6 +97,29 @@ BATCH_INTERRUPTED_MESSAGE = (
     "Interrupted. Active remote batch jobs were cancelled. "
     "No local outputs were written."
 )
+
+
+def format_trajectory_id(trajectory_index: int) -> str:
+    """Formats one persisted trajectory ID with enough padding for large runs."""
+
+    return f"traj_{trajectory_index:0{TRAJECTORY_ID_DIGITS}d}"
+
+
+def format_trajectory_variation_key(
+    trajectory_index: int,
+    attempt_index: int,
+) -> str:
+    """Formats the retry variation key used to diversify model attempts."""
+
+    return (
+        f"traj-{trajectory_index:0{TRAJECTORY_ID_DIGITS}d}-attempt-{attempt_index:02d}"
+    )
+
+
+def format_trajectory_progress_label(trajectory_index: int) -> str:
+    """Formats the short progress-bar label for one trajectory worker."""
+
+    return format_trajectory_id(trajectory_index).replace("_", " ")
 
 
 def _is_non_retryable_generation_error(exc: Exception) -> bool:
@@ -132,7 +160,6 @@ def _resolve_task_definition_or_raise(composite_task: str) -> TaskDefinition:
 class RuntimeConfig:
     composite_task: str
     num_trajectories: int
-    output_path: Path
     model: str
     sdk: str
     project: str | None
@@ -140,6 +167,8 @@ class RuntimeConfig:
     temperature: float
     max_workers: int
     max_retries: int
+    thinking_level: str | None = None
+    summary_path: Path | None = None
     cost_output_path: Path | None = None
     disable_validation: bool = False
     batch_processing: bool = False
@@ -148,7 +177,7 @@ class RuntimeConfig:
 
 @dataclass(frozen=True)
 class ProgressHandles:
-    display: RichProgressDisplay | None
+    display: Any | None
     overall_progress: Any
     trajectory_progress_bars: list[Any]
     log_writer: Callable[[str], None] | None
@@ -158,7 +187,10 @@ class ProgressHandles:
 class OutputPaths:
     summary_path: Path
     trajectory_dir: Path
+    prompt_dir: Path
+    output_dir: Path
     cost_path: Path
+    error_summary_path: Path
 
 
 def _candidate_signature(candidate: dict[str, Any]) -> str:
@@ -178,6 +210,7 @@ def _build_trajectory_record_from_candidate(
     task_definition: TaskDefinition,
     candidate: dict[str, Any],
     prompt: str,
+    raw_output: Any,
     usage: GenerationUsage | None,
     validator: TaskValidator,
     seen_signatures: set[str] | None,
@@ -203,12 +236,16 @@ def _build_trajectory_record_from_candidate(
         attempt_number=attempt_number,
         default_traffic_type=_default_traffic_type_for_runtime(runtime_config),
     )
-    return task_definition.build_trajectory_record(
+    trajectory_id = format_trajectory_id(trajectory_index)
+    trajectory_record = task_definition.build_trajectory_record(
         candidate=normalized_candidate,
         validation=validation,
-        trajectory_id=f"traj_{trajectory_index:03d}",
+        trajectory_id=trajectory_id,
         generation_usage=generation_usage,
     )
+    trajectory_record["prompt"] = prompt
+    trajectory_record["raw_output"] = raw_output
+    return trajectory_record
 
 
 def _exception_summary(exc: Exception) -> str:
@@ -263,6 +300,7 @@ def _validate_candidate(
                 "validation_disabled": True,
                 "error_type": type(exc).__name__,
                 "error": str(exc),
+                "step": exc.step if isinstance(exc.step, int) else None,
                 "checks": [],
                 "final_state": None,
                 "signature": _candidate_signature(candidate),
@@ -539,50 +577,98 @@ def _build_preflight_cost_estimate_summary(
 
 
 def resolve_cost_output_path(
-    output_path: Path,
+    summary_path: Path,
     cost_output_path: Path | None = None,
 ) -> Path:
     if cost_output_path is not None:
         return cost_output_path
-    suffix = output_path.suffix or ".json"
-    return output_path.with_name(f"{output_path.stem}_costs{suffix}")
+    return summary_path.with_name(COST_SUMMARY_OUTPUT_FILENAME)
+
+
+def resolve_error_output_path(summary_path: Path) -> Path:
+    """Resolves the default error-summary sidecar path for one run."""
+
+    return summary_path.with_name(ERROR_SUMMARY_OUTPUT_FILENAME)
 
 
 def resolve_dataset_output_path(
-    output_path: Path,
     composite_task: str,
     *,
     generated_at: datetime | None = None,
 ) -> Path:
-    # Only rewrite the default path so explicit outputs stay predictable.
-    if output_path != DEFAULT_OUTPUT_PATH:
-        return output_path
-
     timestamp = (generated_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
     task_dir = camel_to_snake_case(composite_task)
     return (
         DEFAULT_OUTPUT_DIR
         / task_dir
         / timestamp.strftime(DATASET_RUN_TIMESTAMP_FORMAT)
-        / f"{task_dir}_trajectories.json"
+        / SUMMARY_OUTPUT_FILENAME
     )
+
+
+def _resolve_summary_path(runtime_config: RuntimeConfig) -> Path:
+    """Returns one stable summary path for the current generation run."""
+
+    if runtime_config.summary_path is not None:
+        return runtime_config.summary_path
+    return resolve_dataset_output_path(runtime_config.composite_task)
 
 
 def resolve_trajectory_output_dir(output_path: Path) -> Path:
     return output_path.parent / TRAJECTORY_DIRECTORY_NAME
 
 
+def resolve_prompt_output_dir(output_path: Path) -> Path:
+    """Resolves the sibling prompt output directory for one dataset summary."""
+
+    return output_path.parent / "prompts"
+
+
+def resolve_raw_output_dir(output_path: Path) -> Path:
+    """Resolves the sibling raw-output directory for one dataset summary."""
+
+    return output_path.parent / "outputs"
+
+
 def _trajectory_output_filename(trajectory_id: str) -> str:
     return f"{trajectory_id}.json"
 
 
+def _prompt_output_filename(trajectory_id: str) -> str:
+    """Formats one prompt sidecar filename to match its trajectory basename."""
+
+    return f"{trajectory_id}.md"
+
+
+def _raw_output_filename(trajectory_id: str) -> str:
+    """Formats one raw-output sidecar filename using the trajectory basename."""
+
+    return f"{trajectory_id}.txt"
+
+
 def _payload_run_metadata(payload: dict[str, Any]) -> dict[str, Any]:
-    return {
+    run_metadata = {
         "composite_task": payload["composite_task"],
         "sdk": payload["sdk"],
         "model": payload["model"],
         "num_trajectories": payload["num_trajectories"],
         "generated_at": payload["generated_at"],
+    }
+    if "model_config" in payload:
+        run_metadata["model_config"] = payload["model_config"]
+    return run_metadata
+
+
+def _build_model_config_payload(runtime_config: RuntimeConfig) -> dict[str, Any]:
+    """Serializes request-time model settings for dataset metadata."""
+
+    return {
+        "reasoning": {
+            "thinking_level": runtime_config.thinking_level,
+        },
+        "sampling": {
+            "temperature": runtime_config.temperature,
+        },
     }
 
 
@@ -596,6 +682,199 @@ def _summary_trajectory_entry(trajectory: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def _summary_trajectory_stats(
+    trajectories: list[dict[str, Any]],
+) -> dict[str, int | float]:
+    """Builds aggregate completion and validation stats for summary metadata."""
+
+    completed_trajectories = len(trajectories)
+    invalid_trajectories = 0
+    successful_trajectories = 0
+
+    for trajectory in trajectories:
+        validation = trajectory.get("validation")
+
+        # Older payloads used in tests may not include validation metadata.
+        if not isinstance(validation, dict):
+            successful_trajectories += 1
+            continue
+
+        if validation.get("is_valid") is False:
+            invalid_trajectories += 1
+            continue
+
+        successful_trajectories += 1
+
+    successful_trajectory_fraction = 0.0
+    if completed_trajectories > 0:
+        successful_trajectory_fraction = (
+            successful_trajectories / completed_trajectories
+        )
+
+    return {
+        "completed_trajectories": completed_trajectories,
+        "invalid_trajectories": invalid_trajectories,
+        "successful_trajectory_fraction": successful_trajectory_fraction,
+    }
+
+
+def _build_error_event(
+    *,
+    error_type: str,
+    message: str | None,
+    source: str,
+    stage: str,
+    trajectory_index: int | None = None,
+    trajectory_id: str | None = None,
+    attempt_number: int | None = None,
+    retryable: bool | None = None,
+    saved_in_output: bool = False,
+) -> dict[str, Any]:
+    """Serializes one observed generation error into a stable sidecar schema."""
+
+    event: dict[str, Any] = {
+        "error_type": error_type,
+        "source": source,
+        "stage": stage,
+        "saved_in_output": saved_in_output,
+    }
+    if message:
+        event["message"] = message
+        event["summary"] = f"{error_type}: {message}"
+    else:
+        event["summary"] = error_type
+    if trajectory_index is not None:
+        event["trajectory_index"] = trajectory_index
+    if trajectory_id is not None:
+        event["trajectory_id"] = trajectory_id
+    if attempt_number is not None:
+        event["attempt_number"] = attempt_number
+    if retryable is not None:
+        event["retryable"] = retryable
+    return event
+
+
+def _exception_error_event(
+    exc: Exception,
+    *,
+    source: str,
+    stage: str,
+    trajectory_index: int | None = None,
+    attempt_number: int | None = None,
+    retryable: bool | None = None,
+) -> dict[str, Any]:
+    """Builds one error event from a raised exception."""
+
+    trajectory_id = (
+        format_trajectory_id(trajectory_index)
+        if isinstance(trajectory_index, int)
+        else None
+    )
+    return _build_error_event(
+        error_type=type(exc).__name__,
+        message=str(exc).strip() or None,
+        source=source,
+        stage=stage,
+        trajectory_index=trajectory_index,
+        trajectory_id=trajectory_id,
+        attempt_number=attempt_number,
+        retryable=retryable,
+    )
+
+
+def _validation_error_event(
+    validation: dict[str, Any],
+    *,
+    source: str,
+    trajectory_id: str,
+    trajectory_index: int | None = None,
+    attempt_number: int | None = None,
+) -> dict[str, Any] | None:
+    """Builds one error event from persisted invalid-trajectory validation data."""
+
+    if validation.get("is_valid") is not False:
+        return None
+    error_type = _validation_error_type(validation) or "TrajectoryValidationError"
+    error_message = validation.get("error")
+    return _build_error_event(
+        error_type=error_type,
+        message=error_message if isinstance(error_message, str) else None,
+        source=source,
+        stage="validation",
+        trajectory_index=trajectory_index,
+        trajectory_id=trajectory_id,
+        attempt_number=attempt_number,
+        retryable=False,
+        saved_in_output=True,
+    )
+
+
+def _append_error_event(
+    error_events: list[dict[str, Any]] | None,
+    error_event: dict[str, Any] | None,
+    *,
+    error_events_lock: threading.Lock | None = None,
+) -> None:
+    """Appends one observed error event while preserving thread safety."""
+
+    if error_events is None or error_event is None:
+        return
+    if error_events_lock is None:
+        error_events.append(error_event)
+        return
+    with error_events_lock:
+        error_events.append(error_event)
+
+
+def _error_event_key(error_event: dict[str, Any]) -> tuple[Any, ...]:
+    """Normalizes one error event for stable deduplication and sorting."""
+
+    trajectory_identity = error_event.get("trajectory_id")
+    if trajectory_identity in {None, ""}:
+        trajectory_identity = error_event.get("trajectory_index", -1)
+    return (
+        trajectory_identity,
+        error_event.get("attempt_number", -1),
+        error_event.get("stage", ""),
+        error_event.get("error_type", ""),
+        error_event.get("message", ""),
+        error_event.get("saved_in_output", False),
+    )
+
+
+def _collect_payload_error_events(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Collects and deduplicates all observed errors represented in one payload."""
+
+    deduped_events: dict[tuple[Any, ...], dict[str, Any]] = {}
+    payload_error_events = payload.get("error_events", [])
+    for error_event in payload_error_events:
+        if isinstance(error_event, dict):
+            deduped_events[_error_event_key(error_event)] = dict(error_event)
+
+    # Older payloads may not include the explicit error event log.
+    if not deduped_events:
+        for trajectory in payload.get("trajectories", []):
+            validation = trajectory.get("validation")
+            if not isinstance(validation, dict):
+                continue
+            error_event = _validation_error_event(
+                validation,
+                source="saved_trajectory",
+                trajectory_id=trajectory["trajectory_id"],
+                attempt_number=trajectory.get("generation_usage", {}).get(
+                    "successful_attempt_number",
+                    1,
+                ),
+            )
+            if error_event is not None:
+                deduped_events[_error_event_key(error_event)] = error_event
+
+    return [
+        deduped_events[key]
+        for key in sorted(deduped_events)
+    ]
+
+
 def _trajectory_cost_entry(trajectory: dict[str, Any]) -> dict[str, Any]:
     return {
         "trajectory_id": trajectory["trajectory_id"],
@@ -607,6 +886,7 @@ def build_summary_output_payload(payload: dict[str, Any]) -> dict[str, Any]:
     summary_payload = _payload_run_metadata(payload)
     if "cost_summary" in payload:
         summary_payload["cost_summary"] = payload["cost_summary"]
+    summary_payload.update(_summary_trajectory_stats(payload["trajectories"]))
     summary_payload["trajectory_directory"] = TRAJECTORY_DIRECTORY_NAME
     summary_payload["trajectory_files"] = [
         _summary_trajectory_entry(trajectory)
@@ -624,7 +904,57 @@ def write_trajectory_output_payloads(
         output_path = output_dir / _trajectory_output_filename(
             trajectory["trajectory_id"]
         )
-        write_json_output(trajectory, output_path)
+        write_json_output(
+            {
+                key: value
+                for key, value in trajectory.items()
+                if key not in {"prompt", "raw_output"}
+            },
+            output_path,
+        )
+        written_paths.append(output_path)
+    return written_paths
+
+
+def write_prompt_output_payloads(
+    trajectory_prompts: list[dict[str, str]],
+    output_dir: Path,
+) -> list[Path]:
+    """Writes one prompt sidecar per trajectory using matching trajectory IDs."""
+
+    written_paths: list[Path] = []
+    for prompt_entry in trajectory_prompts:
+        output_path = output_dir / _prompt_output_filename(
+            prompt_entry["trajectory_id"]
+        )
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(prompt_entry["prompt"], encoding="utf-8")
+        written_paths.append(output_path)
+    return written_paths
+
+
+def _raw_output_text(raw_output: Any) -> str:
+    """Serializes the stored raw model output into a text sidecar."""
+
+    if isinstance(raw_output, str):
+        return raw_output
+    return json.dumps(raw_output, indent=2, sort_keys=True)
+
+
+def write_raw_output_payloads(
+    trajectory_outputs: list[dict[str, Any]],
+    output_dir: Path,
+) -> list[Path]:
+    """Writes one raw model output sidecar per trajectory."""
+
+    written_paths: list[Path] = []
+    for output_entry in trajectory_outputs:
+        output_path = output_dir / _raw_output_filename(output_entry["trajectory_id"])
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(
+            _raw_output_text(output_entry["raw_output"]),
+            encoding="utf-8",
+        )
         written_paths.append(output_path)
     return written_paths
 
@@ -655,6 +985,63 @@ def build_cost_output_payload(
     return cost_payload
 
 
+def build_error_summary_output_payload(
+    payload: dict[str, Any],
+    *,
+    trajectory_output_path: Path | None = None,
+) -> dict[str, Any]:
+    """Builds the sidecar payload that aggregates all observed run errors."""
+
+    error_events = _collect_payload_error_events(payload)
+    error_counts_by_type: dict[str, int] = {}
+    distinct_error_counts: dict[tuple[str, str], int] = {}
+
+    for error_event in error_events:
+        error_type = error_event["error_type"]
+        error_counts_by_type[error_type] = error_counts_by_type.get(error_type, 0) + 1
+        error_message = error_event.get("message", "")
+        distinct_key = (error_type, error_message)
+        distinct_error_counts[distinct_key] = (
+            distinct_error_counts.get(distinct_key, 0) + 1
+        )
+
+    error_payload = {
+        **_payload_run_metadata(payload),
+        "trajectory_output_path": (
+            str(trajectory_output_path) if trajectory_output_path is not None else None
+        ),
+        "trajectory_directory": (
+            str(resolve_trajectory_output_dir(trajectory_output_path))
+            if trajectory_output_path is not None
+            else None
+        ),
+        "total_errors": len(error_events),
+        "possible_errors": sorted(error_counts_by_type),
+        "error_counts_by_type": [
+            {
+                "error_type": error_type,
+                "count": error_counts_by_type[error_type],
+            }
+            for error_type in sorted(error_counts_by_type)
+        ],
+        "distinct_errors": [
+            {
+                "error_type": error_type,
+                "message": error_message,
+                "summary": (
+                    f"{error_type}: {error_message}"
+                    if error_message
+                    else error_type
+                ),
+                "count": distinct_error_counts[(error_type, error_message)],
+            }
+            for error_type, error_message in sorted(distinct_error_counts)
+        ],
+        "error_events": error_events,
+    }
+    return error_payload
+
+
 def _log_runtime_message(
     message: str,
     *,
@@ -674,11 +1061,29 @@ def _trajectory_progress_color(index: int) -> str:
 
 
 class RichTaskProgressAdapter:
-    def __init__(self, progress: RichProgress, task_id: int, total: int):
+    """Adapts one Rich progress task to the shared progress-bar interface."""
+
+    def __init__(
+        self,
+        progress: RichProgress,
+        task_id: int,
+        total: int,
+        *,
+        started: bool = True,
+    ):
         self._progress = progress
         self._task_id = task_id
         self._total = total
         self._completed = 0
+        self._started = started
+
+    def start(self) -> None:
+        """Starts elapsed-time tracking only when generation actually begins."""
+
+        if self._started:
+            return
+        self._progress.start_task(self._task_id)
+        self._started = True
 
     @property
     def total(self) -> int:
@@ -695,6 +1100,7 @@ class RichTaskProgressAdapter:
         )
 
     def update(self, amount: int = 1) -> None:
+        self.start()
         self._completed += amount
         self._progress.advance(self._task_id, amount)
 
@@ -708,7 +1114,53 @@ class RichTaskProgressAdapter:
         return
 
 
+class TqdmTaskProgressAdapter:
+    """Adapts one tqdm progress bar to the shared progress-bar interface."""
+
+    def __init__(self, progress_bar: tqdm, total: int):
+        self._progress_bar = progress_bar
+        self._total = total
+        self._started = False
+
+    def start(self) -> None:
+        """Resets elapsed-time bookkeeping when the first real attempt starts."""
+
+        if self._started:
+            return
+        current_time = time()
+        self._progress_bar.start_t = current_time
+        self._progress_bar.last_print_t = current_time
+        self._started = True
+
+    @property
+    def total(self) -> int:
+        return self._total
+
+    @total.setter
+    def total(self, value: int) -> None:
+        self._total = value
+        self._progress_bar.total = value
+        if self._progress_bar.n > value:
+            self._progress_bar.n = value
+        self._progress_bar.refresh()
+
+    def update(self, amount: int = 1) -> None:
+        self.start()
+        self._progress_bar.update(amount)
+
+    def set_postfix_str(self, text: str) -> None:
+        self._progress_bar.set_postfix_str(text)
+
+    def refresh(self) -> None:
+        self._progress_bar.refresh()
+
+    def close(self) -> None:
+        self._progress_bar.close()
+
+
 class RichProgressDisplay:
+    """Owns the interactive Rich progress layout used by the CLI."""
+
     def __init__(self, runtime_config: RuntimeConfig):
         if RichProgress is None or Console is None:
             raise RuntimeError("rich progress support is unavailable")
@@ -741,11 +1193,13 @@ class RichProgressDisplay:
             RichTaskProgressAdapter(
                 self._progress,
                 self._progress.add_task(
-                    f"[{_trajectory_progress_color(index)}]traj {index:03d}[/{_trajectory_progress_color(index)}]",
+                    f"[{_trajectory_progress_color(index)}]{format_trajectory_progress_label(index)}[/{_trajectory_progress_color(index)}]",
                     total=runtime_config.max_retries,
                     status="queued",
+                    start=False,
                 ),
                 runtime_config.max_retries,
+                started=False,
             )
             for index in range(runtime_config.num_trajectories)
         ]
@@ -779,15 +1233,18 @@ def _create_progress_handles(
         colour=OVERALL_PROGRESS_COLOR,
     )
     trajectory_progress_bars = [
-        tqdm(
+        TqdmTaskProgressAdapter(
+            tqdm(
+                total=runtime_config.max_retries,
+                desc=format_trajectory_progress_label(index),
+                bar_format=TQDM_BAR_FORMAT,
+                position=index + 1,
+                leave=True,
+                disable=disable_progress,
+                dynamic_ncols=True,
+                colour=_trajectory_progress_color(index),
+            ),
             total=runtime_config.max_retries,
-            desc=f"traj {index:03d}",
-            bar_format=TQDM_BAR_FORMAT,
-            position=index + 1,
-            leave=True,
-            disable=disable_progress,
-            dynamic_ncols=True,
-            colour=_trajectory_progress_color(index),
         )
         for index in range(runtime_config.num_trajectories)
     ]
@@ -890,9 +1347,9 @@ def _update_completed_trajectory_progress(
     if not is_valid:
         cost_text = f"{cost_text} invalid"
         if validation is not None:
-            error_type = _validation_error_type(validation)
-            if error_type is not None:
-                cost_text = f"{cost_text} {error_type}"
+            validation_summary = _validation_error_summary(validation)
+            if validation_summary is not None:
+                cost_text = f"{cost_text} {validation_summary}"
     trajectory_progress.set_postfix_str(cost_text)
 
 
@@ -961,10 +1418,15 @@ def _sanitize_trajectory_for_output(
     *,
     disable_validation: bool,
 ) -> dict[str, Any]:
+    sanitized_trajectory = {
+        key: value
+        for key, value in trajectory.items()
+        if key not in {"prompt", "raw_output"}
+    }
     if not disable_validation:
-        return trajectory
+        return sanitized_trajectory
     return {
-        **trajectory,
+        **sanitized_trajectory,
         "generation_usage": _sanitize_generation_usage_for_output(
             trajectory["generation_usage"],
             disable_validation=disable_validation,
@@ -1009,6 +1471,8 @@ def _maybe_reserve_signature(
 def _build_generation_payload(
     runtime_config: RuntimeConfig,
     ordered_trajectories: list[dict[str, Any]],
+    *,
+    error_events: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     generation_usages = [
         trajectory["generation_usage"] for trajectory in ordered_trajectories
@@ -1020,15 +1484,39 @@ def _build_generation_payload(
         )
         for trajectory in ordered_trajectories
     ]
+    trajectory_prompts = [
+        {
+            "trajectory_id": trajectory["trajectory_id"],
+            "prompt": trajectory["prompt"],
+        }
+        for trajectory in ordered_trajectories
+        if isinstance(trajectory.get("prompt"), str)
+    ]
+    trajectory_outputs = [
+        {
+            "trajectory_id": trajectory["trajectory_id"],
+            "raw_output": trajectory["raw_output"],
+        }
+        for trajectory in ordered_trajectories
+        if "raw_output" in trajectory
+    ]
     return {
         "composite_task": runtime_config.composite_task,
         "sdk": runtime_config.sdk,
         "model": runtime_config.model,
+        "model_config": _build_model_config_payload(runtime_config),
         "num_trajectories": runtime_config.num_trajectories,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "cost_summary": _build_cost_summary_from_generation_usages(
             generation_usages
         ),
+        "error_events": (
+            [dict(error_event) for error_event in sorted(error_events, key=_error_event_key)]
+            if error_events is not None
+            else []
+        ),
+        "trajectory_prompts": trajectory_prompts,
+        "trajectory_outputs": trajectory_outputs,
         "trajectories": output_trajectories,
     }
 
@@ -1170,16 +1658,13 @@ def parse_args(argv: list[str] | None = None) -> RuntimeConfig:
         help=argparse.SUPPRESS,
     )
     parser.add_argument(
-        "--output",
-        type=Path,
-        default=DEFAULT_OUTPUT_PATH,
-        help="Output JSON path.",
-    )
-    parser.add_argument(
         "--cost-output",
         type=Path,
         default=None,
-        help="Optional JSON path for the cost summary sidecar. Defaults to <output>_costs.json.",
+        help=(
+            "Optional JSON path for the cost summary sidecar. Defaults to "
+            "`cost_summary.json` alongside the summary output."
+        ),
     )
     parser.add_argument(
         "--model",
@@ -1211,6 +1696,23 @@ def parse_args(argv: list[str] | None = None) -> RuntimeConfig:
         type=float,
         default=0.6,
         help="Model sampling temperature.",
+    )
+    parser.add_argument(
+        "--thinking-level",
+        type=str,
+        choices=THINKING_LEVEL_CHOICES,
+        help=(
+            "Optional Gemini 3 thinking level. Supported values: "
+            + ", ".join(THINKING_LEVEL_CHOICES)
+            + "."
+        ),
+    )
+    parser.add_argument(
+        "--thinking_level",
+        type=str,
+        dest="thinking_level",
+        choices=THINKING_LEVEL_CHOICES,
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--max-workers",
@@ -1269,14 +1771,15 @@ def parse_args(argv: list[str] | None = None) -> RuntimeConfig:
     return RuntimeConfig(
         composite_task=args.composite_task,
         num_trajectories=args.num_trajectories,
-        output_path=args.output,
         model=args.model,
         sdk=args.sdk,
         project=args.project,
         location=args.location,
         temperature=args.temperature,
+        thinking_level=args.thinking_level,
         max_workers=args.max_workers,
         max_retries=args.max_retries,
+        summary_path=resolve_dataset_output_path(args.composite_task),
         cost_output_path=args.cost_output,
         disable_validation=args.disable_validation,
         batch_processing=args.batch_processing,
@@ -1285,21 +1788,23 @@ def parse_args(argv: list[str] | None = None) -> RuntimeConfig:
 
 
 def _resolve_output_paths(runtime_config: RuntimeConfig) -> OutputPaths:
-    summary_path = resolve_dataset_output_path(
-        runtime_config.output_path,
-        runtime_config.composite_task,
-    )
+    summary_path = _resolve_summary_path(runtime_config)
     cost_path = resolve_cost_output_path(
         summary_path,
         runtime_config.cost_output_path,
     )
     if cost_path.resolve() == summary_path.resolve():
-        raise TrajectoryGenerationError("--cost-output must differ from --output.")
+        raise TrajectoryGenerationError(
+            "--cost-output must differ from the generated summary output path."
+        )
 
     return OutputPaths(
         summary_path=summary_path,
         trajectory_dir=resolve_trajectory_output_dir(summary_path),
+        prompt_dir=resolve_prompt_output_dir(summary_path),
+        output_dir=resolve_raw_output_dir(summary_path),
         cost_path=cost_path,
+        error_summary_path=resolve_error_output_path(summary_path),
     )
 
 
@@ -1307,9 +1812,13 @@ def _write_generation_outputs(
     payload: dict[str, Any],
     *,
     output_paths: OutputPaths,
-) -> list[Path]:
+) -> tuple[list[Path], list[Path], list[Path]]:
     summary_payload = build_summary_output_payload(payload)
     cost_payload = build_cost_output_payload(
+        payload,
+        trajectory_output_path=output_paths.summary_path,
+    )
+    error_summary_payload = build_error_summary_output_payload(
         payload,
         trajectory_output_path=output_paths.summary_path,
     )
@@ -1317,22 +1826,26 @@ def _write_generation_outputs(
         payload["trajectories"],
         output_paths.trajectory_dir,
     )
+    written_prompt_paths = write_prompt_output_payloads(
+        payload.get("trajectory_prompts", []),
+        output_paths.prompt_dir,
+    )
+    written_output_paths = write_raw_output_payloads(
+        payload.get("trajectory_outputs", []),
+        output_paths.output_dir,
+    )
     write_json_output(summary_payload, output_paths.summary_path)
     write_json_output(cost_payload, output_paths.cost_path)
-    return written_trajectory_paths
+    write_json_output(error_summary_payload, output_paths.error_summary_path)
+    return written_trajectory_paths, written_prompt_paths, written_output_paths
 
 
 def main(argv: list[str] | None = None) -> int:
     runtime_config = parse_args(argv)
     _resolve_task_definition_or_raise(runtime_config.composite_task)
     output_paths = _resolve_output_paths(runtime_config)
-    runtime_config = replace(
-        runtime_config,
-        output_path=output_paths.summary_path,
-        cost_output_path=output_paths.cost_path,
-    )
     payload = generate_trajectories(runtime_config)
-    written_trajectory_paths = _write_generation_outputs(
+    written_trajectory_paths, written_prompt_paths, written_output_paths = _write_generation_outputs(
         payload,
         output_paths=output_paths,
     )
@@ -1341,7 +1854,16 @@ def main(argv: list[str] | None = None) -> int:
         f"Wrote {len(written_trajectory_paths)} trajectory files to "
         f"{output_paths.trajectory_dir}"
     )
+    print(
+        f"Wrote {len(written_prompt_paths)} prompt files to "
+        f"{output_paths.prompt_dir}"
+    )
+    print(
+        f"Wrote {len(written_output_paths)} raw output files to "
+        f"{output_paths.output_dir}"
+    )
     print(f"Wrote cost summary to {output_paths.cost_path}")
+    print(f"Wrote error summary to {output_paths.error_summary_path}")
     return 0
 
 

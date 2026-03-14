@@ -62,15 +62,31 @@ Generate `N` strictly validated symbolic two-agent trajectories for `PrepareCoff
 ```bash
 python -m data_generation.task_level.trajectory_generation \
   --task PrepareCoffee \
-  --num-trajectories 8 \
-  --output /tmp/prepare_coffee_trajectories.json \
-  --sdk google-genai \
-  --model gemini-3-flash-preview \
+  --num-trajectories 2 \
+  --model gemini-3.1-flash-lite-preview \
   --location global \
+  --thinking-level minimal \
   --max-workers 4 \
   --max-retries 5 \
   --enable-validation
 ```
+
+For Gemini 3 models, you can optionally tune reasoning depth with
+`--thinking-level minimal|low|medium|high`.
+
+Then run post-processing to add the canonical `agents` key plus canonical `get_image`
+steps and deterministic `image_path` fields in place:
+
+```bash
+python -m data_generation.task_level.post_traj_generation \
+  --dataset /tmp/summary.json
+```
+
+The generator also writes sibling sidecar directories next to the dataset summary:
+- `trajectories/`: validated saved trajectory JSON
+- `prompts/`: the exact prompt used for each saved trajectory
+- `outputs/`: the raw successful model output text for each saved trajectory
+
 ## Batch trajectory generation
 
 Trajectory generation now supports a Vertex AI batch mode for large offline sweeps.
@@ -111,9 +127,11 @@ Notes:
 - The output `.json` stores interleaved tool-call steps for `agent_0` and `agent_1`,
   plus short explicit reasoning text per step.
 - The main output path stores a compact trajectory summary plus `cost_summary`. A
-  sibling sidecar file is written to `<output>_costs.json` by default and includes
+  sibling sidecar file is written to `cost_summary.json` by default and includes
   per-trajectory `generation_usage`, observed rollup costs, and model pricing
   (`input_usd_per_million_tokens` / `output_usd_per_million_tokens`).
+- A sibling `summary_errors.json` sidecar records every observed error in the run,
+  including retry failures and saved invalid trajectories, plus per-error counts.
 - The generator prints a projected cost before execution starts. With validation
   disabled this is a single projected total; with `--enable-validation` it is shown
   as a best-case / worst-case range based on the retry budget.

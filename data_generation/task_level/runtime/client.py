@@ -27,7 +27,22 @@ COST_DECIMAL_PLACES = 4
 DEFAULT_TRAFFIC_TYPE = "ON_DEMAND"
 BATCH_TRAFFIC_TYPE = "ON_DEMAND_FLEX"
 HEURISTIC_CHARS_PER_TOKEN = 4
+# Vertex AI text pricing is keyed by normalized traffic tier for cost estimation.
 MODEL_TEXT_PRICING_USD_PER_MILLION = {
+    "gemini-3.1-flash-lite-preview": {
+        "ON_DEMAND": {
+            "input": 0.25,
+            "output": 1.50,
+        },
+        "ON_DEMAND_PRIORITY": {
+            "input": 0.45,
+            "output": 2.70,
+        },
+        "ON_DEMAND_FLEX": {
+            "input": 0.13,
+            "output": 0.75,
+        },
+    },
     "gemini-3-flash-preview": {
         "ON_DEMAND": {
             "input": 0.50,
@@ -106,6 +121,7 @@ class BaseGenerationClient:
         prompt: str,
         response_schema: dict[str, Any],
         temperature: float,
+        thinking_level: str | None = None,
     ) -> Any:
         raise NotImplementedError
 
@@ -473,6 +489,24 @@ class GoogleGenAIClient(BaseGenerationClient):
     def __init__(self, project: str | None, location: str):
         self._client = build_raw_google_genai_client(project=project, location=location)
 
+    def _build_generation_config(
+        self,
+        *,
+        temperature: float,
+        response_schema: dict[str, Any],
+        thinking_level: str | None,
+    ) -> dict[str, Any]:
+        """Builds one google-genai generation config payload."""
+
+        config = {
+            "temperature": temperature,
+            "response_mime_type": "application/json",
+            "response_schema": response_schema,
+        }
+        if thinking_level is not None:
+            config["thinking_config"] = {"thinking_level": thinking_level}
+        return config
+
     def generate(
         self,
         *,
@@ -480,16 +514,17 @@ class GoogleGenAIClient(BaseGenerationClient):
         prompt: str,
         response_schema: dict[str, Any],
         temperature: float,
+        thinking_level: str | None = None,
     ) -> Any:
         try:
             response = self._client.models.generate_content(
                 model=model,
                 contents=prompt,
-                config={
-                    "temperature": temperature,
-                    "response_mime_type": "application/json",
-                    "response_schema": response_schema,
-                },
+                config=self._build_generation_config(
+                    temperature=temperature,
+                    response_schema=response_schema,
+                    thinking_level=thinking_level,
+                ),
             )
         except Exception as exc:
             message = str(exc)

@@ -14,11 +14,19 @@ def _build_subatomic_allowed_tool_specs() -> dict[str, dict[str, Any]]:
     subatomic_allowed_tool_specs: dict[str, dict[str, Any]] = {}
     for tool_spec in discover_subatomic_tools():
         argument_names = [argument.name for argument in tool_spec.constructor_args]
+        tool_arg_types = {
+            argument.name: argument.schema_type
+            for argument in tool_spec.constructor_args
+            if argument.schema_type != "STRING"
+        }
         subatomic_allowed_tool_specs[tool_spec.name] = {
             "description": tool_spec.description,
             "tool_args": list(argument_names),
-            "entity_refs": list(argument_names),
         }
+        if tool_arg_types:
+            subatomic_allowed_tool_specs[tool_spec.name]["tool_arg_types"] = (
+                tool_arg_types
+            )
     return subatomic_allowed_tool_specs
 
 
@@ -31,7 +39,6 @@ TASK_LEVEL_ALLOWED_TOOL_SPECS = {
     "communicate": {
         "description": "Send a short coordination message to the other agent.",
         "tool_args": ["to_agent_id", "message"],
-        "entity_refs": ["from_agent_id", "to_agent_id"],
     },
     **SUBATOMIC_ALLOWED_TOOL_SPECS,
 }
@@ -50,7 +57,7 @@ def build_allowed_tool_specs(
             shared registry entry. Use this to add task-specific symbolic
             constraints without redefining the base tool spec. For example,
             ``{"pick_up_object": {"allowed_object_ids": ["mug_1"]}}`` keeps the
-            shared description, ``tool_args``, and ``entity_refs`` fields, then
+            shared description and ``tool_args`` fields, then
             adds the task-specific ``allowed_object_ids`` constraint.
 
     Returns:

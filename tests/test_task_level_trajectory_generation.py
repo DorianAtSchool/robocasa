@@ -13,6 +13,7 @@ from data_generation.task_level.runtime.client import (
     GenerationUsage,
     GoogleGenAIClient,
     TrajectoryGenerationError,
+    _resolve_pricing_tier,
     load_dotenv_file,
     validate_google_auth,
 )
@@ -34,11 +35,15 @@ from data_generation.task_level.tasks.prepare_coffee import (
     build_prepare_coffee_prompt,
 )
 from data_generation.task_level.subatomic_tool_calls import discover_subatomic_tools
-from data_generation.task_level.runtime.batch_generation import BatchRunContext
+from data_generation.task_level.runtime.batch_generation import (
+    BatchRunContext,
+    RichBatchProgressDisplay,
+    _batch_request_payload,
+    _create_batch_progress_handles,
+)
 from data_generation.task_level.trajectory_generation import (
     BATCH_INTERRUPTED_MESSAGE,
     DEFAULT_OUTPUT_DIR,
-    DEFAULT_OUTPUT_PATH,
     INTERRUPTED_EXIT_CODE,
     INTERRUPTED_MESSAGE,
     PROGRESS_BAR_WIDTH,
@@ -50,6 +55,7 @@ from data_generation.task_level.trajectory_generation import (
     _is_non_retryable_generation_error,
     _maybe_reserve_signature,
     build_cost_output_payload,
+    build_error_summary_output_payload,
     build_summary_output_payload,
     extract_json_candidate,
     generate_trajectories,
@@ -58,9 +64,93 @@ from data_generation.task_level.trajectory_generation import (
     parse_args,
     resolve_dataset_output_path,
     resolve_cost_output_path,
+    resolve_raw_output_dir,
     resolve_trajectory_output_dir,
+    resolve_error_output_path,
+    resolve_prompt_output_dir,
     run_cli,
 )
+
+
+PREPARE_COFFEE_ACTION_SPECS = (
+    ("navigate_to_fixture", {"fixture_id": "cabinet_1"}),
+    ("open_hinged_part", {"target_id": "cabinet_1", "part_id": "door"}),
+    ("pick_up_object", {"object_id": "mug_1", "source_id": "cabinet_1"}),
+    ("navigate_to_fixture", {"fixture_id": "counter_1"}),
+    ("place_on_surface", {"object_id": "mug_1", "support_id": "counter_1"}),
+    ("navigate_to_fixture", {"fixture_id": "counter_1"}),
+    ("pick_up_object", {"object_id": "mug_1", "source_id": "counter_1"}),
+    ("navigate_to_fixture", {"fixture_id": "coffee_machine_1"}),
+    (
+        "place_under_dispenser",
+        {"object_id": "mug_1", "dispenser_id": "coffee_machine_dispenser"},
+    ),
+    ("press_button", {"target_id": "coffee_machine_1", "control_id": "start_button"}),
+)
+
+
+def renumber_candidate_steps(candidate):
+    """Reassigns contiguous step indexes after a test mutates a candidate."""
+
+    for index, step in enumerate(candidate["steps"]):
+        step["step"] = index
+    return candidate
+
+
+def make_required_get_image_step(
+    agent_id,
+    *,
+    reasoning,
+    camera_view="wrist",
+):
+    """Builds a compact get_image step used to frame task actions."""
+
+    return {
+        "step": -1,
+        "agent": agent_id,
+        "tool": "get_image",
+        "args": {"camera_view": camera_view},
+        "reasoning": reasoning,
+    }
+
+
+def frame_action_steps_with_get_images(action_steps):
+    """Places the required get_image calls before and after task actions."""
+
+    if not action_steps:
+        return []
+
+    framed_steps = []
+    for action_step in action_steps:
+        framed_steps.append(
+            make_required_get_image_step(
+                action_step["agent"],
+                reasoning="I should inspect before the next task action.",
+            )
+        )
+        framed_steps.append(action_step)
+    framed_steps.append(
+        make_required_get_image_step(
+            action_steps[-1]["agent"],
+            reasoning="I should capture the completed setup.",
+        )
+    )
+    return framed_steps
+
+
+def find_step_index(candidate, tool_name, *, occurrence=0):
+    """Finds the zero-based index of the requested tool occurrence."""
+
+    matches = [
+        index
+        for index, step in enumerate(candidate["steps"])
+        if step["tool"] == tool_name
+    ]
+    if occurrence >= len(matches):
+        raise AssertionError(
+            f"Could not find occurrence {occurrence} of tool {tool_name}."
+        )
+    return matches[occurrence]
 
 
 def make_valid_candidate(
@@ -72,6 +162,7 @@ def make_valid_candidate(
         "The mug must reach the dispenser next.",
         "The mug is ready for brewing.",
     ),
+    include_agents=True,
 ):
     if len(action_agents) == 3:
         # Expand the original three-phase fixture into the shared subatomic steps.
@@ -93,206 +184,78 @@ def make_valid_candidate(
     else:
         expanded_action_reasoning = tuple(action_reasoning)
 
-    return {
-        "agents": [
-            {"agent_id": "agent_0"},
-            {"agent_id": "agent_1"},
-        ],
+    action_steps = [
+        {
+            "step": -1,
+            "agent": agent_id,
+            "tool": tool_name,
+            "args": dict(tool_args),
+            "reasoning": reasoning,
+        }
+        for (tool_name, tool_args), agent_id, reasoning in zip(
+            PREPARE_COFFEE_ACTION_SPECS,
+            expanded_action_agents,
+            expanded_action_reasoning,
+        )
+    ]
+
+    candidate = {
         "steps": [
             {
-                "step_index": 0,
-                "agent_id": "agent_0",
-                "tool_name": "communicate",
-                "tool_args": {
+                "step": 0,
+                "agent": "agent_0",
+                "tool": "communicate",
+                "args": {
                     "to_agent_id": "agent_1",
                     "message": communicate_messages[0],
-                },
-                "entity_refs": {
-                    "from_agent_id": "agent_0",
-                    "to_agent_id": "agent_1",
                 },
                 "reasoning": "We need a shared plan before acting.",
             },
             {
-                "step_index": 1,
-                "agent_id": "agent_1",
-                "tool_name": "communicate",
-                "tool_args": {
+                "step": 1,
+                "agent": "agent_1",
+                "tool": "communicate",
+                "args": {
                     "to_agent_id": "agent_0",
                     "message": communicate_messages[1],
                 },
-                "entity_refs": {
-                    "from_agent_id": "agent_1",
-                    "to_agent_id": "agent_0",
-                },
                 "reasoning": "I should confirm the handoff sequence.",
             },
-            {
-                "step_index": 2,
-                "agent_id": expanded_action_agents[0],
-                "tool_name": "navigate_to_fixture",
-                "tool_args": {
-                    "fixture_id": "cabinet_1",
-                },
-                "entity_refs": {
-                    "fixture_id": "cabinet_1",
-                },
-                "reasoning": expanded_action_reasoning[0],
-            },
-            {
-                "step_index": 3,
-                "agent_id": expanded_action_agents[1],
-                "tool_name": "open_hinged_part",
-                "tool_args": {
-                    "target_id": "cabinet_1",
-                    "part_id": "door",
-                },
-                "entity_refs": {
-                    "target_id": "cabinet_1",
-                    "part_id": "door",
-                },
-                "reasoning": expanded_action_reasoning[1],
-            },
-            {
-                "step_index": 4,
-                "agent_id": expanded_action_agents[2],
-                "tool_name": "pick_up_object",
-                "tool_args": {
-                    "object_id": "mug_1",
-                    "source_id": "cabinet_1",
-                },
-                "entity_refs": {
-                    "object_id": "mug_1",
-                    "source_id": "cabinet_1",
-                },
-                "reasoning": expanded_action_reasoning[2],
-            },
-            {
-                "step_index": 5,
-                "agent_id": expanded_action_agents[3],
-                "tool_name": "navigate_to_fixture",
-                "tool_args": {
-                    "fixture_id": "counter_1",
-                },
-                "entity_refs": {
-                    "fixture_id": "counter_1",
-                },
-                "reasoning": expanded_action_reasoning[3],
-            },
-            {
-                "step_index": 6,
-                "agent_id": expanded_action_agents[4],
-                "tool_name": "place_on_surface",
-                "tool_args": {
-                    "object_id": "mug_1",
-                    "support_id": "counter_1",
-                },
-                "entity_refs": {
-                    "object_id": "mug_1",
-                    "support_id": "counter_1",
-                },
-                "reasoning": expanded_action_reasoning[4],
-            },
-            {
-                "step_index": 7,
-                "agent_id": expanded_action_agents[5],
-                "tool_name": "navigate_to_fixture",
-                "tool_args": {
-                    "fixture_id": "counter_1",
-                },
-                "entity_refs": {
-                    "fixture_id": "counter_1",
-                },
-                "reasoning": expanded_action_reasoning[5],
-            },
-            {
-                "step_index": 8,
-                "agent_id": expanded_action_agents[6],
-                "tool_name": "pick_up_object",
-                "tool_args": {
-                    "object_id": "mug_1",
-                    "source_id": "counter_1",
-                },
-                "entity_refs": {
-                    "object_id": "mug_1",
-                    "source_id": "counter_1",
-                },
-                "reasoning": expanded_action_reasoning[6],
-            },
-            {
-                "step_index": 9,
-                "agent_id": expanded_action_agents[7],
-                "tool_name": "navigate_to_fixture",
-                "tool_args": {
-                    "fixture_id": "coffee_machine_1",
-                },
-                "entity_refs": {
-                    "fixture_id": "coffee_machine_1",
-                },
-                "reasoning": expanded_action_reasoning[7],
-            },
-            {
-                "step_index": 10,
-                "agent_id": expanded_action_agents[8],
-                "tool_name": "place_under_dispenser",
-                "tool_args": {
-                    "object_id": "mug_1",
-                    "dispenser_id": "coffee_machine_dispenser",
-                },
-                "entity_refs": {
-                    "object_id": "mug_1",
-                    "dispenser_id": "coffee_machine_dispenser",
-                },
-                "reasoning": expanded_action_reasoning[8],
-            },
-            {
-                "step_index": 11,
-                "agent_id": expanded_action_agents[9],
-                "tool_name": "press_button",
-                "tool_args": {
-                    "target_id": "coffee_machine_1",
-                    "control_id": "start_button",
-                },
-                "entity_refs": {
-                    "target_id": "coffee_machine_1",
-                    "control_id": "start_button",
-                },
-                "reasoning": expanded_action_reasoning[9],
-            },
+            *action_steps,
         ],
     }
+    if include_agents:
+        candidate["agents"] = [
+            {"agent": "agent_0"},
+            {"agent": "agent_1"},
+        ]
+    return renumber_candidate_steps(candidate)
 
 
 def make_invalid_candidate_missing_initial_communication():
     candidate = make_valid_candidate()
     candidate["steps"] = candidate["steps"][1:]
-    for index, step in enumerate(candidate["steps"]):
-        step["step_index"] = index
-    return candidate
+    return renumber_candidate_steps(candidate)
 
 
 def make_alternative_valid_candidate():
     """Builds a valid PrepareCoffee trace with a different legal action ordering."""
 
     candidate = make_valid_candidate()
+    insert_index = find_step_index(candidate, "navigate_to_fixture", occurrence=0)
     candidate["steps"].insert(
-        2,
+        insert_index,
         {
-            "step_index": 2,
-            "agent_id": "agent_1",
-            "tool_name": "navigate_to_fixture",
-            "tool_args": {
-                "fixture_id": "coffee_machine_1",
-            },
-            "entity_refs": {
+            "step": -1,
+            "agent": "agent_1",
+            "tool": "navigate_to_fixture",
+            "args": {
                 "fixture_id": "coffee_machine_1",
             },
             "reasoning": "I can stage at the machine before the mug arrives.",
         },
     )
-    for index, step in enumerate(candidate["steps"]):
-        step["step_index"] = index
-    return candidate
+    return renumber_candidate_steps(candidate)
 
 
 TOY_FSM_INITIAL_STATE = {
@@ -333,10 +296,12 @@ TOY_FSM_INITIAL_STATE = {
 TOY_FSM_ALLOWED_TOOL_SPECS = build_allowed_tool_specs(
     (
         "communicate",
+        "get_image",
         "navigate_to_fixture",
         "open_hinged_part",
         "pick_up_object",
         "place_on_surface",
+        "wait",
     )
 )
 
@@ -344,14 +309,12 @@ TOY_FSM_ALLOWED_TOOL_SPECS = build_allowed_tool_specs(
 def make_toy_action_spec(
     tool_name,
     tool_args,
-    entity_refs,
 ):
     """Builds a compact toy action payload for shared FSM unit tests."""
 
     return {
-        "tool_name": tool_name,
-        "tool_args": dict(tool_args),
-        "entity_refs": dict(entity_refs),
+        "tool": tool_name,
+        "args": dict(tool_args),
     }
 
 
@@ -367,57 +330,50 @@ def make_toy_candidate(
 
     steps = [
         {
-            "step_index": 0,
-            "agent_id": "agent_0",
-            "tool_name": "communicate",
-            "tool_args": {
+            "step": 0,
+            "agent": "agent_0",
+            "tool": "communicate",
+            "args": {
                 "to_agent_id": "agent_1",
                 "message": "I will handle the shared FSM test actions.",
-            },
-            "entity_refs": {
-                "from_agent_id": "agent_0",
-                "to_agent_id": "agent_1",
             },
             "reasoning": "We should coordinate before the first action.",
         },
         {
-            "step_index": 1,
-            "agent_id": "agent_1",
-            "tool_name": "communicate",
-            "tool_args": {
+            "step": 1,
+            "agent": "agent_1",
+            "tool": "communicate",
+            "args": {
                 "to_agent_id": "agent_0",
                 "message": "I will stay clear while you execute the sequence.",
-            },
-            "entity_refs": {
-                "from_agent_id": "agent_1",
-                "to_agent_id": "agent_0",
             },
             "reasoning": "I should confirm the test setup.",
         },
     ]
 
-    for index, (action_spec, agent_id) in enumerate(
-        zip(action_sequence, action_agents),
-        start=2,
-    ):
-        steps.append(
-            {
-                "step_index": index,
-                "agent_id": agent_id,
-                "tool_name": action_spec["tool_name"],
-                "tool_args": dict(action_spec["tool_args"]),
-                "entity_refs": dict(action_spec["entity_refs"]),
-                "reasoning": f"Shared FSM test action {index - 1}.",
-            }
+    action_steps = [
+        {
+            "step": -1,
+            "agent": agent_id,
+            "tool": action_spec["tool"],
+            "args": dict(action_spec["args"]),
+            "reasoning": f"Shared FSM test action {index + 1}.",
+        }
+        for index, (action_spec, agent_id) in enumerate(
+            zip(action_sequence, action_agents)
         )
+    ]
+    steps.extend(frame_action_steps_with_get_images(action_steps))
 
-    return {
+    return renumber_candidate_steps(
+        {
         "agents": [
-            {"agent_id": "agent_0"},
-            {"agent_id": "agent_1"},
+            {"agent": "agent_0"},
+            {"agent": "agent_1"},
         ],
         "steps": steps,
-    }
+        }
+    )
 
 
 class ToyFiniteStateValidator(FiniteStateTaskValidator):
@@ -440,7 +396,15 @@ class ToyFiniteStateValidator(FiniteStateTaskValidator):
 
 
 class FakeClient:
-    def generate(self, *, model, prompt, response_schema, temperature):
+    def generate(
+        self,
+        *,
+        model,
+        prompt,
+        response_schema,
+        temperature,
+        thinking_level=None,
+    ):
         raise NotImplementedError
 
 
@@ -448,7 +412,15 @@ class SequencedFakeClient(FakeClient):
     def __init__(self, responses):
         self._responses = list(responses)
 
-    def generate(self, *, model, prompt, response_schema, temperature):
+    def generate(
+        self,
+        *,
+        model,
+        prompt,
+        response_schema,
+        temperature,
+        thinking_level=None,
+    ):
         if not self._responses:
             raise AssertionError("No more fake responses configured.")
         return self._responses.pop(0)
@@ -599,21 +571,61 @@ def make_fake_google_genai_modules(client_cls):
 class SubatomicToolCatalogTests(unittest.TestCase):
     def test_discover_subatomic_tools_exposes_shared_catalog(self):
         tool_names = {tool.name for tool in discover_subatomic_tools()}
+        self.assertIn("get_image", tool_names)
         self.assertIn("pick_up_object", tool_names)
         self.assertIn("place_under_dispenser", tool_names)
         self.assertIn("press_button", tool_names)
+        self.assertIn("wait", tool_names)
         self.assertTrue(all(tool_name == tool_name.lower() for tool_name in tool_names))
 
-    def test_prepare_coffee_prompt_contains_subatomic_catalog_and_rules(self):
+    def test_prepare_coffee_prompt_contains_allowed_tools_and_rules(self):
         prompt = build_prepare_coffee_prompt("unit-test")
         self.assertIn("pick_up_object", prompt)
         self.assertIn("place_under_dispenser", prompt)
         self.assertIn("press_button", prompt)
         self.assertIn("communicate", prompt)
         self.assertIn("variation key: unit-test", prompt)
-        self.assertIn("Each agent entry must contain only: agent_id.", prompt)
+        self.assertIn("Simple execution rules:", prompt)
+        self.assertIn(
+            "Before interacting with a fixture, surface, receptacle, or dispenser",
+            prompt,
+        )
+        self.assertIn(
+            "Only use pick_up_object when the object is still at the listed source_id",
+            prompt,
+        )
+        self.assertIn(
+            "After picking up an object, that agent should only navigate or place that same object",
+            prompt,
+        )
+        self.assertIn(
+            "Only use a placement tool for the exact object the acting agent is currently holding.",
+            prompt,
+        )
+        self.assertIn(
+            "Open cabinet_1.door before using pick_up_object on mug_1 from cabinet_1.",
+            prompt,
+        )
+        self.assertIn(
+            "Only press coffee_machine_1.start_button after mug_1 is already at coffee_machine_dispenser.",
+            prompt,
+        )
+        self.assertNotIn("get_image", prompt)
+        self.assertNotIn("Full subatomic tool catalog for context:", prompt)
+        self.assertNotIn("Communication tool:", prompt)
         self.assertNotIn(
-            "Each agent entry must contain: agent_id, role, initial_plan.",
+            "communicate: Send a short coordination message to the other agent.",
+            prompt,
+        )
+        self.assertIn("Return an object with key: steps.", prompt)
+        self.assertIn("Do not include a top-level agents field", prompt)
+        self.assertIn(
+            "refer to agents using exact IDs like agent_0 and agent_1",
+            prompt,
+        )
+        self.assertNotIn("entity_refs", prompt)
+        self.assertNotIn(
+            "Each agent entry must contain: agent, role, initial_plan.",
             prompt,
         )
 
@@ -657,19 +669,14 @@ class DotenvLoadingTests(unittest.TestCase):
         self.assertEqual(runtime_config.project, "shell-project")
 
     def test_parse_args_accepts_explicit_cost_output(self):
-        runtime_config = parse_args(
-            [
-                "--output",
-                "/tmp/trajectories.json",
-                "--cost-output",
-                "/tmp/custom_costs.json",
-            ]
-        )
-
-        self.assertEqual(runtime_config.output_path, Path("/tmp/trajectories.json"))
+        runtime_config = parse_args(["--cost-output", "/tmp/custom_costs.json"])
         self.assertEqual(
             runtime_config.cost_output_path, Path("/tmp/custom_costs.json")
         )
+
+    def test_parse_args_rejects_removed_output_flag(self):
+        with self.assertRaises(SystemExit):
+            parse_args(["--output", "/tmp/trajectories.json"])
 
     def test_parse_args_disables_validation_by_default(self):
         runtime_config = parse_args([])
@@ -678,6 +685,13 @@ class DotenvLoadingTests(unittest.TestCase):
     def test_parse_args_accepts_enable_validation(self):
         runtime_config = parse_args(["--enable-validation"])
         self.assertFalse(runtime_config.disable_validation)
+
+    def test_parse_args_accepts_thinking_level_flag_and_alias(self):
+        dashed_runtime_config = parse_args(["--thinking-level", "minimal"])
+        underscored_runtime_config = parse_args(["--thinking_level", "high"])
+
+        self.assertEqual(dashed_runtime_config.thinking_level, "minimal")
+        self.assertEqual(underscored_runtime_config.thinking_level, "high")
 
     def test_parse_args_accepts_num_trajectories_flag_and_alias(self):
         dashed_runtime_config = parse_args(["--num-trajectories", "7"])
@@ -738,7 +752,6 @@ class DotenvLoadingTests(unittest.TestCase):
         self,
     ):
         resolved = resolve_dataset_output_path(
-            DEFAULT_OUTPUT_PATH,
             "PrepareCoffee",
             generated_at=datetime(2026, 3, 10, 12, 34, 56, tzinfo=timezone.utc),
         )
@@ -748,27 +761,37 @@ class DotenvLoadingTests(unittest.TestCase):
             DEFAULT_OUTPUT_DIR
             / "prepare_coffee"
             / "20260310T123456Z"
-            / "prepare_coffee_trajectories.json",
-        )
-
-    def test_resolve_dataset_output_path_keeps_explicit_output(self):
-        explicit_output = Path("/tmp/trajectories.json")
-
-        self.assertEqual(
-            resolve_dataset_output_path(
-                explicit_output,
-                "PrepareCoffee",
-                generated_at=datetime(2026, 3, 10, 12, 34, 56, tzinfo=timezone.utc),
-            ),
-            explicit_output,
+            / "summary.json",
         )
 
     def test_resolve_trajectory_output_dir_uses_sibling_trajectories_directory(self):
-        output_path = Path("/tmp/prepare_coffee_trajectories.json")
+        output_path = Path("/tmp/summary.json")
 
         self.assertEqual(
             resolve_trajectory_output_dir(output_path),
             Path("/tmp/trajectories"),
+        )
+
+    def test_resolve_prompt_output_dir_uses_sibling_prompts_directory(self):
+        output_path = Path("/tmp/summary.json")
+
+        self.assertEqual(
+            resolve_prompt_output_dir(output_path),
+            Path("/tmp/prompts"),
+        )
+
+    def test_resolve_raw_output_dir_uses_sibling_outputs_directory(self):
+        output_path = Path("/tmp/summary.json")
+
+        self.assertEqual(
+            resolve_raw_output_dir(output_path),
+            Path("/tmp/outputs"),
+        )
+
+    def test_resolve_error_output_path_defaults_to_error_summary_filename(self):
+        self.assertEqual(
+            resolve_error_output_path(Path("/tmp/summary.json")),
+            Path("/tmp/summary_errors.json"),
         )
 
     def test_validate_google_auth_raises_clear_error_when_credentials_missing(self):
@@ -876,16 +899,67 @@ class DotenvLoadingTests(unittest.TestCase):
         self.assertIn("Vertex AI `GenerateContent`", str(context.exception))
         self.assertIn("aiplatform.endpoints.predict", str(context.exception))
 
+    def test_google_genai_client_includes_optional_thinking_level(self):
+        class FakeModels:
+            def __init__(self):
+                self.calls = []
+
+            def generate_content(self, **kwargs):
+                self.calls.append(kwargs)
+                return types.SimpleNamespace(text='{"ok": true}', usage_metadata=None)
+
+        class FakeGenAIClient:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+                self.models = FakeModels()
+
+        (
+            fake_google_module,
+            fake_google_genai_module,
+            fake_google_genai_types_module,
+        ) = make_fake_google_genai_modules(FakeGenAIClient)
+
+        with mock.patch.dict("os.environ", {}, clear=True):
+            with mock.patch.dict(
+                "sys.modules",
+                {
+                    "google": fake_google_module,
+                    "google.genai": fake_google_genai_module,
+                    "google.genai.types": fake_google_genai_types_module,
+                },
+            ):
+                with mock.patch(
+                    "data_generation.task_level.runtime.client.validate_google_auth"
+                ):
+                    client = GoogleGenAIClient(project="demo-project", location="global")
+
+        client.generate(
+            model="gemini-3.1-flash-lite-preview",
+            prompt="Say hi",
+            response_schema={"type": "OBJECT"},
+            temperature=0.1,
+            thinking_level="minimal",
+        )
+
+        call = client._client.models.calls[0]
+        self.assertEqual(call["model"], "gemini-3.1-flash-lite-preview")
+        self.assertEqual(
+            call["config"]["thinking_config"],
+            {"thinking_level": "minimal"},
+        )
+
 
 class FiniteStateTaskValidatorTests(unittest.TestCase):
     def test_build_task_response_schema_uses_allowed_tool_specs(self):
         allowed_tool_specs = build_allowed_tool_specs(
             (
                 "communicate",
+                "get_image",
                 "pick_up_object",
                 "place_in_receptacle",
                 "place_on_object",
                 "set_rotary_control",
+                "wait",
             )
         )
 
@@ -897,14 +971,15 @@ class FiniteStateTaskValidatorTests(unittest.TestCase):
 
         step_properties = response_schema["properties"]["steps"]["items"]["properties"]
         self.assertEqual(
-            list(step_properties["tool_name"]["enum"]),
+            list(step_properties["tool"]["enum"]),
             list(allowed_tool_specs),
         )
         self.assertEqual(
-            list(step_properties["tool_args"]["properties"]),
+            list(step_properties["args"]["properties"]),
             [
                 "to_agent_id",
                 "message",
+                "camera_view",
                 "object_id",
                 "source_id",
                 "receptacle_id",
@@ -912,52 +987,51 @@ class FiniteStateTaskValidatorTests(unittest.TestCase):
                 "target_id",
                 "control_id",
                 "goal",
+                "seconds",
             ],
         )
         self.assertEqual(
-            list(step_properties["entity_refs"]["properties"]),
-            [
-                "from_agent_id",
-                "to_agent_id",
-                "object_id",
-                "source_id",
-                "receptacle_id",
-                "support_object_id",
-                "target_id",
-                "control_id",
-                "goal",
-            ],
-        )
-        self.assertEqual(
-            step_properties["tool_args"]["properties"]["to_agent_id"]["enum"],
+            step_properties["args"]["properties"]["to_agent_id"]["enum"],
             ["agent_0", "agent_1"],
         )
         self.assertEqual(
-            step_properties["entity_refs"]["properties"]["from_agent_id"]["enum"],
-            ["agent_0", "agent_1"],
+            step_properties["args"]["properties"]["seconds"]["type"],
+            "INTEGER",
         )
+        self.assertNotIn("agents", response_schema["properties"])
+        self.assertEqual(response_schema["required"], ["steps"])
+        self.assertNotIn("image_path", step_properties)
+        self.assertNotIn("entity_refs", step_properties)
         self.assertEqual(response_schema["properties"]["steps"]["minItems"], 4)
+
+    def test_validator_inserts_canonical_agents_when_model_omits_them(self):
+        validator = PrepareCoffeeValidator()
+        candidate = make_valid_candidate(include_agents=False)
+
+        validation = validator.validate(candidate)
+
+        self.assertTrue(validation["is_valid"])
+        self.assertEqual(
+            validation["normalized_candidate"]["agents"],
+            [{"agent": "agent_0"}, {"agent": "agent_1"}],
+        )
 
     def test_validator_allows_navigation_while_holding(self):
         actions = (
             make_toy_action_spec(
                 "navigate_to_fixture",
                 {"fixture_id": "table_1"},
-                {"fixture_id": "table_1"},
             ),
             make_toy_action_spec(
                 "pick_up_object",
-                {"object_id": "apple_1", "source_id": "table_1"},
                 {"object_id": "apple_1", "source_id": "table_1"},
             ),
             make_toy_action_spec(
                 "navigate_to_fixture",
                 {"fixture_id": "shelf_1"},
-                {"fixture_id": "shelf_1"},
             ),
             make_toy_action_spec(
                 "place_on_surface",
-                {"object_id": "apple_1", "support_id": "shelf_1"},
                 {"object_id": "apple_1", "support_id": "shelf_1"},
             ),
         )
@@ -971,36 +1045,130 @@ class FiniteStateTaskValidatorTests(unittest.TestCase):
             "shelf_1",
         )
 
-    def test_validator_accepts_alternative_valid_action_order(self):
+    def test_validator_allows_get_image_while_holding(self):
         actions = (
             make_toy_action_spec(
                 "navigate_to_fixture",
-                {"fixture_id": "cabinet_1"},
-                {"fixture_id": "cabinet_1"},
-            ),
-            make_toy_action_spec(
-                "open_hinged_part",
-                {"target_id": "cabinet_1", "part_id": "door"},
-                {"target_id": "cabinet_1", "part_id": "door"},
-            ),
-            make_toy_action_spec(
-                "navigate_to_fixture",
-                {"fixture_id": "table_1"},
                 {"fixture_id": "table_1"},
             ),
             make_toy_action_spec(
                 "pick_up_object",
                 {"object_id": "apple_1", "source_id": "table_1"},
-                {"object_id": "apple_1", "source_id": "table_1"},
+            ),
+            make_toy_action_spec(
+                "get_image",
+                {"camera_view": "wrist"},
             ),
             make_toy_action_spec(
                 "navigate_to_fixture",
-                {"fixture_id": "shelf_1"},
                 {"fixture_id": "shelf_1"},
             ),
             make_toy_action_spec(
                 "place_on_surface",
                 {"object_id": "apple_1", "support_id": "shelf_1"},
+            ),
+        )
+
+        validator = ToyFiniteStateValidator()
+        validation = validator.validate(make_toy_candidate(actions))
+
+        self.assertTrue(validation["is_valid"])
+        self.assertEqual(
+            validation["final_state"]["objects"]["apple_1"]["location"],
+            "shelf_1",
+        )
+
+    def test_validator_allows_wait_while_holding(self):
+        actions = (
+            make_toy_action_spec(
+                "navigate_to_fixture",
+                {"fixture_id": "table_1"},
+            ),
+            make_toy_action_spec(
+                "pick_up_object",
+                {"object_id": "apple_1", "source_id": "table_1"},
+            ),
+            make_toy_action_spec(
+                "wait",
+                {"seconds": 3},
+            ),
+            make_toy_action_spec(
+                "navigate_to_fixture",
+                {"fixture_id": "shelf_1"},
+            ),
+            make_toy_action_spec(
+                "place_on_surface",
+                {"object_id": "apple_1", "support_id": "shelf_1"},
+            ),
+        )
+
+        validator = ToyFiniteStateValidator()
+        validation = validator.validate(make_toy_candidate(actions))
+
+        self.assertTrue(validation["is_valid"])
+        self.assertEqual(
+            validation["final_state"]["objects"]["apple_1"]["location"],
+            "shelf_1",
+        )
+
+    def test_validator_rejects_non_positive_wait_duration(self):
+        actions = (
+            make_toy_action_spec(
+                "wait",
+                {"seconds": 0},
+            ),
+            make_toy_action_spec(
+                "navigate_to_fixture",
+                {"fixture_id": "table_1"},
+            ),
+            make_toy_action_spec(
+                "pick_up_object",
+                {"object_id": "apple_1", "source_id": "table_1"},
+            ),
+            make_toy_action_spec(
+                "navigate_to_fixture",
+                {"fixture_id": "shelf_1"},
+            ),
+            make_toy_action_spec(
+                "place_on_surface",
+                {"object_id": "apple_1", "support_id": "shelf_1"},
+            ),
+        )
+
+        validator = ToyFiniteStateValidator()
+
+        with self.assertRaises(TaskSemanticValidationError) as raised:
+            validator.validate(make_toy_candidate(actions))
+
+        self.assertIn(
+            "wait requires seconds to be a positive integer",
+            str(raised.exception),
+        )
+
+    def test_validator_accepts_alternative_valid_action_order(self):
+        actions = (
+            make_toy_action_spec(
+                "navigate_to_fixture",
+                {"fixture_id": "cabinet_1"},
+            ),
+            make_toy_action_spec(
+                "open_hinged_part",
+                {"target_id": "cabinet_1", "part_id": "door"},
+            ),
+            make_toy_action_spec(
+                "navigate_to_fixture",
+                {"fixture_id": "table_1"},
+            ),
+            make_toy_action_spec(
+                "pick_up_object",
+                {"object_id": "apple_1", "source_id": "table_1"},
+            ),
+            make_toy_action_spec(
+                "navigate_to_fixture",
+                {"fixture_id": "shelf_1"},
+            ),
+            make_toy_action_spec(
+                "place_on_surface",
                 {"object_id": "apple_1", "support_id": "shelf_1"},
             ),
         )
@@ -1010,26 +1178,82 @@ class FiniteStateTaskValidatorTests(unittest.TestCase):
 
         self.assertTrue(validation["is_valid"])
 
+    def test_validator_rejects_missing_get_image_before_task_action(self):
+        actions = (
+            make_toy_action_spec(
+                "navigate_to_fixture",
+                {"fixture_id": "table_1"},
+            ),
+            make_toy_action_spec(
+                "pick_up_object",
+                {"object_id": "apple_1", "source_id": "table_1"},
+            ),
+            make_toy_action_spec(
+                "navigate_to_fixture",
+                {"fixture_id": "shelf_1"},
+            ),
+            make_toy_action_spec(
+                "place_on_surface",
+                {"object_id": "apple_1", "support_id": "shelf_1"},
+            ),
+        )
+        candidate = make_toy_candidate(actions)
+        candidate["steps"].pop(find_step_index(candidate, "get_image", occurrence=0))
+        renumber_candidate_steps(candidate)
+
+        validator = ToyFiniteStateValidator()
+
+        with self.assertRaises(TaskSemanticValidationError) as raised:
+            validator.validate(candidate)
+
+        self.assertIn("must be immediately preceded by get_image", str(raised.exception))
+
+    def test_validator_rejects_missing_get_image_after_task_action(self):
+        actions = (
+            make_toy_action_spec(
+                "navigate_to_fixture",
+                {"fixture_id": "table_1"},
+            ),
+            make_toy_action_spec(
+                "pick_up_object",
+                {"object_id": "apple_1", "source_id": "table_1"},
+            ),
+            make_toy_action_spec(
+                "navigate_to_fixture",
+                {"fixture_id": "shelf_1"},
+            ),
+            make_toy_action_spec(
+                "place_on_surface",
+                {"object_id": "apple_1", "support_id": "shelf_1"},
+            ),
+        )
+        candidate = make_toy_candidate(actions)
+        candidate["steps"].pop(find_step_index(candidate, "get_image", occurrence=4))
+        renumber_candidate_steps(candidate)
+
+        validator = ToyFiniteStateValidator()
+
+        with self.assertRaises(TaskSemanticValidationError) as raised:
+            validator.validate(candidate)
+
+        self.assertIn("must be immediately followed by get_image", str(raised.exception))
+
     def test_validator_rejects_second_pickup_while_holding(self):
         actions = (
             make_toy_action_spec(
                 "navigate_to_fixture",
                 {"fixture_id": "table_1"},
-                {"fixture_id": "table_1"},
             ),
             make_toy_action_spec(
                 "pick_up_object",
-                {"object_id": "apple_1", "source_id": "table_1"},
                 {"object_id": "apple_1", "source_id": "table_1"},
             ),
             make_toy_action_spec(
                 "navigate_to_fixture",
                 {"fixture_id": "table_1"},
-                {"fixture_id": "table_1"},
             ),
             make_toy_action_spec(
                 "pick_up_object",
-                {"object_id": "mug_1", "source_id": "table_1"},
                 {"object_id": "mug_1", "source_id": "table_1"},
             ),
         )
@@ -1046,21 +1270,17 @@ class FiniteStateTaskValidatorTests(unittest.TestCase):
             make_toy_action_spec(
                 "navigate_to_fixture",
                 {"fixture_id": "table_1"},
-                {"fixture_id": "table_1"},
             ),
             make_toy_action_spec(
                 "pick_up_object",
-                {"object_id": "apple_1", "source_id": "table_1"},
                 {"object_id": "apple_1", "source_id": "table_1"},
             ),
             make_toy_action_spec(
                 "navigate_to_fixture",
                 {"fixture_id": "cabinet_1"},
-                {"fixture_id": "cabinet_1"},
             ),
             make_toy_action_spec(
                 "open_hinged_part",
-                {"target_id": "cabinet_1", "part_id": "door"},
                 {"target_id": "cabinet_1", "part_id": "door"},
             ),
         )
@@ -1080,11 +1300,9 @@ class FiniteStateTaskValidatorTests(unittest.TestCase):
             make_toy_action_spec(
                 "navigate_to_fixture",
                 {"fixture_id": "shelf_1"},
-                {"fixture_id": "shelf_1"},
             ),
             make_toy_action_spec(
                 "place_on_surface",
-                {"object_id": "apple_1", "support_id": "shelf_1"},
                 {"object_id": "apple_1", "support_id": "shelf_1"},
             ),
         )
@@ -1104,7 +1322,6 @@ class FiniteStateTaskValidatorTests(unittest.TestCase):
             make_toy_action_spec(
                 "open_hinged_part",
                 {"target_id": "cabinet_1", "part_id": "door"},
-                {"target_id": "cabinet_1", "part_id": "door"},
             ),
         )
 
@@ -1120,13 +1337,12 @@ class FiniteStateTaskValidatorTests(unittest.TestCase):
             make_toy_action_spec(
                 "navigate_to_fixture",
                 {"fixture_id": "table_1"},
-                {"fixture_id": "table_1"},
             ),
         )
         candidate = make_toy_candidate(actions)
         candidate["steps"] = candidate["steps"][1:]
         for index, step in enumerate(candidate["steps"]):
-            step["step_index"] = index
+            step["step"] = index
 
         validator = ToyFiniteStateValidator()
 
@@ -1143,16 +1359,13 @@ class FiniteStateTaskValidatorTests(unittest.TestCase):
             make_toy_action_spec(
                 "navigate_to_fixture",
                 {"fixture_id": "table_1"},
-                {"fixture_id": "table_1"},
             ),
             make_toy_action_spec(
                 "pick_up_object",
                 {"object_id": "apple_1", "source_id": "table_1"},
-                {"object_id": "apple_1", "source_id": "table_1"},
             ),
             make_toy_action_spec(
                 "navigate_to_fixture",
-                {"fixture_id": "shelf_1"},
                 {"fixture_id": "shelf_1"},
             ),
         )
@@ -1172,26 +1385,21 @@ class FiniteStateTaskValidatorTests(unittest.TestCase):
             make_toy_action_spec(
                 "navigate_to_fixture",
                 {"fixture_id": "table_1"},
-                {"fixture_id": "table_1"},
             ),
             make_toy_action_spec(
                 "pick_up_object",
                 {"object_id": "apple_1", "source_id": "table_1"},
-                {"object_id": "apple_1", "source_id": "table_1"},
             ),
             make_toy_action_spec(
                 "navigate_to_fixture",
-                {"fixture_id": "shelf_1"},
                 {"fixture_id": "shelf_1"},
             ),
             make_toy_action_spec(
                 "place_on_surface",
                 {"object_id": "apple_1", "support_id": "shelf_1"},
-                {"object_id": "apple_1", "support_id": "shelf_1"},
             ),
             make_toy_action_spec(
                 "navigate_to_fixture",
-                {"fixture_id": "cabinet_1"},
                 {"fixture_id": "cabinet_1"},
             ),
         )
@@ -1223,8 +1431,7 @@ class PrepareCoffeeValidatorTests(unittest.TestCase):
     def test_validator_rejects_missing_initial_communication(self):
         candidate = make_valid_candidate()
         candidate["steps"].pop(1)
-        for index, step in enumerate(candidate["steps"]):
-            step["step_index"] = index
+        renumber_candidate_steps(candidate)
 
         with self.assertRaises(TrajectoryValidationError):
             self.validator.validate(candidate)
@@ -1237,7 +1444,9 @@ class PrepareCoffeeValidatorTests(unittest.TestCase):
 
     def test_validator_rejects_broken_entity_continuity(self):
         candidate = make_valid_candidate()
-        candidate["steps"][4]["tool_args"]["object_id"] = "mug_2"
+        candidate["steps"][find_step_index(candidate, "pick_up_object", occurrence=0)][
+            "args"
+        ]["object_id"] = "mug_2"
 
         with self.assertRaises(TrajectoryValidationError):
             self.validator.validate(candidate)
@@ -1256,36 +1465,37 @@ class PrepareCoffeeValidatorTests(unittest.TestCase):
 
     def test_validator_rejects_missing_navigation_before_interaction(self):
         candidate = make_valid_candidate()
-        candidate["steps"].pop(7)
-        for index, step in enumerate(candidate["steps"]):
-            step["step_index"] = index
+        candidate["steps"].pop(find_step_index(candidate, "navigate_to_fixture", occurrence=2))
+        renumber_candidate_steps(candidate)
 
         with self.assertRaises(TaskSemanticValidationError):
             self.validator.validate(candidate)
 
     def test_validator_rejects_missing_cabinet_open_before_pickup(self):
         candidate = make_valid_candidate()
-        candidate["steps"].pop(3)
-        for index, step in enumerate(candidate["steps"]):
-            step["step_index"] = index
+        candidate["steps"].pop(find_step_index(candidate, "open_hinged_part", occurrence=0))
+        renumber_candidate_steps(candidate)
 
         with self.assertRaises(TaskSemanticValidationError):
             self.validator.validate(candidate)
 
     def test_validator_rejects_invalid_hold_place_ordering(self):
         candidate = make_valid_candidate()
-        candidate["steps"][6]["agent_id"] = "agent_1"
+        candidate["steps"][find_step_index(candidate, "place_on_surface", occurrence=0)][
+            "agent"
+        ] = "agent_1"
 
         with self.assertRaises(TaskSemanticValidationError):
             self.validator.validate(candidate)
 
     def test_validator_rejects_unsupported_tool_name(self):
         candidate = make_valid_candidate()
-        candidate["steps"][4]["tool_name"] = "unsupported_tool"
-        candidate["steps"][4]["tool_args"] = {
-            "object_id": "mug_1",
-        }
-        candidate["steps"][4]["entity_refs"] = {
+        candidate["steps"][find_step_index(candidate, "pick_up_object", occurrence=0)][
+            "tool"
+        ] = "unsupported_tool"
+        candidate["steps"][find_step_index(candidate, "unsupported_tool", occurrence=0)][
+            "args"
+        ] = {
             "object_id": "mug_1",
         }
 
@@ -1294,8 +1504,9 @@ class PrepareCoffeeValidatorTests(unittest.TestCase):
 
     def test_validator_rejects_invalid_task_specific_control_id(self):
         candidate = make_valid_candidate()
-        candidate["steps"][11]["tool_args"]["control_id"] = "wrong_button"
-        candidate["steps"][11]["entity_refs"]["control_id"] = "wrong_button"
+        candidate["steps"][find_step_index(candidate, "press_button", occurrence=0)][
+            "args"
+        ]["control_id"] = "wrong_button"
 
         with self.assertRaises(TaskSemanticValidationError) as raised:
             self.validator.validate(candidate)
@@ -1304,10 +1515,25 @@ class PrepareCoffeeValidatorTests(unittest.TestCase):
 
     def test_validator_rejects_missing_reasoning(self):
         candidate = make_valid_candidate()
-        candidate["steps"][2]["reasoning"] = ""
+        candidate["steps"][find_step_index(candidate, "navigate_to_fixture", occurrence=0)][
+            "reasoning"
+        ] = ""
 
-        with self.assertRaises(TrajectoryStructureValidationError):
+        with self.assertRaises(TrajectoryStructureValidationError) as raised:
             self.validator.validate(candidate)
+
+        self.assertEqual(raised.exception.step, 2)
+
+    def test_validator_rejects_missing_navigation_with_step_number(self):
+        candidate = make_valid_candidate()
+        candidate["steps"].pop(find_step_index(candidate, "navigate_to_fixture", occurrence=2))
+        renumber_candidate_steps(candidate)
+
+        with self.assertRaises(TaskSemanticValidationError) as raised:
+            self.validator.validate(candidate)
+
+        self.assertEqual(raised.exception.step, 7)
+        self.assertIn("must navigate to counter_1", str(raised.exception))
 
     def test_extract_json_candidate_uses_response_format_error_for_invalid_payload(self):
         with self.assertRaises(ResponseFormatValidationError):
@@ -1326,17 +1552,40 @@ class PrepareCoffeeValidatorTests(unittest.TestCase):
 
 
 class GenerationTests(unittest.TestCase):
+    def test_resolve_pricing_tier_supports_gemini_31_flash_lite_preview(self):
+        on_demand_pricing = _resolve_pricing_tier(
+            "gemini-3.1-flash-lite-preview",
+            "ON_DEMAND",
+        )
+        priority_pricing = _resolve_pricing_tier(
+            "gemini-3.1-flash-lite-preview",
+            "ON_DEMAND_PRIORITY",
+        )
+        flex_pricing = _resolve_pricing_tier(
+            "gemini-3.1-flash-lite-preview",
+            "ON_DEMAND_FLEX",
+        )
+
+        self.assertIsNotNone(on_demand_pricing)
+        self.assertEqual(on_demand_pricing.input_usd_per_million_tokens, 0.25)
+        self.assertEqual(on_demand_pricing.output_usd_per_million_tokens, 1.5)
+        self.assertIsNotNone(priority_pricing)
+        self.assertEqual(priority_pricing.input_usd_per_million_tokens, 0.45)
+        self.assertEqual(priority_pricing.output_usd_per_million_tokens, 2.7)
+        self.assertIsNotNone(flex_pricing)
+        self.assertEqual(flex_pricing.input_usd_per_million_tokens, 0.13)
+        self.assertEqual(flex_pricing.output_usd_per_million_tokens, 0.75)
+
     def test_generate_trajectories_cancels_pending_futures_on_keyboard_interrupt(self):
         runtime_config = RuntimeConfig(
             composite_task="PrepareCoffee",
             num_trajectories=2,
-            output_path=mock.sentinel.output_path,
             model="gemini-3-flash-preview",
             sdk="google-genai",
             project="demo-project",
             location="global",
             temperature=0.5,
-            max_workers=2,
+            max_workers=1,
             max_retries=1,
         )
 
@@ -1407,7 +1656,6 @@ class GenerationTests(unittest.TestCase):
         runtime_config = RuntimeConfig(
             composite_task="PrepareCoffee",
             num_trajectories=1,
-            output_path=Path("/tmp/prepare_coffee_trajectories.json"),
             model="gemini-3-flash-preview",
             sdk="google-genai",
             project="demo-project",
@@ -1428,7 +1676,6 @@ class GenerationTests(unittest.TestCase):
             runtime_config = RuntimeConfig(
                 composite_task="PrepareCoffee",
                 num_trajectories=2,
-                output_path=Path(tmpdir) / "prepare_coffee_trajectories.json",
                 model="gemini-3-flash-preview",
                 sdk="google-genai",
                 project="demo-project",
@@ -1454,7 +1701,7 @@ class GenerationTests(unittest.TestCase):
                         "gs://demo-bucket/output/predictions.jsonl",
                         [
                             make_batch_output_row(
-                                "traj-001-attempt-00",
+                                "traj-000001-attempt-00",
                                 candidate=make_valid_candidate(
                                     communicate_messages=(
                                         "I will handle the machine.",
@@ -1464,7 +1711,7 @@ class GenerationTests(unittest.TestCase):
                                 ),
                             ),
                             make_batch_output_row(
-                                "traj-000-attempt-00",
+                                "traj-000000-attempt-00",
                                 candidate=make_valid_candidate(),
                             ),
                         ],
@@ -1492,7 +1739,7 @@ class GenerationTests(unittest.TestCase):
 
         self.assertEqual(
             [trajectory["trajectory_id"] for trajectory in payload["trajectories"]],
-            ["traj_000", "traj_001"],
+            ["traj_000000", "traj_000001"],
         )
         self.assertEqual(
             payload["trajectories"][0]["generation_usage"]["successful_attempt_number"],
@@ -1503,16 +1750,42 @@ class GenerationTests(unittest.TestCase):
             1,
         )
         self.assertEqual(len(batch_storage.upload_calls), 1)
-        self.assertIn("traj-000-attempt-00", batch_storage.upload_calls[0]["text"])
-        self.assertIn("traj-001-attempt-00", batch_storage.upload_calls[0]["text"])
+        self.assertIn("traj-000000-attempt-00", batch_storage.upload_calls[0]["text"])
+        self.assertIn("traj-000001-attempt-00", batch_storage.upload_calls[0]["text"])
         self.assertEqual(batch_service.create_calls[0]["output_prefix"], round_output_prefix)
+
+    def test_batch_request_payload_includes_optional_thinking_level(self):
+        runtime_config = RuntimeConfig(
+            composite_task="PrepareCoffee",
+            num_trajectories=1,
+            model="gemini-3.1-flash-lite-preview",
+            sdk="google-genai",
+            project="demo-project",
+            location="global",
+            temperature=0.4,
+            max_workers=1,
+            max_retries=2,
+            thinking_level="minimal",
+            batch_processing=True,
+            batch_gcs_prefix="gs://demo-bucket/batch-prefix",
+        )
+
+        payload = _batch_request_payload(
+            prompt="test prompt",
+            runtime_config=runtime_config,
+            task_definition=PREPARE_COFFEE_TASK,
+        )
+
+        self.assertEqual(
+            payload["generationConfig"]["thinkingConfig"],
+            {"thinkingLevel": "minimal"},
+        )
 
     def test_batch_processing_retries_only_outstanding_trajectories(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             runtime_config = RuntimeConfig(
                 composite_task="PrepareCoffee",
                 num_trajectories=2,
-                output_path=Path(tmpdir) / "prepare_coffee_trajectories.json",
                 model="gemini-3-flash-preview",
                 sdk="google-genai",
                 project="demo-project",
@@ -1542,11 +1815,11 @@ class GenerationTests(unittest.TestCase):
                         "gs://demo-bucket/output/round-01.jsonl",
                         [
                             make_batch_output_row(
-                                "traj-000-attempt-00",
+                                "traj-000000-attempt-00",
                                 candidate=make_valid_candidate(),
                             ),
                             make_batch_output_row(
-                                "traj-001-attempt-00",
+                                "traj-000001-attempt-00",
                                 status="internal error",
                             ),
                         ],
@@ -1555,7 +1828,7 @@ class GenerationTests(unittest.TestCase):
                         "gs://demo-bucket/output/round-02.jsonl",
                         [
                             make_batch_output_row(
-                                "traj-001-attempt-01",
+                                "traj-000001-attempt-01",
                                 candidate=make_valid_candidate(
                                     communicate_messages=(
                                         "I will take the cabinet.",
@@ -1597,15 +1870,14 @@ class GenerationTests(unittest.TestCase):
             payload["trajectories"][1]["generation_usage"]["successful_attempt_number"],
             2,
         )
-        self.assertIn("traj-001-attempt-01", batch_storage.upload_calls[1]["text"])
-        self.assertNotIn("traj-000-attempt-01", batch_storage.upload_calls[1]["text"])
+        self.assertIn("traj-000001-attempt-01", batch_storage.upload_calls[1]["text"])
+        self.assertNotIn("traj-000000-attempt-01", batch_storage.upload_calls[1]["text"])
 
     def test_batch_processing_disable_validation_keeps_invalid_trajectory(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             runtime_config = RuntimeConfig(
                 composite_task="PrepareCoffee",
                 num_trajectories=1,
-                output_path=Path(tmpdir) / "prepare_coffee_trajectories.json",
                 model="gemini-3-flash-preview",
                 sdk="google-genai",
                 project="demo-project",
@@ -1632,7 +1904,7 @@ class GenerationTests(unittest.TestCase):
                         "gs://demo-bucket/output/round-01.jsonl",
                         [
                             make_batch_output_row(
-                                "traj-000-attempt-00",
+                                "traj-000000-attempt-00",
                                 candidate=make_invalid_candidate_missing_initial_communication(),
                             )
                         ],
@@ -1671,7 +1943,6 @@ class GenerationTests(unittest.TestCase):
             runtime_config = RuntimeConfig(
                 composite_task="PrepareCoffee",
                 num_trajectories=1,
-                output_path=Path(tmpdir) / "prepare_coffee_trajectories.json",
                 model="gemini-3-flash-preview",
                 sdk="google-genai",
                 project="demo-project",
@@ -1697,7 +1968,7 @@ class GenerationTests(unittest.TestCase):
                         "gs://demo-bucket/output/round-01.jsonl",
                         [
                             make_batch_output_row(
-                                "traj-000-attempt-00",
+                                "traj-000000-attempt-00",
                                 candidate=make_valid_candidate(),
                                 usage_metadata=make_batch_usage_metadata(),
                             )
@@ -1746,7 +2017,6 @@ class GenerationTests(unittest.TestCase):
             runtime_config = RuntimeConfig(
                 composite_task="PrepareCoffee",
                 num_trajectories=1,
-                output_path=Path(tmpdir) / "prepare_coffee_trajectories.json",
                 model="gemini-3-flash-preview",
                 sdk="google-genai",
                 project="demo-project",
@@ -1794,7 +2064,6 @@ class GenerationTests(unittest.TestCase):
             runtime_config = RuntimeConfig(
                 composite_task="PrepareCoffee",
                 num_trajectories=1,
-                output_path=Path(tmpdir) / "prepare_coffee_trajectories.json",
                 model="gemini-3-flash-preview",
                 sdk="google-genai",
                 project="demo-project",
@@ -1839,11 +2108,74 @@ class GenerationTests(unittest.TestCase):
         self.assertIn("JOB_STATE_FAILED", str(raised.exception))
         self.assertIn("permission denied", str(raised.exception))
 
-    def test_saved_valid_trajectory_uses_agent_ids_and_communication_tool_args(self):
+    def test_saved_valid_trajectory_uses_agent_and_communication_args(self):
         runtime_config = RuntimeConfig(
             composite_task="PrepareCoffee",
             num_trajectories=1,
-            output_path=mock.sentinel.output_path,
+            model="gemini-3-flash-preview",
+            sdk="google-genai",
+            project="demo-project",
+            location="global",
+            temperature=0.5,
+            max_workers=1,
+            max_retries=1,
+        )
+
+        payload = generate_trajectories(
+            runtime_config,
+            client_factory=lambda: SequencedFakeClient(
+                [make_valid_candidate(include_agents=False)]
+            ),
+            show_progress=False,
+        )
+
+        trajectory = payload["trajectories"][0]
+        self.assertEqual(
+            trajectory["agents"],
+            [{"agent": "agent_0"}, {"agent": "agent_1"}],
+        )
+        self.assertEqual(trajectory["steps"][0]["tool"], "communicate")
+        self.assertEqual(
+            trajectory["steps"][0]["args"],
+            {
+                "to_agent_id": "agent_1",
+                "message": "I will grab the mug.",
+            },
+        )
+        self.assertNotIn("entity_refs", trajectory["steps"][0])
+        self.assertNotIn("message", trajectory["steps"][0])
+
+    def test_saved_generated_trajectory_omits_get_image_and_image_paths(self):
+        runtime_config = RuntimeConfig(
+            composite_task="PrepareCoffee",
+            num_trajectories=1,
+            model="gemini-3-flash-preview",
+            sdk="google-genai",
+            project="demo-project",
+            location="global",
+            temperature=0.5,
+            max_workers=1,
+            max_retries=1,
+        )
+        payload = generate_trajectories(
+            runtime_config,
+            client_factory=lambda: SequencedFakeClient(
+                [make_valid_candidate(include_agents=False)]
+            ),
+            show_progress=False,
+        )
+
+        self.assertTrue(
+            all(step["tool"] != "get_image" for step in payload["trajectories"][0]["steps"])
+        )
+        self.assertTrue(
+            all("image_path" not in step for step in payload["trajectories"][0]["steps"])
+        )
+
+    def test_generated_payload_includes_prompt_sidecars(self):
+        runtime_config = RuntimeConfig(
+            composite_task="PrepareCoffee",
+            num_trajectories=1,
             model="gemini-3-flash-preview",
             sdk="google-genai",
             project="demo-project",
@@ -1859,20 +2191,53 @@ class GenerationTests(unittest.TestCase):
             show_progress=False,
         )
 
-        trajectory = payload["trajectories"][0]
         self.assertEqual(
-            trajectory["agents"],
-            [{"agent_id": "agent_0"}, {"agent_id": "agent_1"}],
+            payload["trajectory_prompts"],
+            [
+                {
+                    "trajectory_id": "traj_000000",
+                    "prompt": build_prepare_coffee_prompt("traj-000000-attempt-00"),
+                }
+            ],
         )
-        self.assertEqual(trajectory["steps"][0]["tool_name"], "communicate")
         self.assertEqual(
-            trajectory["steps"][0]["tool_args"],
+            payload["model_config"],
             {
-                "to_agent_id": "agent_1",
-                "message": "I will grab the mug.",
+                "reasoning": {"thinking_level": None},
+                "sampling": {"temperature": 0.5},
             },
         )
-        self.assertNotIn("message", trajectory["steps"][0])
+
+    def test_generated_payload_includes_raw_output_sidecars(self):
+        runtime_config = RuntimeConfig(
+            composite_task="PrepareCoffee",
+            num_trajectories=1,
+            model="gemini-3-flash-preview",
+            sdk="google-genai",
+            project="demo-project",
+            location="global",
+            temperature=0.5,
+            max_workers=1,
+            max_retries=1,
+        )
+        raw_output = json.dumps(make_valid_candidate())
+
+        payload = generate_trajectories(
+            runtime_config,
+            client_factory=lambda: SequencedFakeClient([raw_output]),
+            show_progress=False,
+        )
+
+        self.assertEqual(
+            payload["trajectory_outputs"],
+            [
+                {
+                    "trajectory_id": "traj_000000",
+                    "raw_output": raw_output,
+                }
+            ],
+        )
+        self.assertNotIn("raw_output", payload["trajectories"][0])
 
     def test_permission_denied_errors_are_treated_as_non_retryable(self):
         self.assertTrue(
@@ -1887,7 +2252,6 @@ class GenerationTests(unittest.TestCase):
         runtime_config = RuntimeConfig(
             composite_task="PrepareCoffee",
             num_trajectories=2,
-            output_path=mock.sentinel.output_path,
             model="gemini-3-flash-preview",
             sdk="google-genai",
             project="demo-project",
@@ -1924,7 +2288,7 @@ class GenerationTests(unittest.TestCase):
         self.assertEqual(len(payload["trajectories"]), 2)
         self.assertEqual(
             [trajectory["trajectory_id"] for trajectory in payload["trajectories"]],
-            ["traj_000", "traj_001"],
+            ["traj_000000", "traj_000001"],
         )
         self.assertNotEqual(
             payload["trajectories"][0]["validation"]["signature"],
@@ -1935,7 +2299,6 @@ class GenerationTests(unittest.TestCase):
         runtime_config = RuntimeConfig(
             composite_task="PrepareCoffee",
             num_trajectories=1,
-            output_path=mock.sentinel.output_path,
             model="gemini-3-flash-preview",
             sdk="google-genai",
             project="demo-project",
@@ -2029,7 +2392,6 @@ class GenerationTests(unittest.TestCase):
         runtime_config = RuntimeConfig(
             composite_task="PrepareCoffee",
             num_trajectories=1,
-            output_path=mock.sentinel.output_path,
             model="gemini-3-flash-preview",
             sdk="google-genai",
             project="demo-project",
@@ -2061,18 +2423,12 @@ class GenerationTests(unittest.TestCase):
                 show_progress=True,
             )
 
-        self.assertEqual(log_runtime_message.call_count, 2)
+        self.assertEqual(log_runtime_message.call_count, 1)
         projected_log = log_runtime_message.call_args_list[0]
-        trajectory_log = log_runtime_message.call_args_list[1]
 
         self.assertIn("Projected cost", projected_log.args[0])
         self.assertIn("best case 1 try / worst case 3 tries", projected_log.args[0])
         self.assertEqual(projected_log.kwargs["enabled"], True)
-
-        self.assertIn("traj_000", trajectory_log.args[0])
-        self.assertIn("attempt 1/3", trajectory_log.args[0])
-        self.assertNotIn("$0.0013", trajectory_log.args[0])
-        self.assertEqual(trajectory_log.kwargs["enabled"], True)
 
     def test_generate_single_trajectory_updates_progress_status_with_cost(self):
         self.assertEqual(PROGRESS_BAR_WIDTH, 30)
@@ -2080,7 +2436,6 @@ class GenerationTests(unittest.TestCase):
         runtime_config = RuntimeConfig(
             composite_task="PrepareCoffee",
             num_trajectories=1,
-            output_path=mock.sentinel.output_path,
             model="gemini-3-flash-preview",
             sdk="google-genai",
             project="demo-project",
@@ -2115,6 +2470,7 @@ class GenerationTests(unittest.TestCase):
         )
 
         self.assertEqual(trajectory_progress.total, 1)
+        trajectory_progress.start.assert_called_once()
         self.assertEqual(
             trajectory_progress.set_postfix_str.call_args_list[0].args[0],
             "attempt 1/3 generating",
@@ -2129,7 +2485,6 @@ class GenerationTests(unittest.TestCase):
         runtime_config = RuntimeConfig(
             composite_task="PrepareCoffee",
             num_trajectories=1,
-            output_path=mock.sentinel.output_path,
             model="gemini-3-flash-preview",
             sdk="google-genai",
             project="demo-project",
@@ -2158,6 +2513,7 @@ class GenerationTests(unittest.TestCase):
         status_updates = [
             call.args[0] for call in trajectory_progress.set_postfix_str.call_args_list
         ]
+        trajectory_progress.start.assert_called_once()
         self.assertIn("attempt 1/2 retry calls=11", status_updates)
         self.assertTrue(status_updates[-1].startswith("done $"))
         self.assertTrue(status_updates[-1].endswith(" calls=12"))
@@ -2166,7 +2522,6 @@ class GenerationTests(unittest.TestCase):
         runtime_config = RuntimeConfig(
             composite_task="PrepareCoffee",
             num_trajectories=1,
-            output_path=mock.sentinel.output_path,
             model="gemini-3-flash-preview",
             sdk="google-genai",
             project="demo-project",
@@ -2197,13 +2552,17 @@ class GenerationTests(unittest.TestCase):
         status_updates = [
             call.args[0] for call in trajectory_progress.set_postfix_str.call_args_list
         ]
+        trajectory_progress.start.assert_called_once()
         self.assertEqual(status_updates[0], "generating")
         self.assertIn("retrying", status_updates)
         self.assertNotIn("valid", status_updates)
         self.assertTrue(status_updates[-1].startswith("done $"))
         self.assertIn("calls=11", status_updates[-1])
         self.assertTrue(
-            status_updates[-1].endswith(" invalid TaskSemanticValidationError")
+            status_updates[-1].endswith(
+                " invalid TaskSemanticValidationError: Both agents must coordinate "
+                "via communication before the first task action."
+            )
         )
         self.assertTrue(all("attempt " not in status for status in status_updates))
 
@@ -2211,7 +2570,6 @@ class GenerationTests(unittest.TestCase):
         runtime_config = RuntimeConfig(
             composite_task="PrepareCoffee",
             num_trajectories=2,
-            output_path=mock.sentinel.output_path,
             model="gemini-3-flash-preview",
             sdk="google-genai",
             project="demo-project",
@@ -2265,14 +2623,114 @@ class GenerationTests(unittest.TestCase):
         self.assertFalse(rich_progress.call_args.kwargs["expand"])
         fake_progress.start.assert_called_once()
         self.assertEqual(fake_progress.add_task.call_count, 3)
+        self.assertEqual(fake_progress.add_task.call_args_list[0].kwargs.get("start"), None)
+        self.assertEqual(fake_progress.add_task.call_args_list[1].kwargs["start"], False)
+        self.assertEqual(fake_progress.add_task.call_args_list[2].kwargs["start"], False)
         display.close()
         fake_progress.stop.assert_called_once()
+
+    def test_batch_rich_progress_display_uses_non_expanding_layout(self):
+        runtime_config = RuntimeConfig(
+            composite_task="PrepareCoffee",
+            num_trajectories=2,
+            model="gemini-3-flash-preview",
+            sdk="google-genai",
+            project="demo-project",
+            location="global",
+            temperature=0.5,
+            max_workers=2,
+            max_retries=3,
+            batch_processing=True,
+            batch_gcs_prefix="gs://demo-bucket/batch-prefix",
+        )
+        fake_progress = mock.Mock()
+        fake_progress.add_task.return_value = 201
+
+        with mock.patch(
+            "data_generation.task_level.runtime.batch_generation.Console",
+            return_value=mock.sentinel.console,
+        ) as console_cls:
+            with mock.patch(
+                "data_generation.task_level.runtime.batch_generation.SpinnerColumn",
+                return_value=mock.sentinel.spinner_column,
+            ):
+                with mock.patch(
+                    "data_generation.task_level.runtime.batch_generation.TextColumn",
+                    side_effect=[
+                        mock.sentinel.description_column,
+                        mock.sentinel.status_column,
+                    ],
+                ):
+                    with mock.patch(
+                        "data_generation.task_level.runtime.batch_generation.BarColumn",
+                        return_value=mock.sentinel.bar_column,
+                    ):
+                        with mock.patch(
+                            "data_generation.task_level.runtime.batch_generation.TaskProgressColumn",
+                            return_value=mock.sentinel.task_progress_column,
+                        ):
+                            with mock.patch(
+                                "data_generation.task_level.runtime.batch_generation.MofNCompleteColumn",
+                                return_value=mock.sentinel.mofn_column,
+                            ):
+                                with mock.patch(
+                                    "data_generation.task_level.runtime.batch_generation.TimeElapsedColumn",
+                                    return_value=mock.sentinel.elapsed_column,
+                                ):
+                                    with mock.patch(
+                                        "data_generation.task_level.runtime.batch_generation.RichProgress",
+                                        return_value=fake_progress,
+                                    ) as rich_progress:
+                                        display = RichBatchProgressDisplay(runtime_config)
+
+        console_cls.assert_called_once_with(stderr=True)
+        self.assertEqual(rich_progress.call_args.kwargs["console"], mock.sentinel.console)
+        self.assertFalse(rich_progress.call_args.kwargs["expand"])
+        fake_progress.start.assert_called_once()
+        fake_progress.add_task.assert_called_once_with(
+            "[cyan]trajectories[/cyan]",
+            total=runtime_config.num_trajectories,
+            status="waiting for batch results",
+        )
+        display.close()
+        fake_progress.stop.assert_called_once()
+
+    def test_create_batch_progress_handles_prefers_rich_display(self):
+        runtime_config = RuntimeConfig(
+            composite_task="PrepareCoffee",
+            num_trajectories=2,
+            model="gemini-3-flash-preview",
+            sdk="google-genai",
+            project="demo-project",
+            location="global",
+            temperature=0.5,
+            max_workers=2,
+            max_retries=3,
+            batch_processing=True,
+            batch_gcs_prefix="gs://demo-bucket/batch-prefix",
+        )
+        fake_display = mock.Mock()
+        fake_display.overall_progress = mock.sentinel.overall_progress
+        fake_display.console.print = mock.sentinel.log_writer
+
+        with mock.patch(
+            "data_generation.task_level.runtime.batch_generation.RichBatchProgressDisplay",
+            return_value=fake_display,
+        ):
+            handles = _create_batch_progress_handles(
+                runtime_config,
+                disable_progress=False,
+            )
+
+        self.assertEqual(handles.display, fake_display)
+        self.assertEqual(handles.overall_progress, mock.sentinel.overall_progress)
+        self.assertEqual(handles.trajectory_progress_bars, [])
+        self.assertEqual(handles.log_writer, mock.sentinel.log_writer)
 
     def test_cost_summary_falls_back_to_heuristic_without_usage_metadata(self):
         runtime_config = RuntimeConfig(
             composite_task="PrepareCoffee",
             num_trajectories=1,
-            output_path=mock.sentinel.output_path,
             model="gemini-3-flash-preview",
             sdk="google-genai",
             project="demo-project",
@@ -2314,7 +2772,6 @@ class GenerationTests(unittest.TestCase):
         runtime_config = RuntimeConfig(
             composite_task="PrepareCoffee",
             num_trajectories=2,
-            output_path=mock.sentinel.output_path,
             model="gemini-3-flash-preview",
             sdk="google-genai",
             project="demo-project",
@@ -2350,7 +2807,6 @@ class GenerationTests(unittest.TestCase):
         runtime_config = RuntimeConfig(
             composite_task="PrepareCoffee",
             num_trajectories=1,
-            output_path=mock.sentinel.output_path,
             model="gemini-3-flash-preview",
             sdk="google-genai",
             project="demo-project",
@@ -2410,7 +2866,6 @@ class GenerationTests(unittest.TestCase):
         runtime_config = RuntimeConfig(
             composite_task="PrepareCoffee",
             num_trajectories=1,
-            output_path=mock.sentinel.output_path,
             model="gemini-3-flash-preview",
             sdk="google-genai",
             project="demo-project",
@@ -2420,15 +2875,19 @@ class GenerationTests(unittest.TestCase):
             max_retries=1,
             disable_validation=True,
         )
+        invalid_candidate = make_invalid_candidate_missing_initial_communication()
+        invalid_candidate.pop("agents")
         payload = generate_trajectories(
             runtime_config,
-            client_factory=lambda: SequencedFakeClient(
-                [make_invalid_candidate_missing_initial_communication()]
-            ),
+            client_factory=lambda: SequencedFakeClient([invalid_candidate]),
             show_progress=False,
         )
 
         trajectory = payload["trajectories"][0]
+        self.assertEqual(
+            trajectory["agents"],
+            [{"agent": "agent_0"}, {"agent": "agent_1"}],
+        )
         self.assertFalse(trajectory["validation"]["is_valid"])
         self.assertTrue(trajectory["validation"]["validation_disabled"])
         self.assertEqual(
@@ -2439,6 +2898,7 @@ class GenerationTests(unittest.TestCase):
             "Both agents must coordinate via communication before the first task action.",
             trajectory["validation"]["error"],
         )
+        self.assertEqual(trajectory["validation"]["step"], 1)
         self.assertEqual(len(trajectory["steps"]), 11)
         self.assertNotIn(
             "successful_attempt_number",
@@ -2464,13 +2924,12 @@ class GenerationTests(unittest.TestCase):
         runtime_config = RuntimeConfig(
             composite_task="PrepareCoffee",
             num_trajectories=2,
-            output_path=mock.sentinel.output_path,
             model="gemini-3-flash-preview",
             sdk="google-genai",
             project="demo-project",
             location="global",
             temperature=0.5,
-            max_workers=2,
+            max_workers=1,
             max_retries=1,
             disable_validation=True,
         )
@@ -2495,7 +2954,6 @@ class GenerationTests(unittest.TestCase):
         runtime_config = RuntimeConfig(
             composite_task="PrepareCoffee",
             num_trajectories=1,
-            output_path=mock.sentinel.output_path,
             model="gemini-3-flash-preview",
             sdk="google-genai",
             project="demo-project",
@@ -2518,24 +2976,16 @@ class GenerationTests(unittest.TestCase):
             )
 
         logged_messages = [call.args[0] for call in log_runtime_message.call_args_list]
-        self.assertEqual(len(logged_messages), 2)
+        self.assertEqual(len(logged_messages), 1)
         self.assertTrue(logged_messages[0].startswith("Projected cost: $"))
         self.assertNotIn("best case", logged_messages[0])
         self.assertNotIn("worst case", logged_messages[0])
         self.assertNotIn("attempt ", logged_messages[0])
-        self.assertEqual(
-            logged_messages[1],
-            "Generated traj_000 invalid "
-            "TaskSemanticValidationError: Both agents must coordinate via "
-            "communication before the first task action.",
-        )
-        self.assertNotIn("attempt ", logged_messages[1])
 
     def test_disable_validation_output_payloads_omit_attempt_number(self):
         runtime_config = RuntimeConfig(
             composite_task="PrepareCoffee",
             num_trajectories=1,
-            output_path=Path("/tmp/prepare_coffee_trajectories.json"),
             model="gemini-3-flash-preview",
             sdk="google-genai",
             project="demo-project",
@@ -2552,11 +3002,12 @@ class GenerationTests(unittest.TestCase):
             ),
             show_progress=False,
         )
+        summary_path = Path("/tmp/summary.json")
 
         summary_payload = build_summary_output_payload(payload)
         cost_payload = build_cost_output_payload(
             payload,
-            trajectory_output_path=runtime_config.output_path,
+            trajectory_output_path=summary_path,
         )
 
         self.assertEqual(summary_payload["cost_summary"], payload["cost_summary"])
@@ -2584,17 +3035,94 @@ class GenerationTests(unittest.TestCase):
             payload["trajectories"][0]["generation_usage"]["observed_cost_usd"],
         )
 
-    def test_resolve_cost_output_path_defaults_to_output_stem_with_costs_suffix(self):
+    def test_error_summary_output_payload_aggregates_retry_and_saved_errors(self):
+        runtime_config = RuntimeConfig(
+            composite_task="PrepareCoffee",
+            num_trajectories=1,
+            model="gemini-3-flash-preview",
+            sdk="google-genai",
+            project="demo-project",
+            location="global",
+            temperature=0.5,
+            max_workers=1,
+            max_retries=2,
+            disable_validation=True,
+        )
+        invalid_candidate = make_invalid_candidate_missing_initial_communication()
+        invalid_candidate.pop("agents")
+        payload = generate_trajectories(
+            runtime_config,
+            client_factory=lambda: SequencedFakeClient(
+                [
+                    "not valid json",
+                    invalid_candidate,
+                ]
+            ),
+            show_progress=False,
+        )
+
+        error_payload = build_error_summary_output_payload(
+            payload,
+            trajectory_output_path=Path("/tmp/summary.json"),
+        )
+
+        self.assertEqual(error_payload["trajectory_output_path"], "/tmp/summary.json")
+        self.assertEqual(error_payload["trajectory_directory"], "/tmp/trajectories")
+        self.assertEqual(error_payload["total_errors"], 2)
         self.assertEqual(
-            resolve_cost_output_path(Path("/tmp/prepare_coffee_trajectories.json")),
-            Path("/tmp/prepare_coffee_trajectories_costs.json"),
+            error_payload["possible_errors"],
+            ["ResponseFormatValidationError", "TaskSemanticValidationError"],
+        )
+        self.assertEqual(
+            error_payload["error_counts_by_type"],
+            [
+                {"error_type": "ResponseFormatValidationError", "count": 1},
+                {"error_type": "TaskSemanticValidationError", "count": 1},
+            ],
+        )
+        self.assertEqual(
+            error_payload["distinct_errors"],
+            [
+                {
+                    "error_type": "ResponseFormatValidationError",
+                    "message": "Model response did not contain JSON.",
+                    "summary": (
+                        "ResponseFormatValidationError: "
+                        "Model response did not contain JSON."
+                    ),
+                    "count": 1,
+                },
+                {
+                    "error_type": "TaskSemanticValidationError",
+                    "message": (
+                        "Both agents must coordinate via communication before "
+                        "the first task action."
+                    ),
+                    "summary": (
+                        "TaskSemanticValidationError: Both agents must coordinate "
+                        "via communication before the first task action."
+                    ),
+                    "count": 1,
+                },
+            ],
+        )
+        self.assertEqual(
+            [event["error_type"] for event in error_payload["error_events"]],
+            ["ResponseFormatValidationError", "TaskSemanticValidationError"],
+        )
+        self.assertFalse(error_payload["error_events"][0]["saved_in_output"])
+        self.assertTrue(error_payload["error_events"][1]["saved_in_output"])
+
+    def test_resolve_cost_output_path_defaults_to_cost_summary_filename(self):
+        self.assertEqual(
+            resolve_cost_output_path(Path("/tmp/summary.json")),
+            Path("/tmp/cost_summary.json"),
         )
 
     def test_build_cost_output_payload_extracts_only_cost_data(self):
         runtime_config = RuntimeConfig(
             composite_task="PrepareCoffee",
             num_trajectories=1,
-            output_path=Path("/tmp/prepare_coffee_trajectories.json"),
             model="gemini-3-flash-preview",
             sdk="google-genai",
             project="demo-project",
@@ -2608,19 +3136,20 @@ class GenerationTests(unittest.TestCase):
             client_factory=lambda: SequencedFakeClient([make_valid_candidate()]),
             show_progress=False,
         )
+        summary_path = Path("/tmp/summary.json")
 
         cost_payload = build_cost_output_payload(
             payload,
-            trajectory_output_path=runtime_config.output_path,
+            trajectory_output_path=summary_path,
         )
 
         self.assertEqual(
             cost_payload["trajectory_output_path"],
-            str(runtime_config.output_path),
+            str(summary_path),
         )
         self.assertEqual(
             cost_payload["trajectory_directory"],
-            str(runtime_config.output_path.parent / "trajectories"),
+            str(summary_path.parent / "trajectories"),
         )
         self.assertEqual(len(cost_payload["trajectory_costs"]), 1)
         self.assertEqual(
@@ -2632,6 +3161,7 @@ class GenerationTests(unittest.TestCase):
             payload["trajectories"][0]["generation_usage"],
         )
         self.assertEqual(cost_payload["cost_summary"], payload["cost_summary"])
+        self.assertEqual(cost_payload["model_config"], payload["model_config"])
         self.assertNotIn("cost_estimate", cost_payload)
         self.assertNotIn("project", cost_payload)
         self.assertNotIn("location", cost_payload)
@@ -2648,7 +3178,6 @@ class GenerationTests(unittest.TestCase):
         runtime_config = RuntimeConfig(
             composite_task="PrepareCoffee",
             num_trajectories=1,
-            output_path=Path("/tmp/prepare_coffee_trajectories.json"),
             model="gemini-3-flash-preview",
             sdk="google-genai",
             project="demo-project",
@@ -2667,6 +3196,7 @@ class GenerationTests(unittest.TestCase):
 
         self.assertEqual(summary_payload["composite_task"], payload["composite_task"])
         self.assertEqual(summary_payload["cost_summary"], payload["cost_summary"])
+        self.assertEqual(summary_payload["model_config"], payload["model_config"])
         self.assertNotIn("cost_estimate", summary_payload)
         self.assertNotIn("project", summary_payload)
         self.assertNotIn("location", summary_payload)
@@ -2678,23 +3208,63 @@ class GenerationTests(unittest.TestCase):
         self.assertNotIn("pricing_supported", summary_payload["cost_summary"])
         self.assertNotIn("pricing_reference", summary_payload["cost_summary"])
         self.assertNotIn("currency", summary_payload["cost_summary"])
+        self.assertEqual(summary_payload["completed_trajectories"], 1)
+        self.assertEqual(summary_payload["invalid_trajectories"], 0)
+        self.assertEqual(summary_payload["successful_trajectory_fraction"], 1.0)
         self.assertEqual(summary_payload["trajectory_directory"], "trajectories")
         self.assertEqual(
             summary_payload["trajectory_files"],
             [
                 {
                     "trajectory_id": payload["trajectories"][0]["trajectory_id"],
-                    "path": "trajectories/traj_000.json",
+                    "path": "trajectories/traj_000000.json",
                 }
             ],
         )
         self.assertNotIn("trajectories", summary_payload)
+
+    def test_summary_output_payload_counts_invalid_and_successful_trajectories(self):
+        invalid_candidate = make_invalid_candidate_missing_initial_communication()
+        invalid_candidate.pop("agents")
+        client = SequencedFakeClient(
+            [
+                make_valid_candidate(),
+                invalid_candidate,
+            ]
+        )
+        runtime_config = RuntimeConfig(
+            composite_task="PrepareCoffee",
+            num_trajectories=2,
+            model="gemini-3-flash-preview",
+            sdk="google-genai",
+            project="demo-project",
+            location="global",
+            temperature=0.5,
+            max_workers=1,
+            max_retries=1,
+            disable_validation=True,
+        )
+        payload = generate_trajectories(
+            runtime_config,
+            client_factory=lambda: client,
+            show_progress=False,
+        )
+
+        summary_payload = build_summary_output_payload(payload)
+
+        self.assertEqual(summary_payload["completed_trajectories"], 2)
+        self.assertEqual(summary_payload["invalid_trajectories"], 1)
+        self.assertEqual(summary_payload["successful_trajectory_fraction"], 0.5)
 
     def test_main_writes_costs_to_separate_file(self):
         fixed_payload = {
             "composite_task": "PrepareCoffee",
             "sdk": "google-genai",
             "model": "gemini-3-flash-preview",
+            "model_config": {
+                "reasoning": {"thinking_level": "minimal"},
+                "sampling": {"temperature": 0.2},
+            },
             "project": "demo-project",
             "location": "global",
             "num_trajectories": 1,
@@ -2705,9 +3275,21 @@ class GenerationTests(unittest.TestCase):
                 "total_tokens": 1250,
                 "total_cost_usd": 0.001,
             },
+            "trajectory_prompts": [
+                {
+                    "trajectory_id": "traj_000000",
+                    "prompt": "Prompt for traj_000000",
+                }
+            ],
+            "trajectory_outputs": [
+                {
+                    "trajectory_id": "traj_000000",
+                    "raw_output": '{"steps":[{"reasoning":"raw model reasoning"}]}',
+                }
+            ],
             "trajectories": [
                 {
-                    "trajectory_id": "traj_000",
+                    "trajectory_id": "traj_000000",
                     "generation_usage": {
                         "successful_attempt_number": 1,
                         "observed_cost_usd": 0.001,
@@ -2717,36 +3299,55 @@ class GenerationTests(unittest.TestCase):
         }
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            output_path = Path(tmpdir) / "trajectories.json"
+            summary_path = Path(tmpdir) / "summary.json"
             cost_output_path = Path(tmpdir) / "costs.json"
+            error_output_path = Path(tmpdir) / "summary_errors.json"
 
             with mock.patch(
                 "data_generation.task_level.trajectory_generation.generate_trajectories",
                 return_value=fixed_payload,
             ):
-                with mock.patch("builtins.print") as mocked_print:
-                    exit_code = main(
-                        [
-                            "--output",
-                            str(output_path),
-                            "--cost-output",
-                            str(cost_output_path),
-                        ]
-                    )
+                with mock.patch(
+                    "data_generation.task_level.trajectory_generation.resolve_dataset_output_path",
+                    return_value=summary_path,
+                ):
+                    with mock.patch("builtins.print") as mocked_print:
+                        exit_code = main(
+                            [
+                                "--cost-output",
+                                str(cost_output_path),
+                            ]
+                        )
 
             self.assertEqual(exit_code, 0)
-            self.assertTrue(output_path.exists())
+            self.assertTrue(summary_path.exists())
             self.assertTrue(cost_output_path.exists())
+            self.assertTrue(error_output_path.exists())
 
-            summary_payload = json.loads(output_path.read_text(encoding="utf-8"))
+            summary_payload = json.loads(summary_path.read_text(encoding="utf-8"))
             cost_payload = json.loads(cost_output_path.read_text(encoding="utf-8"))
-            trajectory_output_dir = output_path.parent / "trajectories"
-            trajectory_path = trajectory_output_dir / "traj_000.json"
+            error_payload = json.loads(error_output_path.read_text(encoding="utf-8"))
+            trajectory_output_dir = summary_path.parent / "trajectories"
+            prompt_output_dir = summary_path.parent / "prompts"
+            raw_output_dir = summary_path.parent / "outputs"
+            trajectory_path = trajectory_output_dir / "traj_000000.json"
+            prompt_path = prompt_output_dir / "traj_000000.md"
+            raw_output_path = raw_output_dir / "traj_000000.txt"
 
             self.assertTrue(trajectory_path.exists())
+            self.assertTrue(prompt_path.exists())
+            self.assertTrue(raw_output_path.exists())
             self.assertEqual(
                 json.loads(trajectory_path.read_text(encoding="utf-8")),
                 fixed_payload["trajectories"][0],
+            )
+            self.assertEqual(
+                prompt_path.read_text(encoding="utf-8"),
+                fixed_payload["trajectory_prompts"][0]["prompt"],
+            )
+            self.assertEqual(
+                raw_output_path.read_text(encoding="utf-8"),
+                fixed_payload["trajectory_outputs"][0]["raw_output"],
             )
             self.assertEqual(
                 summary_payload,
@@ -2754,6 +3355,10 @@ class GenerationTests(unittest.TestCase):
                     "composite_task": "PrepareCoffee",
                     "sdk": "google-genai",
                     "model": "gemini-3-flash-preview",
+                    "model_config": {
+                        "reasoning": {"thinking_level": "minimal"},
+                        "sampling": {"temperature": 0.2},
+                    },
                     "num_trajectories": 1,
                     "generated_at": "2026-03-10T00:00:00+00:00",
                     "cost_summary": {
@@ -2762,11 +3367,14 @@ class GenerationTests(unittest.TestCase):
                         "total_tokens": 1250,
                         "total_cost_usd": 0.001,
                     },
+                    "completed_trajectories": 1,
+                    "invalid_trajectories": 0,
+                    "successful_trajectory_fraction": 1.0,
                     "trajectory_directory": "trajectories",
                     "trajectory_files": [
                         {
-                            "trajectory_id": "traj_000",
-                            "path": "trajectories/traj_000.json",
+                            "trajectory_id": "traj_000000",
+                            "path": "trajectories/traj_000000.json",
                         }
                     ],
                 },
@@ -2775,7 +3383,7 @@ class GenerationTests(unittest.TestCase):
             self.assertNotIn("location", summary_payload)
             self.assertEqual(
                 cost_payload["trajectory_output_path"],
-                str(output_path),
+                str(summary_path),
             )
             self.assertEqual(
                 cost_payload["trajectory_directory"],
@@ -2787,18 +3395,43 @@ class GenerationTests(unittest.TestCase):
                 cost_payload["cost_summary"],
                 fixed_payload["cost_summary"],
             )
+            self.assertEqual(
+                cost_payload["model_config"],
+                fixed_payload["model_config"],
+            )
             self.assertNotIn("cost_estimate", cost_payload)
             self.assertEqual(
                 cost_payload["trajectory_costs"],
                 [
                     {
-                        "trajectory_id": "traj_000",
+                        "trajectory_id": "traj_000000",
                         "generation_usage": {
                             "successful_attempt_number": 1,
                             "observed_cost_usd": 0.001,
                         },
                     }
                 ],
+            )
+            self.assertEqual(
+                error_payload,
+                {
+                    "composite_task": "PrepareCoffee",
+                    "sdk": "google-genai",
+                    "model": "gemini-3-flash-preview",
+                    "model_config": {
+                        "reasoning": {"thinking_level": "minimal"},
+                        "sampling": {"temperature": 0.2},
+                    },
+                    "num_trajectories": 1,
+                    "generated_at": "2026-03-10T00:00:00+00:00",
+                    "trajectory_output_path": str(summary_path),
+                    "trajectory_directory": str(trajectory_output_dir),
+                    "total_errors": 0,
+                    "possible_errors": [],
+                    "error_counts_by_type": [],
+                    "distinct_errors": [],
+                    "error_events": [],
+                },
             )
             printed_messages = [call.args[0] for call in mocked_print.call_args_list]
             self.assertTrue(
@@ -2810,6 +3443,24 @@ class GenerationTests(unittest.TestCase):
             self.assertTrue(
                 any(
                     message.startswith("Wrote 1 trajectory files to ")
+                    for message in printed_messages
+                )
+            )
+            self.assertTrue(
+                any(
+                    message.startswith("Wrote 1 prompt files to ")
+                    for message in printed_messages
+                )
+            )
+            self.assertTrue(
+                any(
+                    message.startswith("Wrote 1 raw output files to ")
+                    for message in printed_messages
+                )
+            )
+            self.assertTrue(
+                any(
+                    message.startswith("Wrote error summary to ")
                     for message in printed_messages
                 )
             )
@@ -2853,26 +3504,21 @@ class GenerationTests(unittest.TestCase):
         self.assertEqual(mocked_print.call_args.args[0], BATCH_INTERRUPTED_MESSAGE)
 
     def test_main_does_not_write_outputs_when_generation_is_interrupted(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_path = Path(tmpdir) / "trajectories.json"
-
+        with mock.patch(
+            "data_generation.task_level.trajectory_generation.generate_trajectories",
+            side_effect=KeyboardInterrupt(BATCH_INTERRUPTED_MESSAGE),
+        ):
             with mock.patch(
-                "data_generation.task_level.trajectory_generation.generate_trajectories",
-                side_effect=KeyboardInterrupt(BATCH_INTERRUPTED_MESSAGE),
-            ):
-                with mock.patch(
-                    "data_generation.task_level.trajectory_generation._write_generation_outputs"
-                ) as write_outputs:
-                    with self.assertRaises(KeyboardInterrupt):
-                        main(
-                            [
-                                "--output",
-                                str(output_path),
-                                "--batch-processing",
-                                "--batch-gcs-prefix",
-                                "gs://demo-bucket/batch-prefix",
-                            ]
-                        )
+                "data_generation.task_level.trajectory_generation._write_generation_outputs"
+            ) as write_outputs:
+                with self.assertRaises(KeyboardInterrupt):
+                    main(
+                        [
+                            "--batch-processing",
+                            "--batch-gcs-prefix",
+                            "gs://demo-bucket/batch-prefix",
+                        ]
+                    )
 
         write_outputs.assert_not_called()
 
@@ -2899,7 +3545,6 @@ class GenerationTests(unittest.TestCase):
         runtime_config = RuntimeConfig(
             composite_task="PlaceFoodInBowls",
             num_trajectories=1,
-            output_path=mock.sentinel.output_path,
             model="gemini-3-flash-preview",
             sdk="google-genai",
             project="demo-project",

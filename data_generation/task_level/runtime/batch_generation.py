@@ -19,27 +19,44 @@ from data_generation.task_level.runtime.client import (
     build_generation_usage_metadata,
     build_raw_google_genai_client,
 )
-from data_generation.task_level.tasks import ResponseFormatValidationError, TaskDefinition
+from data_generation.task_level.tasks import (
+    ResponseFormatValidationError,
+    TaskDefinition,
+    TrajectoryValidationError,
+)
 from data_generation.task_level.trajectory_generation import (
     BATCH_DIRECTORY_NAME,
     BATCH_INTERRUPTED_MESSAGE,
     BATCH_POLL_INTERVAL_SECONDS,
+    BarColumn,
+    Console,
     DATASET_RUN_TIMESTAMP_FORMAT,
-    DEFAULT_OUTPUT_PATH,
+    MofNCompleteColumn,
     OVERALL_PROGRESS_COLOR,
     ProgressHandles,
+    PROGRESS_BAR_WIDTH,
+    RichProgress,
+    RichTaskProgressAdapter,
     RuntimeConfig,
+    SpinnerColumn,
+    TaskProgressColumn,
     TQDM_BAR_FORMAT,
+    TextColumn,
+    TimeElapsedColumn,
     _build_generation_payload,
     _build_preflight_cost_estimate_summary,
+    _append_error_event,
+    _exception_error_event,
+    _resolve_summary_path,
     _build_trajectory_record_from_candidate,
     _close_progress_handles,
     _exception_summary,
     _log_cost_summary,
     _log_runtime_message,
     _trajectory_completion_log_message,
+    _validation_error_event,
     extract_json_candidate,
-    resolve_dataset_output_path,
+    format_trajectory_variation_key,
 )
 from data_generation.utils import camel_to_snake_case
 
@@ -167,13 +184,7 @@ def _build_batch_storage_from_runtime(runtime_config: RuntimeConfig) -> GCSBatch
 
 def _build_batch_run_context(runtime_config: RuntimeConfig) -> BatchRunContext:
     run_id = datetime.now(timezone.utc).strftime(DATASET_RUN_TIMESTAMP_FORMAT)
-    if runtime_config.output_path == DEFAULT_OUTPUT_PATH:
-        local_output_path = resolve_dataset_output_path(
-            runtime_config.output_path,
-            runtime_config.composite_task,
-        )
-    else:
-        local_output_path = runtime_config.output_path
+    local_output_path = _resolve_summary_path(runtime_config)
     local_staging_dir = local_output_path.parent / BATCH_DIRECTORY_NAME / run_id
     gcs_run_prefix = _join_gcs_uri(
         runtime_config.batch_gcs_prefix or "",
@@ -216,6 +227,16 @@ def _batch_request_payload(
     runtime_config: RuntimeConfig,
     task_definition: TaskDefinition,
 ) -> dict[str, Any]:
+    generation_config = {
+        "temperature": runtime_config.temperature,
+        "responseMimeType": "application/json",
+        "responseSchema": task_definition.response_schema,
+    }
+    if runtime_config.thinking_level is not None:
+        generation_config["thinkingConfig"] = {
+            "thinkingLevel": runtime_config.thinking_level,
+        }
+
     return {
         "contents": [
             {
@@ -223,11 +244,7 @@ def _batch_request_payload(
                 "parts": [{"text": prompt}],
             }
         ],
-        "generationConfig": {
-            "temperature": runtime_config.temperature,
-            "responseMimeType": "application/json",
-            "responseSchema": task_definition.response_schema,
-        },
+        "generationConfig": generation_config,
     }
 
 
@@ -238,7 +255,10 @@ def _build_batch_trajectory_request(
     runtime_config: RuntimeConfig,
     task_definition: TaskDefinition,
 ) -> BatchTrajectoryRequest:
-    variation_key = f"traj-{trajectory_index:03d}-attempt-{attempt_number - 1:02d}"
+    variation_key = format_trajectory_variation_key(
+        trajectory_index,
+        attempt_number - 1,
+    )
     return BatchTrajectoryRequest(
         trajectory_index=trajectory_index,
         attempt_number=attempt_number,
@@ -383,11 +403,56 @@ def _load_batch_output_rows(
     return rows
 
 
+class RichBatchProgressDisplay:
+    """Owns the interactive Rich layout for batch trajectory generation."""
+
+    def __init__(self, runtime_config: RuntimeConfig):
+        if RichProgress is None or Console is None:
+            raise RuntimeError("rich progress support is unavailable")
+
+        self.console = Console(stderr=True)
+        self._progress = RichProgress(
+            SpinnerColumn(style="cyan"),
+            TextColumn("[bold]{task.description}[/bold]"),
+            BarColumn(bar_width=PROGRESS_BAR_WIDTH),
+            TaskProgressColumn(),
+            MofNCompleteColumn(),
+            TimeElapsedColumn(),
+            TextColumn("[dim]{task.fields[status]}"),
+            console=self.console,
+            transient=False,
+            expand=False,
+        )
+        self._progress.start()
+        self.overall_progress = RichTaskProgressAdapter(
+            self._progress,
+            self._progress.add_task(
+                "[cyan]trajectories[/cyan]",
+                total=runtime_config.num_trajectories,
+                status="waiting for batch results",
+            ),
+            runtime_config.num_trajectories,
+        )
+
+    def close(self) -> None:
+        self._progress.stop()
+
+
 def _create_batch_progress_handles(
     runtime_config: RuntimeConfig,
     *,
     disable_progress: bool,
 ) -> ProgressHandles:
+    # Batch mode only needs an overall completion bar, so keep the Rich layout compact.
+    if not disable_progress and RichProgress is not None and Console is not None:
+        progress_display = RichBatchProgressDisplay(runtime_config)
+        return ProgressHandles(
+            display=progress_display,
+            overall_progress=progress_display.overall_progress,
+            trajectory_progress_bars=[],
+            log_writer=progress_display.console.print,
+        )
+
     overall_progress = tqdm(
         total=runtime_config.num_trajectories,
         desc="Trajectories",
@@ -403,6 +468,13 @@ def _create_batch_progress_handles(
         trajectory_progress_bars=[],
         log_writer=None,
     )
+
+
+def _set_batch_progress_status(progress_handles: ProgressHandles, status: str) -> None:
+    """Updates the shared batch progress status text when a progress bar is active."""
+
+    progress_handles.overall_progress.set_postfix_str(status)
+    progress_handles.overall_progress.refresh()
 
 
 def _batch_round_display_name(
@@ -506,6 +578,8 @@ def generate_trajectories_batch(
     validator = task_definition.validator_factory()
     seen_signatures: set[str] = set()
     seen_signatures_lock = threading.Lock()
+    error_events: list[dict[str, Any]] = []
+    error_events_lock = threading.Lock()
     disable_progress = not show_progress or not os.isatty(2)
     progress_handles = _create_batch_progress_handles(
         runtime_config,
@@ -537,11 +611,16 @@ def generate_trajectories_batch(
         enabled=show_progress,
         writer=progress_handles.log_writer,
     )
+    _set_batch_progress_status(progress_handles, "starting")
 
     try:
         for round_number in range(1, runtime_config.max_retries + 1):
             if not pending_indices:
                 break
+            _set_batch_progress_status(
+                progress_handles,
+                f"round {round_number}: preparing {len(pending_indices)}",
+            )
 
             batch_requests = [
                 _build_batch_trajectory_request(
@@ -580,6 +659,10 @@ def generate_trajectories_batch(
             if not isinstance(batch_job_name, str) or not batch_job_name:
                 raise TrajectoryGenerationError("Batch job creation did not return a job name.")
             active_job_names.add(batch_job_name)
+            _set_batch_progress_status(
+                progress_handles,
+                f"round {round_number}: running",
+            )
             _log_runtime_message(
                 "Submitted batch round "
                 f"{round_number}: {batch_job_name} -> {round_artifacts.gcs_output_prefix}",
@@ -595,6 +678,10 @@ def generate_trajectories_batch(
             batch_job_state = _batch_job_state_name(batch_job)
             if batch_job_state in {"JOB_STATE_FAILED", "JOB_STATE_CANCELLED", "JOB_STATE_EXPIRED"}:
                 raise TrajectoryGenerationError(_batch_job_failure_message(batch_job))
+            _set_batch_progress_status(
+                progress_handles,
+                f"round {round_number}: processing results",
+            )
 
             round_rows = _load_batch_output_rows(
                 storage_client,
@@ -645,6 +732,7 @@ def generate_trajectories_batch(
                                 task_definition=task_definition,
                                 candidate=candidate,
                                 prompt=batch_request.prompt,
+                                raw_output=response_payload,
                                 usage=usage,
                                 validator=validator,
                                 seen_signatures=seen_signatures,
@@ -655,6 +743,17 @@ def generate_trajectories_batch(
                             row_error = exc
                         else:
                             results[batch_request.trajectory_index] = trajectory_record
+                            _append_error_event(
+                                error_events,
+                                _validation_error_event(
+                                    trajectory_record["validation"],
+                                    source="batch",
+                                    trajectory_id=trajectory_record["trajectory_id"],
+                                    trajectory_index=batch_request.trajectory_index,
+                                    attempt_number=batch_request.attempt_number,
+                                ),
+                                error_events_lock=error_events_lock,
+                            )
                             progress_handles.overall_progress.update(1)
                             succeeded_count += 1
                             _log_runtime_message(
@@ -668,6 +767,23 @@ def generate_trajectories_batch(
                                 writer=progress_handles.log_writer,
                             )
                             continue
+
+                _append_error_event(
+                    error_events,
+                    _exception_error_event(
+                        row_error,
+                        source="batch",
+                        stage=(
+                            "validation"
+                            if isinstance(row_error, TrajectoryValidationError)
+                            else "generation"
+                        ),
+                        trajectory_index=batch_request.trajectory_index,
+                        attempt_number=batch_request.attempt_number,
+                        retryable=batch_request.attempt_number < runtime_config.max_retries,
+                    ),
+                    error_events_lock=error_events_lock,
+                )
 
                 if batch_request.attempt_number >= runtime_config.max_retries:
                     exhausted_errors[batch_request.trajectory_index] = row_error
@@ -692,6 +808,7 @@ def generate_trajectories_batch(
             if exhausted_errors:
                 _raise_exhausted_batch_errors(runtime_config, exhausted_errors)
             pending_indices = sorted(next_pending_indices)
+        _set_batch_progress_status(progress_handles, "complete")
     except KeyboardInterrupt:
         _cancel_active_batch_jobs(
             batch_service,
@@ -704,4 +821,8 @@ def generate_trajectories_batch(
         _close_progress_handles(progress_handles)
 
     ordered_trajectories = [results[index] for index in sorted(results)]
-    return _build_generation_payload(runtime_config, ordered_trajectories)
+    return _build_generation_payload(
+        runtime_config,
+        ordered_trajectories,
+        error_events=error_events,
+    )

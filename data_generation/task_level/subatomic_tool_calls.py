@@ -11,6 +11,7 @@ class SubatomicToolArg:
     """Represents one prompt-facing argument for a shared subatomic tool."""
 
     name: str
+    schema_type: str = "STRING"
 
 
 @dataclass(frozen=True)
@@ -30,18 +31,28 @@ class SubatomicToolSpec:
             arg_text = "no explicit constructor inputs"
         return f"- {self.name}: {self.description} Inputs: {arg_text}."
 
+
 def _build_tool_spec(
     name: str,
     description: str,
-    *arg_names: str,
+    *arg_specs: str | tuple[str, str],
 ) -> SubatomicToolSpec:
     """Builds a static subatomic tool specification."""
 
-    constructor_args = tuple(SubatomicToolArg(name=arg_name) for arg_name in arg_names)
+    constructor_args: list[SubatomicToolArg] = []
+    for arg_spec in arg_specs:
+        if isinstance(arg_spec, tuple):
+            arg_name, schema_type = arg_spec
+            constructor_args.append(
+                SubatomicToolArg(name=arg_name, schema_type=schema_type)
+            )
+            continue
+        constructor_args.append(SubatomicToolArg(name=arg_spec))
+
     return SubatomicToolSpec(
         name=name,
         description=description,
-        constructor_args=constructor_args,
+        constructor_args=tuple(constructor_args),
     )
 
 
@@ -58,6 +69,11 @@ SUBATOMIC_TOOL_SPECS: tuple[SubatomicToolSpec, ...] = (
         "Push in a sliding drawer or rack on a fixture.",
         "target_id",
         "part_id",
+    ),
+    _build_tool_spec(
+        "get_image",
+        "Capture an image from a named camera view for later inspection.",
+        "camera_view",
     ),
     _build_tool_spec(
         "navigate_to_fixture",
@@ -124,6 +140,11 @@ SUBATOMIC_TOOL_SPECS: tuple[SubatomicToolSpec, ...] = (
         "target_id",
         "control_id",
         "goal",
+    ),
+    _build_tool_spec(
+        "wait",
+        "Pause in place for a fixed number of seconds without changing symbolic state.",
+        ("seconds", "INTEGER"),
     ),
 )
 

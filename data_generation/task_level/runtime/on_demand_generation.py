@@ -28,6 +28,8 @@ def generate_single_trajectory(
     trajectory_progress: Any | None = None,
     seen_signatures: set[str] | None = None,
     seen_signatures_lock: threading.Lock | None = None,
+    error_events: list[dict[str, Any]] | None = None,
+    error_events_lock: threading.Lock | None = None,
 ) -> dict[str, Any]:
     client = (
         client_factory()
@@ -40,13 +42,21 @@ def generate_single_trajectory(
     )
     validator = task_definition.validator_factory()
     last_error: Exception | None = None
+    trajectory_started = False
 
     for attempt_index in range(runtime_config.max_retries):
         # Variation keys give retries a stable way to ask for distinct traces.
-        variation_key = f"traj-{trajectory_index:03d}-attempt-{attempt_index:02d}"
+        variation_key = trajectory_generation.format_trajectory_variation_key(
+            trajectory_index,
+            attempt_index,
+        )
         prompt = task_definition.build_prompt(variation_key)
         tool_call_count: int | None = None
         if trajectory_progress is not None:
+            # Start the elapsed timer only when this worker begins generation.
+            if not trajectory_started:
+                trajectory_progress.start()
+                trajectory_started = True
             trajectory_progress.set_postfix_str(
                 trajectory_generation._trajectory_generation_status(
                     runtime_config,
@@ -59,6 +69,7 @@ def generate_single_trajectory(
                 prompt=prompt,
                 response_schema=task_definition.response_schema,
                 temperature=runtime_config.temperature,
+                thinking_level=runtime_config.thinking_level,
             )
             response_payload, usage = trajectory_generation._unwrap_generation_response(
                 raw_response
@@ -71,6 +82,7 @@ def generate_single_trajectory(
                 task_definition=task_definition,
                 candidate=candidate,
                 prompt=prompt,
+                raw_output=response_payload,
                 usage=usage,
                 validator=validator,
                 seen_signatures=seen_signatures,
@@ -78,6 +90,17 @@ def generate_single_trajectory(
                 attempt_number=attempt_index + 1,
             )
             validation = trajectory_record["validation"]
+            trajectory_generation._append_error_event(
+                error_events,
+                trajectory_generation._validation_error_event(
+                    validation,
+                    source="on_demand",
+                    trajectory_id=trajectory_record["trajectory_id"],
+                    trajectory_index=trajectory_index,
+                    attempt_number=attempt_index + 1,
+                ),
+                error_events_lock=error_events_lock,
+            )
 
             if trajectory_progress is not None:
                 trajectory_progress.update(1)
@@ -100,6 +123,25 @@ def generate_single_trajectory(
             return trajectory_record
         except Exception as exc:
             last_error = exc
+            trajectory_generation._append_error_event(
+                error_events,
+                trajectory_generation._exception_error_event(
+                    exc,
+                    source="on_demand",
+                    stage=(
+                        "validation"
+                        if isinstance(exc, trajectory_generation.TrajectoryValidationError)
+                        else "generation"
+                    ),
+                    trajectory_index=trajectory_index,
+                    attempt_number=attempt_index + 1,
+                    retryable=(
+                        attempt_index + 1 < runtime_config.max_retries
+                        and not trajectory_generation._is_non_retryable_generation_error(exc)
+                    ),
+                ),
+                error_events_lock=error_events_lock,
+            )
             if trajectory_generation._is_non_retryable_generation_error(exc):
                 raise TrajectoryGenerationError(
                     "Trajectory generation failed with a non-retryable error: "
@@ -131,6 +173,8 @@ def generate_trajectories_on_demand(
 ) -> dict[str, Any]:
     seen_signatures: set[str] = set()
     seen_signatures_lock = threading.Lock()
+    error_events: list[dict[str, Any]] = []
+    error_events_lock = threading.Lock()
 
     disable_progress = not show_progress or not os.isatty(2)
     progress_handles = trajectory_generation._create_progress_handles(
@@ -169,6 +213,8 @@ def generate_trajectories_on_demand(
                 trajectory_progress=progress_handles.trajectory_progress_bars[index],
                 seen_signatures=seen_signatures,
                 seen_signatures_lock=seen_signatures_lock,
+                error_events=error_events,
+                error_events_lock=error_events_lock,
             ): index
             for index in range(runtime_config.num_trajectories)
         }
@@ -177,17 +223,6 @@ def generate_trajectories_on_demand(
             trajectory_index = futures[future]
             trajectory_record = future.result()
             results[trajectory_index] = trajectory_record
-            generation_usage = trajectory_record["generation_usage"]
-            trajectory_generation._log_runtime_message(
-                trajectory_generation._trajectory_completion_log_message(
-                    runtime_config,
-                    trajectory_id=trajectory_record["trajectory_id"],
-                    generation_usage=generation_usage,
-                    validation=trajectory_record["validation"],
-                ),
-                enabled=show_progress,
-                writer=progress_handles.log_writer,
-            )
     except KeyboardInterrupt:
         wait_for_shutdown = False
         for future in futures:
@@ -203,4 +238,5 @@ def generate_trajectories_on_demand(
     return trajectory_generation._build_generation_payload(
         runtime_config,
         ordered_trajectories,
+        error_events=error_events,
     )

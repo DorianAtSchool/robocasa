@@ -4,12 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from data_generation.task_level.subatomic_tool_calls import (
-    discover_subatomic_tools,
-    render_subatomic_tool_catalog,
-)
 from data_generation.task_level.subatomic_tool_specs import build_allowed_tool_specs
 from data_generation.task_level.tasks.base import (
+    build_canonical_agents,
     build_task_response_schema,
     FiniteStateTaskValidator,
     PreflightTokenEstimate,
@@ -133,7 +130,10 @@ build_prepare_coffee_prompt = make_task_prompt_builder(
     initial_state=PREPARE_COFFEE_INITIAL_STATE,
     allowed_tool_specs=PREPARE_COFFEE_ALLOWED_TOOL_SPECS,
     non_communicate_tool_names=PREPARE_COFFEE_NON_COMMUNICATE_TOOL_NAMES,
-    full_tool_catalog=render_subatomic_tool_catalog(discover_subatomic_tools()),
+    extra_execution_rules=(
+        "Open cabinet_1.door before using pick_up_object on mug_1 from cabinet_1.",
+        "Only press coffee_machine_1.start_button after mug_1 is already at coffee_machine_dispenser.",
+    ),
 )
 
 
@@ -170,7 +170,7 @@ class PrepareCoffeeValidator(FiniteStateTaskValidator):
     ) -> str | None:
         """Maps the coffee-machine dispenser token to its owning fixture."""
 
-        if step["tool_name"] == "place_under_dispenser":
+        if step["tool"] == "place_under_dispenser":
             return "coffee_machine_1"
         return super().resolve_required_fixture(step, runtime_state)
 
@@ -182,8 +182,8 @@ class PrepareCoffeeValidator(FiniteStateTaskValidator):
         """Checks the PrepareCoffee-specific preconditions not covered generically."""
 
         if (
-            step["tool_name"] == "pick_up_object"
-            and step["tool_args"]["source_id"] == "cabinet_1"
+            step["tool"] == "pick_up_object"
+            and step["args"]["source_id"] == "cabinet_1"
             and runtime_state.fixtures["cabinet_1"]["parts"]["door"]["state"] != "open"
         ):
             raise TaskSemanticValidationError(
@@ -191,7 +191,7 @@ class PrepareCoffeeValidator(FiniteStateTaskValidator):
             )
 
         if (
-            step["tool_name"] == "press_button"
+            step["tool"] == "press_button"
             and runtime_state.objects["mug_1"]["location"] != "coffee_machine_dispenser"
         ):
             raise TaskSemanticValidationError(
@@ -214,7 +214,7 @@ class PrepareCoffeeValidator(FiniteStateTaskValidator):
     ) -> None:
         """Updates the PrepareCoffee-specific symbolic state after each action."""
 
-        if step["tool_name"] == "press_button":
+        if step["tool"] == "press_button":
             runtime_state.machine_state["coffee_machine_1"]["started"] = True
 
         runtime_state.public_state["mug_location"] = runtime_state.objects["mug_1"]["location"]
@@ -232,7 +232,7 @@ def build_prepare_coffee_trajectory_record(
     return {
         "trajectory_id": trajectory_id,
         "composite_task": "PrepareCoffee",
-        "agents": candidate.get("agents"),
+        "agents": build_canonical_agents(AGENT_IDS),
         "initial_state": PREPARE_COFFEE_INITIAL_STATE,
         "steps": candidate.get("steps"),
         "validation": validation,

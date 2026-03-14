@@ -21,6 +21,8 @@ RELEASE_TOOL_NAMES = frozenset(
         "place_under_dispenser",
     }
 )
+OBSERVATION_TOOL_NAMES = frozenset({"get_image"})
+WAIT_TOOL_NAMES = frozenset({"wait"})
 OPEN_PART_TOOL_NAMES = frozenset({"open_hinged_part", "open_sliding_part"})
 CLOSE_PART_TOOL_NAMES = frozenset({"close_hinged_part", "close_sliding_part"})
 PLACE_LOCATION_ARG_NAMES = (
@@ -33,6 +35,12 @@ PLACE_LOCATION_ARG_NAMES = (
 
 class TrajectoryValidationError(ValueError):
     """Base class for task-level validation failures."""
+
+    def __init__(self, message: str, *, step: int | None = None) -> None:
+        """Stores an optional step number for the first failing validation."""
+
+        super().__init__(message)
+        self.step = step
 
 
 class ResponseFormatValidationError(TrajectoryValidationError):
@@ -132,15 +140,16 @@ def _append_unique_field_names(
 def _build_symbolic_field_schema(
     field_name: str,
     agent_ids: Sequence[str],
+    schema_type: str = "STRING",
 ) -> dict[str, Any]:
     """Builds a schema property entry for one symbolic response field."""
 
-    if field_name in {"agent_id", "from_agent_id", "to_agent_id"}:
+    if field_name in {"agent", "agent_id", "to_agent_id"}:
         return {
             "type": "STRING",
             "enum": list(agent_ids),
         }
-    return {"type": "STRING"}
+    return {"type": schema_type}
 
 
 def _allowed_ids_key_for_arg_name(arg_name: str) -> str | None:
@@ -149,6 +158,81 @@ def _allowed_ids_key_for_arg_name(arg_name: str) -> str | None:
     if not arg_name.endswith("_id"):
         return None
     return f"allowed_{arg_name[:-3]}_ids"
+
+
+def _resolve_tool_arg_schema_type(
+    field_name: str,
+    tool_spec: dict[str, Any],
+) -> str:
+    """Resolves the shared response-schema type for one tool argument."""
+
+    tool_arg_types = tool_spec.get("tool_arg_types", {})
+    if not isinstance(tool_arg_types, dict):
+        raise ValueError("tool_arg_types must be a mapping when provided.")
+    schema_type = tool_arg_types.get(field_name, "STRING")
+    if schema_type not in {"STRING", "INTEGER"}:
+        raise ValueError(f"Unsupported schema type {schema_type!r} for {field_name}.")
+    return schema_type
+
+
+def _build_fsm_prompt_rules(
+    allowed_tool_specs: dict[str, dict[str, Any]],
+    *,
+    extra_rules: Sequence[str] | None = None,
+) -> list[str]:
+    """Builds concise prompt rules that mirror the FSM validator."""
+
+    allowed_tool_names = set(allowed_tool_specs)
+    prompt_rules: list[str] = []
+
+    if "communicate" in allowed_tool_names:
+        prompt_rules.append(
+            "Before the first task action, both agents must communicate at least once."
+        )
+    if "navigate_to_fixture" in allowed_tool_names:
+        prompt_rules.append(
+            "Before interacting with a fixture, surface, receptacle, or dispenser, first navigate_to_fixture to the owning fixture."
+        )
+    if allowed_tool_names & (OPEN_PART_TOOL_NAMES | CLOSE_PART_TOOL_NAMES):
+        prompt_rules.append(
+            "Only open or close a fixture part after navigating to that same fixture."
+        )
+    if allowed_tool_names & ACQUIRE_TOOL_NAMES:
+        prompt_rules.append(
+            "Only use pick_up_object when the object is still at the listed source_id, and never pick up a second object while already holding one."
+        )
+        prompt_rules.append(
+            "After picking up an object, that agent should only navigate or place that same object until it is no longer holding anything."
+        )
+    if allowed_tool_names & RELEASE_TOOL_NAMES:
+        prompt_rules.append(
+            "Only use a placement tool for the exact object the acting agent is currently holding."
+        )
+    if allowed_tool_names & WAIT_TOOL_NAMES:
+        prompt_rules.append(
+            "Use wait only to pause in place when a delay is necessary, and provide a positive integer number of seconds."
+        )
+    # Keep later symbolic references aligned with prior FSM effects.
+    prompt_rules.append(
+        "Keep object locations consistent across steps. After an object moves, later source_id and destination references must match its new symbolic location."
+    )
+    prompt_rules.append(
+        "Stop as soon as the goal state is satisfied. Do not add extra task actions afterward."
+    )
+
+    for rule in extra_rules or ():
+        normalized_rule = " ".join(rule.strip().split())
+        if normalized_rule:
+            prompt_rules.append(normalized_rule)
+    return prompt_rules
+
+
+def build_canonical_agents(agent_ids: Sequence[str]) -> list[dict[str, str]]:
+    """Builds the shared persisted agent roster for trajectories."""
+
+    if not agent_ids:
+        raise ValueError("agent_ids must contain at least one agent.")
+    return [{"agent": agent_id} for agent_id in agent_ids]
 
 
 def build_task_response_schema(
@@ -167,75 +251,59 @@ def build_task_response_schema(
         raise ValueError("min_steps must be at least 1.")
 
     tool_arg_names: list[str] = []
-    entity_ref_names: list[str] = []
+    tool_arg_schema_types: dict[str, str] = {}
     for tool_spec in allowed_tool_specs.values():
         # Preserve the tool registry order so schema rendering stays stable.
+        for field_name in tool_spec.get("tool_args", ()):
+            if field_name not in tool_arg_schema_types:
+                tool_arg_schema_types[field_name] = _resolve_tool_arg_schema_type(
+                    field_name,
+                    tool_spec,
+                )
+            elif tool_arg_schema_types[field_name] != _resolve_tool_arg_schema_type(
+                field_name,
+                tool_spec,
+            ):
+                raise ValueError(
+                    f"Conflicting schema types were configured for tool arg {field_name}."
+                )
         _append_unique_field_names(tool_arg_names, tool_spec.get("tool_args", ()))
-        _append_unique_field_names(
-            entity_ref_names,
-            tool_spec.get("entity_refs", ()),
-        )
 
     return {
         "type": "OBJECT",
-        "required": ["agents", "steps"],
+        "required": ["steps"],
         "properties": {
-            "agents": {
-                "type": "ARRAY",
-                "minItems": len(agent_ids),
-                "maxItems": len(agent_ids),
-                "items": {
-                    "type": "OBJECT",
-                    "required": ["agent_id"],
-                    "properties": {
-                        "agent_id": _build_symbolic_field_schema(
-                            "agent_id",
-                            agent_ids,
-                        ),
-                    },
-                },
-            },
             "steps": {
                 "type": "ARRAY",
                 "minItems": min_steps,
                 "items": {
                     "type": "OBJECT",
                     "required": [
-                        "step_index",
-                        "agent_id",
-                        "tool_name",
-                        "tool_args",
-                        "entity_refs",
+                        "step",
+                        "agent",
+                        "tool",
+                        "args",
                         "reasoning",
                     ],
                     "properties": {
-                        "step_index": {"type": "INTEGER"},
-                        "agent_id": _build_symbolic_field_schema(
-                            "agent_id",
+                        "step": {"type": "INTEGER"},
+                        "agent": _build_symbolic_field_schema(
+                            "agent",
                             agent_ids,
                         ),
-                        "tool_name": {
+                        "tool": {
                             "type": "STRING",
                             "enum": list(allowed_tool_specs),
                         },
-                        "tool_args": {
+                        "args": {
                             "type": "OBJECT",
                             "properties": {
                                 field_name: _build_symbolic_field_schema(
                                     field_name,
                                     agent_ids,
+                                    tool_arg_schema_types[field_name],
                                 )
                                 for field_name in tool_arg_names
-                            },
-                        },
-                        "entity_refs": {
-                            "type": "OBJECT",
-                            "properties": {
-                                field_name: _build_symbolic_field_schema(
-                                    field_name,
-                                    agent_ids,
-                                )
-                                for field_name in entity_ref_names
                             },
                         },
                         "reasoning": {"type": "STRING"},
@@ -277,6 +345,12 @@ class FiniteStateTaskValidator:
         self._agent_id_set = set(self.agent_ids)
         self.initial_state = deepcopy(initial_state)
         self.allowed_tool_specs = deepcopy(allowed_tool_specs)
+        # Some tasks ask the model to emit observation steps directly, while
+        # others synthesize them later during post-processing.
+        self._requires_observation_steps = any(
+            tool_name in OBSERVATION_TOOL_NAMES
+            for tool_name in self.allowed_tool_specs
+        )
         self.max_reasoning_chars = max_reasoning_chars
         self._all_checks = list(
             checks
@@ -301,39 +375,45 @@ class FiniteStateTaskValidator:
         goal_state_satisfied = self.is_goal_state_satisfied(runtime_state)
 
         for expected_index, step in enumerate(steps):
-            if step["step_index"] != expected_index:
-                raise TaskSemanticValidationError(
-                    f"step_index {step['step_index']} does not match expected index {expected_index}."
-                )
+            try:
+                if step["step"] != expected_index:
+                    raise TaskSemanticValidationError(
+                        f"step {step['step']} does not match expected index {expected_index}."
+                    )
 
-            # Once the task goal is satisfied, any later step is extra work.
-            if goal_state_satisfied:
-                raise TaskSemanticValidationError(
-                    f"No steps are allowed after the {self.composite_task} goal state is satisfied."
-                )
+                # Preserve a final post-condition snapshot after the goal is reached,
+                # but reject any later non-observation work.
+                if goal_state_satisfied and step["tool"] not in OBSERVATION_TOOL_NAMES:
+                    raise TaskSemanticValidationError(
+                        f"No steps are allowed after the {self.composite_task} goal state is satisfied."
+                    )
 
-            if step["tool_name"] == "communicate":
-                self._validate_communicate_step(step)
-                runtime_state.communicated_agents.add(step["agent_id"])
-                continue
+                if step["tool"] == "communicate":
+                    self._validate_communicate_step(step)
+                    runtime_state.communicated_agents.add(step["agent"])
+                    continue
 
-            if runtime_state.communicated_agents != self._agent_id_set:
-                raise TaskSemanticValidationError(
-                    "Both agents must coordinate via communication before the first task action."
-                )
+                if runtime_state.communicated_agents != self._agent_id_set:
+                    raise TaskSemanticValidationError(
+                        "Both agents must coordinate via communication before the first task action."
+                    )
 
-            if step["tool_name"] not in self.allowed_tool_specs:
-                raise TaskSemanticValidationError(
-                    f"Tool {step['tool_name']} is not allowed for {self.composite_task}."
-                )
+                if step["tool"] not in self.allowed_tool_specs:
+                    raise TaskSemanticValidationError(
+                        f"Tool {step['tool']} is not allowed for {self.composite_task}."
+                    )
 
-            self._validate_task_local_symbolic_constraints(step)
-            self._validate_generic_transition(step, runtime_state)
-            self.validate_task_preconditions(step, runtime_state)
-            self._apply_generic_effects(step, runtime_state)
-            self.apply_task_effects(step, runtime_state)
-            first_action_seen = True
-            goal_state_satisfied = self.is_goal_state_satisfied(runtime_state)
+                if self._requires_observation_steps:
+                    self._validate_required_observation_sequence(steps, expected_index)
+                self._validate_task_local_symbolic_constraints(step)
+                self._validate_generic_transition(step, runtime_state)
+                self.validate_task_preconditions(step, runtime_state)
+                self._apply_generic_effects(step, runtime_state)
+                self.apply_task_effects(step, runtime_state)
+                first_action_seen = True
+                goal_state_satisfied = self.is_goal_state_satisfied(runtime_state)
+            except TrajectoryValidationError as exc:
+                raise self._validation_error_with_step(exc, step["step"]) from exc
 
         if not first_action_seen:
             raise TaskSemanticValidationError(
@@ -361,8 +441,8 @@ class FiniteStateTaskValidator:
         """Builds a stable signature for duplicate-trajectory rejection."""
 
         normalized = {
-            "agents": sorted(candidate["agents"], key=lambda agent: agent["agent_id"]),
-            "steps": sorted(candidate["steps"], key=lambda step: step["step_index"]),
+            "agents": sorted(candidate["agents"], key=lambda agent: agent["agent"]),
+            "steps": sorted(candidate["steps"], key=lambda step: step["step"]),
         }
         return stable_json_sha256(normalized)
 
@@ -374,8 +454,8 @@ class FiniteStateTaskValidator:
 
         agent_states: dict[str, AgentRuntimeState] = {}
         for agent in agents:
-            initial_agent_state = self.initial_state["agents"][agent["agent_id"]]
-            agent_states[agent["agent_id"]] = AgentRuntimeState(
+            initial_agent_state = self.initial_state["agents"][agent["agent"]]
+            agent_states[agent["agent"]] = AgentRuntimeState(
                 location=initial_agent_state.get("location"),
                 held_object=initial_agent_state.get("held_object"),
             )
@@ -407,6 +487,8 @@ class FiniteStateTaskValidator:
     def _normalize_agents(self, agents_value: Any) -> list[dict[str, str]]:
         """Normalizes the agent roster required by the task-level schema."""
 
+        if agents_value is None:
+            return build_canonical_agents(self.agent_ids)
         if not isinstance(agents_value, list) or len(agents_value) != len(self.agent_ids):
             raise TrajectoryStructureValidationError(
                 f"agents must be a list containing exactly {len(self.agent_ids)} agents."
@@ -419,17 +501,17 @@ class FiniteStateTaskValidator:
                 raise TrajectoryStructureValidationError(
                     "Each agent entry must be an object."
                 )
-            agent_id = _normalize_text(agent.get("agent_id"), "agent_id")
+            agent_id = _normalize_text(agent.get("agent"), "agent")
             if agent_id not in self._agent_id_set:
                 raise TrajectoryStructureValidationError(
-                    f"Unsupported agent_id {agent_id}."
+                    f"Unsupported agent {agent_id}."
                 )
             if agent_id in seen_agent_ids:
                 raise TrajectoryStructureValidationError(
-                    f"Duplicate agent_id {agent_id}."
+                    f"Duplicate agent {agent_id}."
                 )
             seen_agent_ids.add(agent_id)
-            normalized_agents.append({"agent_id": agent_id})
+            normalized_agents.append({"agent": agent_id})
 
         if seen_agent_ids != self._agent_id_set:
             expected_agents = _format_agent_id_list(self.agent_ids)
@@ -448,82 +530,103 @@ class FiniteStateTaskValidator:
         for raw_step in steps_value:
             if not isinstance(raw_step, dict):
                 raise TrajectoryStructureValidationError("Each step must be an object.")
-            if not isinstance(raw_step.get("step_index"), int):
+            if not isinstance(raw_step.get("step"), int):
                 raise TrajectoryStructureValidationError(
-                    "step_index must be an integer."
+                    "step must be an integer."
                 )
 
-            step_index = raw_step["step_index"]
-            agent_id = _normalize_text(
-                raw_step.get("agent_id"),
-                f"step[{step_index}].agent_id",
-            )
-            if agent_id not in self._agent_id_set:
-                raise TrajectoryStructureValidationError(
-                    f"Unsupported step[{step_index}].agent_id {agent_id}."
+            step_index = raw_step["step"]
+            try:
+                agent_id = _normalize_text(
+                    raw_step.get("agent"),
+                    f"step[{step_index}].agent",
                 )
+                if agent_id not in self._agent_id_set:
+                    raise TrajectoryStructureValidationError(
+                        f"Unsupported step[{step_index}].agent {agent_id}."
+                    )
 
-            reasoning = _normalize_text(
-                raw_step.get("reasoning"),
-                f"step[{step_index}].reasoning",
-            )
-            if len(reasoning) > self.max_reasoning_chars:
-                raise TrajectoryStructureValidationError(
-                    f"Reasoning for step {step_index} exceeds {self.max_reasoning_chars} characters."
+                reasoning = _normalize_text(
+                    raw_step.get("reasoning"),
+                    f"step[{step_index}].reasoning",
                 )
+                if len(reasoning) > self.max_reasoning_chars:
+                    raise TrajectoryStructureValidationError(
+                        f"Reasoning for step {step_index} exceeds {self.max_reasoning_chars} characters."
+                    )
 
-            normalized_steps.append(
-                {
-                    "step_index": step_index,
-                    "agent_id": agent_id,
-                    "tool_name": _normalize_text(
-                        raw_step.get("tool_name"),
-                        f"step[{step_index}].tool_name",
-                    ),
-                    "tool_args": _normalize_mapping(
-                        raw_step.get("tool_args", {}),
-                        f"step[{step_index}].tool_args",
-                    ),
-                    "entity_refs": _normalize_mapping(
-                        raw_step.get("entity_refs", {}),
-                        f"step[{step_index}].entity_refs",
-                    ),
-                    "reasoning": reasoning,
-                }
-            )
+                normalized_steps.append(
+                    {
+                        "step": step_index,
+                        "agent": agent_id,
+                        "tool": _normalize_text(
+                            raw_step.get("tool"),
+                            f"step[{step_index}].tool",
+                        ),
+                        "args": _normalize_mapping(
+                            raw_step.get("args", {}),
+                            f"step[{step_index}].args",
+                        ),
+                        "reasoning": reasoning,
+                    }
+                )
+            except TrajectoryValidationError as exc:
+                raise self._validation_error_with_step(exc, step_index) from exc
         return normalized_steps
+
+    def _validation_error_with_step(
+        self,
+        exc: TrajectoryValidationError,
+        step: int | None,
+    ) -> TrajectoryValidationError:
+        """Attaches the first failing step number to a validation exception."""
+
+        if exc.step is not None:
+            return exc
+        return type(exc)(str(exc), step=step)
 
     def _validate_communicate_step(self, step: dict[str, Any]) -> None:
         """Validates the shared synthetic communication tool."""
 
-        tool_args = step["tool_args"]
-        entity_refs = step["entity_refs"]
+        tool_args = step["args"]
         to_agent = tool_args.get("to_agent_id")
         message = tool_args.get("message")
-        if to_agent not in self._agent_id_set or to_agent == step["agent_id"]:
+        if to_agent not in self._agent_id_set or to_agent == step["agent"]:
             raise TaskSemanticValidationError(
                 "communicate requires to_agent_id to reference the other agent."
             )
         if not isinstance(message, str) or not " ".join(message.strip().split()):
             raise TaskSemanticValidationError(
-                "communicate requires a non-empty message in tool_args."
+                "communicate requires a non-empty message in args."
             )
 
         normalized_message = " ".join(message.strip().split())
-        expected_refs = {
-            "from_agent_id": step["agent_id"],
-            "to_agent_id": to_agent,
-        }
-        if entity_refs != expected_refs:
-            raise TaskSemanticValidationError(
-                f"communicate entity_refs must equal {expected_refs}."
-            )
         if tool_args != {
             "to_agent_id": to_agent,
             "message": normalized_message,
         }:
             raise TaskSemanticValidationError(
-                "communicate tool_args may only contain to_agent_id and message."
+                "communicate args may only contain to_agent_id and message."
+            )
+
+    def _validate_required_observation_sequence(
+        self,
+        steps: Sequence[dict[str, Any]],
+        step_index: int,
+    ) -> None:
+        """Requires each non-communication action to be bracketed by get_image."""
+
+        step = steps[step_index]
+        if step["tool"] == "communicate" or step["tool"] in OBSERVATION_TOOL_NAMES:
+            return
+
+        if step_index == 0 or steps[step_index - 1]["tool"] not in OBSERVATION_TOOL_NAMES:
+            raise TaskSemanticValidationError(
+                f"{step['tool']} at step {step['step']} must be immediately preceded by get_image."
+            )
+        if step_index + 1 >= len(steps) or steps[step_index + 1]["tool"] not in OBSERVATION_TOOL_NAMES:
+            raise TaskSemanticValidationError(
+                f"{step['tool']} at step {step['step']} must be immediately followed by get_image."
             )
 
     def _validate_generic_transition(
@@ -533,19 +636,19 @@ class FiniteStateTaskValidator:
     ) -> None:
         """Enforces the shared manipulation and navigation rules for every task."""
 
-        agent_state = runtime_state.agents[step["agent_id"]]
-        tool_name = step["tool_name"]
-        tool_args = step["tool_args"]
+        agent_state = runtime_state.agents[step["agent"]]
+        tool_name = step["tool"]
+        tool_args = step["args"]
         required_fixture = self.resolve_required_fixture(step, runtime_state)
 
         if tool_name in ACQUIRE_TOOL_NAMES:
             if agent_state.held_object is not None:
                 raise TaskSemanticValidationError(
-                    f"{step['agent_id']} cannot pick up a second object while already holding {agent_state.held_object}."
+                    f"{step['agent']} cannot pick up a second object while already holding {agent_state.held_object}."
                 )
             if required_fixture is not None:
                 self._require_agent_location(
-                    step["agent_id"],
+                    step["agent"],
                     agent_state.location,
                     required_fixture,
                 )
@@ -564,20 +667,25 @@ class FiniteStateTaskValidator:
             agent_state.held_object is not None
             and tool_name not in NAVIGATION_TOOL_NAMES
             and tool_name not in RELEASE_TOOL_NAMES
+            and tool_name not in OBSERVATION_TOOL_NAMES
+            and tool_name not in WAIT_TOOL_NAMES
         ):
             raise TaskSemanticValidationError(
-                f"{step['agent_id']} must place {agent_state.held_object} before using {tool_name}."
+                f"{step['agent']} must place {agent_state.held_object} before using {tool_name}."
             )
+
+        if tool_name in OBSERVATION_TOOL_NAMES or tool_name in WAIT_TOOL_NAMES:
+            return
 
         if tool_name in RELEASE_TOOL_NAMES:
             if required_fixture is not None:
                 self._require_agent_location(
-                    step["agent_id"],
+                    step["agent"],
                     agent_state.location,
                     required_fixture,
                 )
             self._require_held_object(
-                step["agent_id"],
+                step["agent"],
                 agent_state,
                 tool_args["object_id"],
             )
@@ -585,7 +693,7 @@ class FiniteStateTaskValidator:
 
         if tool_name not in NAVIGATION_TOOL_NAMES and required_fixture is not None:
             self._require_agent_location(
-                step["agent_id"],
+                step["agent"],
                 agent_state.location,
                 required_fixture,
             )
@@ -593,10 +701,27 @@ class FiniteStateTaskValidator:
     def _validate_task_local_symbolic_constraints(self, step: dict[str, Any]) -> None:
         """Rejects symbolic IDs that violate the task-local allowed_* tool overrides."""
 
-        tool_spec = self.allowed_tool_specs[step["tool_name"]]
-        tool_args = step["tool_args"]
+        tool_spec = self.allowed_tool_specs[step["tool"]]
+        tool_args = step["args"]
 
         for arg_name in tool_spec.get("tool_args", ()):
+            arg_value = tool_args.get(arg_name)
+            arg_schema_type = _resolve_tool_arg_schema_type(arg_name, tool_spec)
+            if arg_schema_type == "STRING":
+                if not isinstance(arg_value, str) or not " ".join(arg_value.strip().split()):
+                    raise TaskSemanticValidationError(
+                        f"{step['tool']} requires {arg_name} to be a non-empty string."
+                    )
+                tool_args[arg_name] = " ".join(arg_value.strip().split())
+            elif arg_schema_type == "INTEGER":
+                if not isinstance(arg_value, int) or isinstance(arg_value, bool):
+                    raise TaskSemanticValidationError(
+                        f"{step['tool']} requires {arg_name} to be an integer."
+                    )
+                if step["tool"] == "wait" and arg_name == "seconds" and arg_value < 1:
+                    raise TaskSemanticValidationError(
+                        "wait requires seconds to be a positive integer."
+                    )
             allowed_ids_key = _allowed_ids_key_for_arg_name(arg_name)
             if allowed_ids_key is None or allowed_ids_key not in tool_spec:
                 continue
@@ -606,15 +731,14 @@ class FiniteStateTaskValidator:
                 isinstance(allowed_id, str) for allowed_id in allowed_ids
             ):
                 raise ValueError(
-                    f"{self.composite_task} configured {step['tool_name']}.{allowed_ids_key} "
+                    f"{self.composite_task} configured {step['tool']}.{allowed_ids_key} "
                     "with a non-string list."
                 )
 
-            arg_value = tool_args.get(arg_name)
-            if arg_value not in allowed_ids:
+            if tool_args[arg_name] not in allowed_ids:
                 raise TaskSemanticValidationError(
-                    f"{step['tool_name']} requires {arg_name} to be one of "
-                    f"{allowed_ids}, got {arg_value!r}."
+                    f"{step['tool']} requires {arg_name} to be one of "
+                    f"{allowed_ids}, got {tool_args[arg_name]!r}."
                 )
 
     def _apply_generic_effects(
@@ -624,12 +748,18 @@ class FiniteStateTaskValidator:
     ) -> None:
         """Applies the shared symbolic state changes for the current step."""
 
-        agent_state = runtime_state.agents[step["agent_id"]]
-        tool_name = step["tool_name"]
-        tool_args = step["tool_args"]
+        agent_state = runtime_state.agents[step["agent"]]
+        tool_name = step["tool"]
+        tool_args = step["args"]
 
         if tool_name in NAVIGATION_TOOL_NAMES:
             agent_state.location = tool_args["fixture_id"]
+            return
+
+        if tool_name in OBSERVATION_TOOL_NAMES:
+            return
+
+        if tool_name in WAIT_TOOL_NAMES:
             return
 
         if tool_name in OPEN_PART_TOOL_NAMES:
@@ -654,7 +784,7 @@ class FiniteStateTaskValidator:
             object_id = tool_args["object_id"]
             agent_state.held_object = object_id
             runtime_state.objects.setdefault(object_id, {})["location"] = (
-                f"held_by_{step['agent_id']}"
+                f"held_by_{step['agent']}"
             )
             return
 
@@ -724,7 +854,7 @@ class FiniteStateTaskValidator:
     ) -> str | None:
         """Resolves which fixture an agent must already be at for a step."""
 
-        tool_args = step["tool_args"]
+        tool_args = step["args"]
         for arg_name in ("target_id", "source_id", "support_id", "receptacle_id"):
             fixture_id = tool_args.get(arg_name)
             if isinstance(fixture_id, str):
@@ -772,8 +902,7 @@ def make_task_prompt_builder(
     initial_state: dict[str, Any],
     allowed_tool_specs: dict[str, Any],
     non_communicate_tool_names: Sequence[str],
-    full_tool_catalog: str,
-    environment_description: str = "RoboCasa kitchen",
+    extra_execution_rules: Sequence[str] | None = None,
     agent_ids: Sequence[str] = ("agent_0", "agent_1"),
 ) -> Callable[[str], str]:
     """Builds a reusable task prompt function from the shared prompt template.
@@ -784,8 +913,7 @@ def make_task_prompt_builder(
         initial_state: Symbolic initial state presented to the model.
         allowed_tool_specs: Task-specific allowed tools and symbolic constraints.
         non_communicate_tool_names: Non-communication task tools allowed in steps.
-        full_tool_catalog: Full catalog text shown for broader subatomic context.
-        environment_description: Short environment phrase inserted into the prompt.
+        extra_execution_rules: Optional task-specific sequencing rules enforced by validation.
         agent_ids: Ordered agent IDs the task expects the model to simulate.
 
     Returns:
@@ -805,23 +933,34 @@ def make_task_prompt_builder(
         sort_keys=True,
     )
     non_communicate_tool_text = ", ".join(non_communicate_tool_names)
+    execution_rules_text = "\n".join(
+        f"- {rule}"
+        for rule in _build_fsm_prompt_rules(
+            allowed_tool_specs,
+            extra_rules=extra_execution_rules,
+        )
+    )
 
     def build_prompt(variation_key: str) -> str:
         """Renders the shared task-level prompt with task-specific content."""
 
         return f"""
-You are simulating {agent_count} cooperative robot agents in a {environment_description}.
+You are simulating {agent_count} cooperative robot agents in a kitchen.
 Generate a single valid multi-agent task-level trajectory for the composite task {composite_task}.
 
 Important rules:
 - Simulate both agents: {agent_id_list_text}.
-- The agents must coordinate through communication tool calls before any task action.
-- Use only the allowed tools for this task, even though a larger shared subatomic catalog is provided.
+- In the initial steps, the agents must coordinate through communication tool calls before any task action. Both agents must communicate during this time.
+- Use only the allowed tools for this task.
 - Every step must be executable and symbolically valid.
 - Keep reasoning short and explicit. Each step reasoning must be a single short sentence.
+- In reasoning text and communicate.message text, refer to agents using exact IDs like agent_0 and agent_1, not Agent 0 or Agent 1.
 - Agents can pass each other freely in the kitchen, including around the island.
 - Output JSON only, with no markdown.
 - Make this trajectory distinct from previous attempts by following variation key: {variation_key}
+
+Simple execution rules:
+{execution_rules_text}
 
 Composite task:
 - {composite_task}
@@ -833,20 +972,12 @@ Initial symbolic state:
 Allowed tools and exact symbolic arguments for this task:
 {allowed_tools_text}
 
-Communication tool:
-- communicate: Send a short coordination message to the other agent. Inputs: to_agent_id, message.
-
-Full subatomic tool catalog for context:
-{full_tool_catalog}
-
 Output requirements:
-- Return an object with keys: agents, steps.
-- agents must contain exactly {agent_count} entries: {agent_id_list_text}.
-- Each agent entry must contain only: agent_id.
-- steps must be an interleaved timeline ordered by step_index starting at 0 with no gaps.
-- Each step must contain: step_index, agent_id, tool_name, tool_args, entity_refs, reasoning.
-- Do not include role or initial_plan anywhere in the output.
-- coordination steps must use tool_name communicate and include both to_agent_id and message inside tool_args.
+- Return an object with key: steps.
+- steps must be an interleaved timeline ordered by step starting at 0 with no gaps.
+- Each step must contain: step, agent, tool, args, reasoning.
+- Do not include a top-level agents field, role, or initial_plan anywhere in the output.
+- coordination steps must use tool communicate and include both to_agent_id and message inside args.
 - Non-communicate steps must use only:
   {non_communicate_tool_text}.
 - Use the exact symbolic IDs from the initial state and allowed tools.
