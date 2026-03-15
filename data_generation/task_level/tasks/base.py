@@ -1175,6 +1175,7 @@ Think about the physical constraints and limitations when building the trajector
 Important rules:
 - Simulate both agents: {agent_id_list_text}.
 - In the initial steps, the agents must coordinate through communication tool calls before any task action. Both agents must communicate during this time.
+- Throughout the simulation, both agents should actively communicate with each other to communicate intentions, plans, and needs, not just at the beginning of the simulation.
 - Both agents must cooperatively complete the task, a single agent should not do all subtasks.
 - Use only the allowed tools for this task.
 - Every step must be executable and symbolically valid.

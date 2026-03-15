@@ -59,6 +59,7 @@ from data_generation.task_level.trajectory_generation import (
     _trajectory_completion_log_message,
     _update_overall_progress_status,
     _validation_error_event,
+    format_attempt_prompt_owner_id,
     format_trajectory_variation_key,
 )
 from data_generation.utils import camel_to_snake_case
@@ -571,6 +572,7 @@ def generate_trajectories_batch(
     seen_signatures_lock = threading.Lock()
     error_events: list[dict[str, Any]] = []
     error_events_lock = threading.Lock()
+    attempt_prompts: list[dict[str, Any]] = []
     disable_progress = not show_progress or not os.isatty(2)
     progress_handles = _create_batch_progress_handles(
         runtime_config,
@@ -631,6 +633,17 @@ def generate_trajectories_batch(
                 )
                 for trajectory_index in sorted(pending_indices)
             ]
+            attempt_prompts.extend(
+                {
+                    "run_id": format_attempt_prompt_owner_id(
+                        runtime_config,
+                        run_index=batch_request.trajectory_index,
+                    ),
+                    "attempt_number": batch_request.attempt_number,
+                    "prompt": batch_request.prompt,
+                }
+                for batch_request in batch_requests
+            )
             round_artifacts = _build_batch_round_artifacts(
                 batch_run_context,
                 round_number=round_number,
@@ -864,4 +877,5 @@ def generate_trajectories_batch(
         runtime_config,
         ordered_trajectories,
         error_events=error_events,
+        attempt_prompts=attempt_prompts,
     )

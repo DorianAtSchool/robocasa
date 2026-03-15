@@ -199,6 +199,47 @@ def _build_retry_feedback_text(
     return "\n".join(lines)
 
 
+def _build_retry_feedback_text_from_validation(
+    validation: dict[str, Any],
+    *,
+    candidate: dict[str, Any] | None = None,
+) -> str:
+    """Builds retry feedback directly from a serialized validation payload."""
+
+    error_type = _validation_error_type(validation) or "TrajectoryValidationError"
+    step = validation.get("step")
+    error_message = validation.get("error")
+    error_details = validation.get("error_details")
+
+    lines = [
+        "Previous attempt failed validation.",
+        "",
+        "Failure summary:",
+        f"- error_type: {error_type}",
+    ]
+    if isinstance(step, int):
+        lines.append(f"- failing_step: {step}")
+    if isinstance(error_message, str) and error_message.strip():
+        lines.append(f"- message: {error_message.strip()}")
+    if isinstance(error_details, dict) and error_details:
+        lines.append(f"- details: {json.dumps(error_details, sort_keys=True)}")
+
+    step_lines = _retry_feedback_step_lines(candidate, failing_step=step if isinstance(step, int) else None)
+    if step_lines:
+        lines.extend(["", "Local bad example:", *step_lines])
+
+    lines.extend(
+        [
+            "",
+            "Repair instructions:",
+            "- Regenerate the full trajectory from step 0.",
+            "- Do not continue or patch the previous attempt.",
+            "- Avoid the same validation failure and keep the whole trajectory symbolically consistent.",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def _is_non_retryable_generation_error(exc: Exception) -> bool:
     if isinstance(exc, TrajectoryGenerationError):
         return True
@@ -541,6 +582,28 @@ def _validate_candidate(
         )
 
 
+def _validation_error_payload(
+    exc: TrajectoryValidationError,
+    *,
+    candidate: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Serializes one validation exception into the shared validation shape."""
+
+    payload = {
+        "is_valid": False,
+        "error_type": exc.error_type,
+        "error_base_type": exc.error_base_type,
+        "error": str(exc),
+        "error_details": dict(exc.details) if exc.details else None,
+        "step": exc.step if isinstance(exc.step, int) else None,
+        "checks": [],
+        "final_state": None,
+    }
+    if candidate is not None:
+        payload["signature"] = _candidate_signature(candidate)
+    return payload
+
+
 def _split_integer_total(total: int, parts: int) -> list[int]:
     """Splits one integer total across parts while preserving the sum."""
 
@@ -774,7 +837,11 @@ def _attempt_counts_for_saved_trajectories(
     """Read the persisted successful attempt number for each saved trajectory."""
 
     return [
-        _successful_attempt_count(generation_usage)
+        (
+            1
+            if generation_usage.get("retry_costs_included") is True
+            else _successful_attempt_count(generation_usage)
+        )
         for generation_usage in generation_usages
     ]
 
@@ -890,10 +957,172 @@ def _append_sampling_cost_note(
 
     if runtime_config.sampling != "verbalized":
         return summary
-    summary["notes"].append(
-        "For verbalized sampling, token and cost totals are counted once per model response and apportioned across the saved trajectories from that response."
+    verbalized_note = (
+        "For verbalized sampling, token and cost totals are counted once per "
+        "model response and apportioned across the saved trajectories from "
+        "that response."
     )
+    if verbalized_note not in summary["notes"]:
+        summary["notes"].append(verbalized_note)
     return summary
+
+
+def _load_json_payload(path: Path) -> dict[str, Any] | None:
+    """Loads one JSON payload from disk when the file exists and is valid."""
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _matches_historical_preflight_config(
+    payload: dict[str, Any],
+    runtime_config: RuntimeConfig,
+) -> bool:
+    """Checks whether one saved run matches the active preflight settings."""
+
+    if payload.get("model") != runtime_config.model:
+        return False
+    if payload.get("sdk") != runtime_config.sdk:
+        return False
+
+    model_config = payload.get("model_config")
+    if not isinstance(model_config, dict):
+        return False
+
+    sampling_payload = model_config.get("sampling")
+    if not isinstance(sampling_payload, dict):
+        return False
+    if sampling_payload.get("strategy", "base") != runtime_config.sampling:
+        return False
+    if runtime_config.sampling == "verbalized":
+        if sampling_payload.get("verbalized_k") != runtime_config.verbalized_k:
+            return False
+    elif sampling_payload.get("verbalized_k", 1) != 1:
+        return False
+    if sampling_payload.get("temperature") != runtime_config.temperature:
+        return False
+
+    reasoning_payload = model_config.get("reasoning")
+    if not isinstance(reasoning_payload, dict):
+        return runtime_config.thinking_level is None
+    return reasoning_payload.get("thinking_level") == runtime_config.thinking_level
+
+
+def _combine_split_generation_usages(
+    usage_entries: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Reassembles one run-level usage record from per-candidate saved usage."""
+
+    if not usage_entries:
+        return None
+
+    successful_attempt_number = _successful_attempt_count(usage_entries[0])
+    if any(
+        _successful_attempt_count(usage_entry) != successful_attempt_number
+        for usage_entry in usage_entries[1:]
+    ):
+        return None
+
+    combined_usage = dict(usage_entries[0])
+    combined_usage["successful_attempt_number"] = successful_attempt_number
+    combined_usage["prompt_tokens"] = sum(
+        usage_entry["prompt_tokens"] for usage_entry in usage_entries
+    )
+    combined_usage["output_tokens"] = sum(
+        usage_entry["output_tokens"] for usage_entry in usage_entries
+    )
+    combined_usage["reasoning_tokens"] = sum(
+        _reasoning_token_count(usage_entry) for usage_entry in usage_entries
+    )
+    combined_usage["total_tokens"] = (
+        combined_usage["prompt_tokens"]
+        + combined_usage["output_tokens"]
+        + combined_usage["reasoning_tokens"]
+    )
+    combined_usage["observed_cost_usd"] = _observed_cost_total(usage_entries)
+    return combined_usage
+
+
+def _historical_preflight_generation_usages(
+    runtime_config: RuntimeConfig,
+    task_definition: TaskDefinition,
+) -> list[dict[str, Any]]:
+    """Loads prior matching run usages to calibrate preflight estimates."""
+
+    if runtime_config.summary_path is None:
+        return []
+
+    task_output_dir = DEFAULT_OUTPUT_DIR / camel_to_snake_case(
+        task_definition.composite_task
+    )
+    if not task_output_dir.exists():
+        return []
+
+    current_run_dir = runtime_config.summary_path.parent
+    trajectories_per_run = _sampling_strategy_for_runtime(
+        runtime_config
+    ).trajectories_per_run(runtime_config)
+    matched_generation_usages: list[dict[str, Any]] = []
+
+    for cost_summary_path in sorted(
+        task_output_dir.glob(f"*/{COST_SUMMARY_OUTPUT_FILENAME}"),
+        reverse=True,
+    ):
+        if cost_summary_path.parent == current_run_dir:
+            continue
+        payload = _load_json_payload(cost_summary_path)
+        if payload is None or not _matches_historical_preflight_config(
+            payload,
+            runtime_config,
+        ):
+            continue
+
+        trajectory_costs = payload.get("trajectory_costs")
+        if not isinstance(trajectory_costs, list) or not trajectory_costs:
+            continue
+
+        for index in range(0, len(trajectory_costs), trajectories_per_run):
+            trajectory_group = trajectory_costs[index:index + trajectories_per_run]
+            if len(trajectory_group) != trajectories_per_run:
+                continue
+            usage_entries = [
+                trajectory_cost.get("generation_usage")
+                for trajectory_cost in trajectory_group
+                if isinstance(trajectory_cost, dict)
+            ]
+            if any(not isinstance(usage_entry, dict) for usage_entry in usage_entries):
+                continue
+            combined_usage = _combine_split_generation_usages(usage_entries)
+            if combined_usage is not None:
+                matched_generation_usages.append(
+                    reprice_generation_usage(
+                        combined_usage,
+                        model=runtime_config.model,
+                        traffic_type=combined_usage.get("traffic_type")
+                        or _default_traffic_type_for_runtime(runtime_config),
+                        round_observed_cost=False,
+                    )
+                )
+
+    return matched_generation_usages
+
+
+def _projected_generation_usages_from_history(
+    observed_generation_usages: list[dict[str, Any]],
+    *,
+    num_runs: int,
+) -> list[dict[str, Any]]:
+    """Repeats the latest observed run profile until the requested run count is filled."""
+
+    return [
+        dict(observed_generation_usages[index % len(observed_generation_usages)])
+        for index in range(num_runs)
+    ]
 
 
 def _build_cost_estimate_summary_from_generation_usages(
@@ -1036,6 +1265,32 @@ def _build_preflight_cost_estimate_summary(
     runtime_config: RuntimeConfig,
     task_definition: TaskDefinition,
 ) -> dict[str, Any]:
+    historical_generation_usages = _historical_preflight_generation_usages(
+        runtime_config,
+        task_definition,
+    )
+    if historical_generation_usages:
+        summary = _build_cost_estimate_summary_from_generation_usages(
+            _projected_generation_usages_from_history(
+                historical_generation_usages,
+                num_runs=runtime_config.num_runs,
+            ),
+            runtime_config=runtime_config,
+        )
+        summary["notes"][0] = (
+            "Projected total uses observed API usage from prior matching runs "
+            "for this task, model, and sampling configuration."
+        )
+        summary["notes"][2] = (
+            "Token counts come from previously saved API usage metadata for "
+            "matching runs."
+        )
+        summary["notes"].append(
+            f"Matched {len(historical_generation_usages)} prior run(s) from "
+            "saved cost summaries."
+        )
+        return summary
+
     manual_estimate = _sampling_strategy_for_runtime(
         runtime_config
     ).preflight_token_estimate(
@@ -1144,6 +1399,31 @@ def _prompt_output_filename(trajectory_id: str) -> str:
     """Formats one prompt sidecar filename to match its trajectory basename."""
 
     return f"{trajectory_id}.md"
+
+
+def _attempt_prompt_output_filename(
+    run_id: str,
+    attempt_number: int,
+) -> str:
+    """Formats one per-attempt prompt sidecar filename."""
+
+    return f"{run_id}_{attempt_number}.md"
+
+
+def format_attempt_prompt_owner_id(
+    runtime_config: RuntimeConfig,
+    *,
+    run_index: int,
+) -> str:
+    """Maps one run's attempt prompt to the first saved trajectory ID from that run."""
+
+    return format_trajectory_id(
+        _global_trajectory_index(
+            runtime_config,
+            run_index=run_index,
+            candidate_index=0,
+        )
+    )
 
 
 def _raw_output_filename(trajectory_id: str) -> str:
@@ -1267,6 +1547,32 @@ def _build_error_event(
     if retryable is not None:
         event["retryable"] = retryable
     return event
+
+
+def _validation_error_event_from_payload(
+    validation: dict[str, Any],
+    *,
+    source: str,
+    trajectory_index: int | None = None,
+    attempt_number: int | None = None,
+    retryable: bool | None = None,
+) -> dict[str, Any] | None:
+    """Builds one error event from an in-memory invalid validation payload."""
+
+    if validation.get("is_valid") is not False:
+        return None
+    error_type = _validation_error_type(validation) or "TrajectoryValidationError"
+    error_message = validation.get("error")
+    return _build_error_event(
+        error_type=error_type,
+        error_base_type=_validation_error_base_type(validation),
+        message=error_message if isinstance(error_message, str) else None,
+        source=source,
+        stage="validation",
+        trajectory_index=trajectory_index,
+        attempt_number=attempt_number,
+        retryable=retryable,
+    )
 
 
 def _exception_error_event(
@@ -1449,6 +1755,26 @@ def write_prompt_output_payloads(
     for prompt_entry in trajectory_prompts:
         output_path = output_dir / _prompt_output_filename(
             prompt_entry["trajectory_id"]
+        )
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(prompt_entry["prompt"], encoding="utf-8")
+        written_paths.append(output_path)
+    return written_paths
+
+
+def write_attempt_prompt_output_payloads(
+    attempt_prompts: list[dict[str, Any]],
+    output_dir: Path,
+) -> list[Path]:
+    """Writes one prompt sidecar per attempted run prompt."""
+
+    written_paths: list[Path] = []
+    for prompt_entry in attempt_prompts:
+        if prompt_entry["attempt_number"] <= 1:
+            continue
+        output_path = output_dir / _attempt_prompt_output_filename(
+            prompt_entry["run_id"],
+            prompt_entry["attempt_number"],
         )
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(prompt_entry["prompt"], encoding="utf-8")
@@ -2110,6 +2436,7 @@ def _build_generation_payload(
     ordered_trajectories: list[dict[str, Any]],
     *,
     error_events: list[dict[str, Any]] | None = None,
+    attempt_prompts: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     generation_usages = [
         trajectory["generation_usage"] for trajectory in ordered_trajectories
@@ -2155,6 +2482,10 @@ def _build_generation_payload(
             if error_events is not None
             else []
         ),
+        "attempt_prompts": [
+            dict(prompt_entry)
+            for prompt_entry in (attempt_prompts or [])
+        ],
         "trajectory_prompts": trajectory_prompts,
         "trajectory_outputs": trajectory_outputs,
         "trajectories": output_trajectories,
@@ -2491,6 +2822,12 @@ def _write_generation_outputs(
     written_prompt_paths = write_prompt_output_payloads(
         payload.get("trajectory_prompts", []),
         output_paths.prompt_dir,
+    )
+    written_prompt_paths.extend(
+        write_attempt_prompt_output_payloads(
+            payload.get("attempt_prompts", []),
+            output_paths.prompt_dir,
+        )
     )
     written_output_paths = write_raw_output_payloads(
         payload.get("trajectory_outputs", []),

@@ -31,6 +31,8 @@ def generate_single_trajectory(
     accumulated_cost_tracker: Any | None = None,
     error_events: list[dict[str, Any]] | None = None,
     error_events_lock: threading.Lock | None = None,
+    attempt_prompts: list[dict[str, Any]] | None = None,
+    attempt_prompts_lock: threading.Lock | None = None,
 ) -> dict[str, Any] | list[dict[str, Any]]:
     """Generates one run and returns one or many saved trajectory records."""
 
@@ -46,6 +48,8 @@ def generate_single_trajectory(
         accumulated_cost_tracker=accumulated_cost_tracker,
         error_events=error_events,
         error_events_lock=error_events_lock,
+        attempt_prompts=attempt_prompts,
+        attempt_prompts_lock=attempt_prompts_lock,
     )
     if runtime_config.sampling == "verbalized" and runtime_config.verbalized_k > 1:
         return trajectory_records
@@ -65,6 +69,8 @@ def generate_single_run(
     accumulated_cost_tracker: Any | None = None,
     error_events: list[dict[str, Any]] | None = None,
     error_events_lock: threading.Lock | None = None,
+    attempt_prompts: list[dict[str, Any]] | None = None,
+    attempt_prompts_lock: threading.Lock | None = None,
 ) -> list[dict[str, Any]]:
     client = (
         client_factory()
@@ -80,6 +86,15 @@ def generate_single_run(
     last_error: Exception | None = None
     trajectory_started = False
     retry_feedback: str | None = None
+    greedy_verbalized_validation = (
+        not runtime_config.disable_validation
+        and runtime_config.sampling == "verbalized"
+        and runtime_config.verbalized_k > 1
+    )
+    run_completed = False
+    accumulated_valid_results: list[tuple[Any, dict[str, Any], dict[str, Any], str]] = []
+    accumulated_generation_usages: list[dict[str, Any]] = []
+    reserved_run_signatures: set[str] = set()
 
     for attempt_index in range(runtime_config.max_retries):
         # Variation keys give retries a stable way to ask for distinct traces.
@@ -93,6 +108,20 @@ def generate_single_run(
             variation_key=variation_key,
             retry_feedback=retry_feedback,
         )
+        attempt_prompt_entry = {
+            "run_id": trajectory_generation.format_attempt_prompt_owner_id(
+                runtime_config,
+                run_index=run_index,
+            ),
+            "attempt_number": attempt_index + 1,
+            "prompt": prompt,
+        }
+        if attempt_prompts is not None:
+            if attempt_prompts_lock is None:
+                attempt_prompts.append(attempt_prompt_entry)
+            else:
+                with attempt_prompts_lock:
+                    attempt_prompts.append(attempt_prompt_entry)
         tool_call_count: int | None = None
         retry_feedback_candidate: dict[str, Any] | None = None
         if trajectory_progress is not None:
@@ -152,19 +181,178 @@ def generate_single_run(
                 status="running",
                 accumulated_cost_text=accumulated_cost_text,
             )
-            trajectory_records = trajectory_generation._build_trajectory_records_from_sampled_candidates(
-                run_index=run_index,
-                runtime_config=runtime_config,
-                task_definition=task_definition,
-                sampled_candidates=sampled_candidates,
-                prompt=prompt,
-                raw_response=response_payload,
-                usage=usage,
-                validator=validator,
-                seen_signatures=seen_signatures,
-                seen_signatures_lock=seen_signatures_lock,
-                attempt_number=attempt_index + 1,
-            )
+            if greedy_verbalized_validation:
+                invalid_validations: list[dict[str, Any]] = []
+                valid_results_this_attempt: list[
+                    tuple[Any, dict[str, Any], dict[str, Any], str]
+                ] = []
+                needed_count = runtime_config.verbalized_k - len(accumulated_valid_results)
+
+                for sampled_candidate in sampled_candidates:
+                    validation, normalized_candidate = trajectory_generation._validate_candidate(
+                        sampled_candidate.candidate,
+                        validator,
+                        enforce_validation=False,
+                    )
+                    if validation["is_valid"] is not True:
+                        invalid_validations.append(validation)
+                        if retry_feedback_candidate is None:
+                            retry_feedback_candidate = sampled_candidate.candidate
+                        continue
+
+                    try:
+                        trajectory_generation._maybe_reserve_signature(
+                            validation,
+                            disable_validation=False,
+                            seen_signatures=seen_signatures,
+                            seen_signatures_lock=seen_signatures_lock,
+                        )
+                    except trajectory_generation.DuplicateTrajectoryValidationError as exc:
+                        invalid_validations.append(
+                            trajectory_generation._validation_error_payload(
+                                exc,
+                                candidate=normalized_candidate,
+                            )
+                        )
+                        if retry_feedback_candidate is None:
+                            retry_feedback_candidate = sampled_candidate.candidate
+                        continue
+
+                    reserved_run_signatures.add(validation["signature"])
+                    valid_results_this_attempt.append(
+                        (
+                            sampled_candidate,
+                            validation,
+                            normalized_candidate,
+                            prompt,
+                        )
+                    )
+                    if len(valid_results_this_attempt) >= needed_count:
+                        break
+
+                for invalid_validation in invalid_validations:
+                    trajectory_generation._append_error_event(
+                        error_events,
+                        trajectory_generation._validation_error_event_from_payload(
+                            invalid_validation,
+                            source="on_demand",
+                            trajectory_index=run_index,
+                            attempt_number=attempt_index + 1,
+                            retryable=(
+                                len(accumulated_valid_results) + len(valid_results_this_attempt)
+                                < runtime_config.verbalized_k
+                                and attempt_index + 1 < runtime_config.max_retries
+                            ),
+                        ),
+                        error_events_lock=error_events_lock,
+                    )
+
+                if valid_results_this_attempt:
+                    accumulated_generation_usages.append(shared_generation_usage)
+                    accumulated_valid_results.extend(valid_results_this_attempt)
+
+                if len(accumulated_valid_results) < runtime_config.verbalized_k:
+                    last_error = trajectory_generation.TrajectoryValidationError(
+                        "Verbalized run did not produce enough valid unique trajectories."
+                    )
+                    if trajectory_progress is not None:
+                        trajectory_progress.set_postfix_str(
+                            trajectory_generation._trajectory_retry_status(
+                                runtime_config,
+                                attempt_number=attempt_index + 1,
+                                tool_call_count=tool_call_count,
+                            )
+                        )
+                    if invalid_validations:
+                        first_invalid = invalid_validations[0]
+                        retry_feedback = trajectory_generation._build_retry_feedback_text_from_validation(
+                            first_invalid,
+                            candidate=retry_feedback_candidate,
+                        )
+                    continue
+
+                total_prompt_tokens = sum(
+                    generation_usage["prompt_tokens"]
+                    for generation_usage in accumulated_generation_usages
+                )
+                total_output_tokens = sum(
+                    generation_usage["output_tokens"]
+                    for generation_usage in accumulated_generation_usages
+                )
+                total_reasoning_tokens = sum(
+                    trajectory_generation._reasoning_token_count(generation_usage)
+                    for generation_usage in accumulated_generation_usages
+                )
+                total_observed_cost_usd = trajectory_generation._observed_cost_total(
+                    accumulated_generation_usages
+                )
+                aggregate_generation_usage = dict(accumulated_generation_usages[0])
+                aggregate_generation_usage["prompt_tokens"] = total_prompt_tokens
+                aggregate_generation_usage["output_tokens"] = total_output_tokens
+                aggregate_generation_usage["reasoning_tokens"] = total_reasoning_tokens
+                aggregate_generation_usage["total_tokens"] = (
+                    total_prompt_tokens + total_output_tokens + total_reasoning_tokens
+                )
+                aggregate_generation_usage["observed_cost_usd"] = total_observed_cost_usd
+                aggregate_generation_usage["successful_attempt_number"] = attempt_index + 1
+                aggregate_generation_usage["retry_costs_included"] = (
+                    attempt_index + 1 > 1
+                )
+                split_generation_usages = (
+                    trajectory_generation._split_generation_usage_across_candidates(
+                        aggregate_generation_usage,
+                        candidate_count=len(accumulated_valid_results),
+                    )
+                )
+                trajectory_records: list[dict[str, Any]] = []
+                for candidate_index, (
+                    (
+                        sampled_candidate,
+                        validation,
+                        normalized_candidate,
+                        candidate_prompt,
+                    ),
+                    generation_usage,
+                ) in enumerate(
+                    zip(accumulated_valid_results, split_generation_usages)
+                ):
+                    trajectory_id = trajectory_generation.format_trajectory_id(
+                        trajectory_generation._global_trajectory_index(
+                            runtime_config,
+                            run_index=run_index,
+                            candidate_index=candidate_index,
+                        )
+                    )
+                    trajectory_record = task_definition.build_trajectory_record(
+                        candidate=normalized_candidate,
+                        validation=validation,
+                        trajectory_id=trajectory_id,
+                        generation_usage=generation_usage,
+                    )
+                    if sampled_candidate.probability is not None:
+                        trajectory_record["sampling_metadata"] = {
+                            "strategy": runtime_config.sampling,
+                            "probability": sampled_candidate.probability,
+                            "candidate_index": candidate_index,
+                            "run_index": run_index,
+                        }
+                    trajectory_record["prompt"] = candidate_prompt
+                    trajectory_record["raw_output"] = sampled_candidate.raw_output
+                    trajectory_records.append(trajectory_record)
+            else:
+                trajectory_records = trajectory_generation._build_trajectory_records_from_sampled_candidates(
+                    run_index=run_index,
+                    runtime_config=runtime_config,
+                    task_definition=task_definition,
+                    sampled_candidates=sampled_candidates,
+                    prompt=prompt,
+                    raw_response=response_payload,
+                    usage=usage,
+                    validator=validator,
+                    seen_signatures=seen_signatures,
+                    seen_signatures_lock=seen_signatures_lock,
+                    attempt_number=attempt_index + 1,
+                )
             for trajectory_record in trajectory_records:
                 validation = trajectory_record["validation"]
                 trajectory_generation._append_error_event(
@@ -229,6 +417,7 @@ def generate_single_run(
                 tool_call_count=tool_call_count,
                 validation=invalid_validation,
             )
+            run_completed = True
             return trajectory_records
         except Exception as exc:
             last_error = exc
@@ -273,6 +462,14 @@ def generate_single_run(
                     )
                 )
 
+    if (
+        not run_completed
+        and reserved_run_signatures
+        and seen_signatures is not None
+        and seen_signatures_lock is not None
+    ):
+        with seen_signatures_lock:
+            seen_signatures.difference_update(reserved_run_signatures)
     raise TrajectoryGenerationError(
         f"Unable to generate a valid trajectory run for index {run_index} after "
         f"{runtime_config.max_retries} attempts: "
@@ -300,6 +497,8 @@ def generate_trajectories_on_demand(
     )
     error_events: list[dict[str, Any]] = []
     error_events_lock = threading.Lock()
+    attempt_prompts: list[dict[str, Any]] = []
+    attempt_prompts_lock = threading.Lock()
 
     disable_progress = not show_progress or not os.isatty(2)
     progress_handles = trajectory_generation._create_progress_handles(
@@ -341,6 +540,8 @@ def generate_trajectories_on_demand(
                 accumulated_cost_tracker=accumulated_cost_tracker,
                 error_events=error_events,
                 error_events_lock=error_events_lock,
+                attempt_prompts=attempt_prompts,
+                attempt_prompts_lock=attempt_prompts_lock,
             ): index
             for index in range(runtime_config.num_runs)
         }
@@ -369,4 +570,5 @@ def generate_trajectories_on_demand(
         runtime_config,
         ordered_trajectories,
         error_events=error_events,
+        attempt_prompts=attempt_prompts,
     )

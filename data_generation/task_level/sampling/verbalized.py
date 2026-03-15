@@ -122,6 +122,7 @@ class VerbalizedSamplingStrategy:
             "- Each item must be an object with keys probability and trajectory.\n"
             "- Probability must be a number between 0 and 1 representing the model's estimated likelihood for that full trajectory.\n"
             "- Trajectory must be one complete trajectory object that satisfies the trajectory object requirements above.\n"
+            "- For each trajectory, also vary amount of communication between agents. The range is between communicating with high frequency (every step) to communicating infrequently (just at the beginning). You should include both extremes as trajectories."
             "- Do not return a standalone top-level steps object.\n"
             "- Make the trajectories meaningfully distinct from each other.\n"
             "- Output JSON only and do not include markdown."

@@ -2679,11 +2679,230 @@ class GenerationTests(unittest.TestCase):
             ],
         )
         self.assertEqual(
+            payload["attempt_prompts"],
+            [
+                {
+                    "run_id": "traj_000000",
+                    "attempt_number": 1,
+                    "prompt": build_prepare_coffee_prompt("traj-000000-attempt-00"),
+                }
+            ],
+        )
+        self.assertEqual(
             payload["model_config"],
             {
                 "reasoning": {"thinking_level": None},
                 "sampling": {"temperature": 0.5, "strategy": "base"},
             },
+        )
+
+    def test_generated_payload_includes_retry_attempt_prompts(self):
+        runtime_config = RuntimeConfig(
+            composite_task="PrepareCoffee",
+            num_runs=1,
+            model="gemini-3-flash-preview",
+            sdk="google-genai",
+            project="demo-project",
+            location="global",
+            temperature=0.5,
+            max_workers=1,
+            max_retries=2,
+        )
+
+        payload = generate_trajectories(
+            runtime_config,
+            client_factory=lambda: SequencedFakeClient(
+                [
+                    make_invalid_candidate_missing_initial_communication(),
+                    make_valid_candidate(),
+                ]
+            ),
+            show_progress=False,
+        )
+
+        self.assertEqual(len(payload["attempt_prompts"]), 2)
+        self.assertEqual(payload["attempt_prompts"][0]["run_id"], "traj_000000")
+        self.assertEqual(payload["attempt_prompts"][0]["attempt_number"], 1)
+        self.assertEqual(payload["attempt_prompts"][1]["attempt_number"], 2)
+        self.assertNotIn(
+            "Previous attempt failed validation.",
+            payload["attempt_prompts"][0]["prompt"],
+        )
+        self.assertIn(
+            "Previous attempt failed validation.",
+            payload["attempt_prompts"][1]["prompt"],
+        )
+
+    def test_verbalized_on_demand_retries_only_failed_run_and_fills_remaining_slots(self):
+        runtime_config = RuntimeConfig(
+            composite_task="PrepareCoffee",
+            num_runs=3,
+            model="gemini-3.1-flash-lite-preview",
+            sdk="google-genai",
+            project="demo-project",
+            location="global",
+            temperature=0.5,
+            max_workers=1,
+            max_retries=2,
+            sampling="verbalized",
+            verbalized_k=3,
+        )
+
+        def labeled_valid_candidate(label):
+            return make_valid_candidate(
+                communicate_messages=(
+                    f"{label} agent_0 plan",
+                    f"{label} agent_1 plan",
+                )
+            )
+
+        clients = [
+            SequencedFakeClient(
+                [
+                    make_verbalized_response(
+                        make_invalid_candidate_missing_initial_communication(),
+                        labeled_valid_candidate("run0-attempt1-b"),
+                        labeled_valid_candidate("run0-attempt1-c"),
+                        probabilities=[0.4, 0.3, 0.3],
+                    ),
+                    make_verbalized_response(
+                        labeled_valid_candidate("run0-attempt2-a"),
+                        labeled_valid_candidate("run0-attempt2-b"),
+                        labeled_valid_candidate("run0-attempt2-c"),
+                        probabilities=[0.5, 0.3, 0.2],
+                    ),
+                ]
+            ),
+            SequencedFakeClient(
+                [
+                    make_verbalized_response(
+                        labeled_valid_candidate("run1-attempt1-a"),
+                        labeled_valid_candidate("run1-attempt1-b"),
+                        labeled_valid_candidate("run1-attempt1-c"),
+                        probabilities=[0.5, 0.3, 0.2],
+                    )
+                ]
+            ),
+            SequencedFakeClient(
+                [
+                    make_verbalized_response(
+                        labeled_valid_candidate("run2-attempt1-a"),
+                        labeled_valid_candidate("run2-attempt1-b"),
+                        labeled_valid_candidate("run2-attempt1-c"),
+                        probabilities=[0.5, 0.3, 0.2],
+                    )
+                ]
+            ),
+        ]
+
+        payload = generate_trajectories(
+            runtime_config,
+            client_factory=lambda: clients.pop(0),
+            show_progress=False,
+        )
+
+        self.assertEqual(
+            [
+                trajectory["generation_usage"]["successful_attempt_number"]
+                for trajectory in payload["trajectories"]
+            ],
+            [2, 2, 2, 1, 1, 1, 1, 1, 1],
+        )
+        self.assertEqual(
+            [
+                (prompt_entry["run_id"], prompt_entry["attempt_number"])
+                for prompt_entry in payload["attempt_prompts"]
+            ],
+            [
+                ("traj_000000", 1),
+                ("traj_000000", 2),
+                ("traj_000003", 1),
+                ("traj_000006", 1),
+            ],
+        )
+
+    def test_verbalized_on_demand_keeps_valid_candidates_across_attempts(self):
+        runtime_config = RuntimeConfig(
+            composite_task="PrepareCoffee",
+            num_runs=1,
+            model="gemini-3.1-flash-lite-preview",
+            sdk="google-genai",
+            project="demo-project",
+            location="global",
+            temperature=0.5,
+            max_workers=1,
+            max_retries=3,
+            sampling="verbalized",
+            verbalized_k=2,
+        )
+        client = PromptCapturingSequencedFakeClient(
+            [
+                make_verbalized_response(
+                    make_invalid_candidate_missing_initial_communication(),
+                    make_valid_candidate(
+                        communicate_messages=(
+                            "attempt1 agent_0 plan",
+                            "attempt1 agent_1 plan",
+                        )
+                    ),
+                    probabilities=[0.4, 0.6],
+                ),
+                make_verbalized_response(
+                    make_valid_candidate(
+                        communicate_messages=(
+                            "attempt2 agent_0 first",
+                            "attempt2 agent_1 first",
+                        )
+                    ),
+                    make_valid_candidate(
+                        communicate_messages=(
+                            "attempt2 agent_0 second",
+                            "attempt2 agent_1 second",
+                        )
+                    ),
+                    probabilities=[0.7, 0.3],
+                ),
+            ]
+        )
+
+        payload = generate_trajectories(
+            runtime_config,
+            client_factory=lambda: client,
+            show_progress=False,
+        )
+
+        self.assertEqual(len(client.prompts), 2)
+        self.assertEqual(len(payload["trajectories"]), 2)
+        first_messages = [
+            trajectory["steps"][0]["args"]["message"]
+            for trajectory in payload["trajectories"]
+        ]
+        self.assertEqual(
+            first_messages,
+            [
+                "attempt1 agent_0 plan",
+                "attempt2 agent_0 first",
+            ],
+        )
+        self.assertEqual(
+            [entry["attempt_number"] for entry in payload["attempt_prompts"]],
+            [1, 2],
+        )
+        self.assertIn(
+            "MissingInitialCommunicationSemanticValidationError",
+            client.prompts[1],
+        )
+        self.assertTrue(
+            all(
+                trajectory["generation_usage"]["successful_attempt_number"] == 2
+                for trajectory in payload["trajectories"]
+            )
+        )
+        self.assertTrue(
+            all(
+                trajectory["generation_usage"]["retry_costs_included"] is True
+                for trajectory in payload["trajectories"]
+            )
         )
 
     def test_generated_payload_includes_raw_output_sidecars(self):
@@ -2944,6 +3163,152 @@ class GenerationTests(unittest.TestCase):
         self.assertIn(
             "counted once per model response",
             summary["notes"][-1],
+        )
+
+    def test_preflight_cost_estimate_uses_matching_history_when_available(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_root = Path(tmpdir)
+            history_dir = output_root / "prepare_coffee" / "20260314T010000Z"
+            history_dir.mkdir(parents=True, exist_ok=True)
+            (history_dir / "cost_summary.json").write_text(
+                json.dumps(
+                    {
+                        "composite_task": "PrepareCoffee",
+                        "sdk": "google-genai",
+                        "model": "gemini-3.1-flash-lite-preview",
+                        "num_runs": 2,
+                        "num_trajectories": 6,
+                        "generated_at": "2026-03-14T01:00:00+00:00",
+                        "model_config": {
+                            "reasoning": {"thinking_level": "low"},
+                            "sampling": {
+                                "temperature": 0.6,
+                                "strategy": "verbalized",
+                                "verbalized_k": 3,
+                            },
+                        },
+                        "trajectory_costs": [
+                            {
+                                "trajectory_id": "traj_000000",
+                                "generation_usage": {
+                                    "successful_attempt_number": 1,
+                                    "prompt_tokens": 100,
+                                    "output_tokens": 200,
+                                    "reasoning_tokens": 10,
+                                    "total_tokens": 310,
+                                    "usage_source": "api_usage_metadata",
+                                    "traffic_type": "ON_DEMAND",
+                                    "observed_cost_usd": 0.0004,
+                                },
+                            },
+                            {
+                                "trajectory_id": "traj_000001",
+                                "generation_usage": {
+                                    "successful_attempt_number": 1,
+                                    "prompt_tokens": 100,
+                                    "output_tokens": 200,
+                                    "reasoning_tokens": 10,
+                                    "total_tokens": 310,
+                                    "usage_source": "api_usage_metadata",
+                                    "traffic_type": "ON_DEMAND",
+                                    "observed_cost_usd": 0.0004,
+                                },
+                            },
+                            {
+                                "trajectory_id": "traj_000002",
+                                "generation_usage": {
+                                    "successful_attempt_number": 1,
+                                    "prompt_tokens": 100,
+                                    "output_tokens": 200,
+                                    "reasoning_tokens": 10,
+                                    "total_tokens": 310,
+                                    "usage_source": "api_usage_metadata",
+                                    "traffic_type": "ON_DEMAND",
+                                    "observed_cost_usd": 0.0004,
+                                },
+                            },
+                            {
+                                "trajectory_id": "traj_000003",
+                                "generation_usage": {
+                                    "successful_attempt_number": 2,
+                                    "prompt_tokens": 120,
+                                    "output_tokens": 240,
+                                    "reasoning_tokens": 20,
+                                    "total_tokens": 380,
+                                    "usage_source": "api_usage_metadata",
+                                    "traffic_type": "ON_DEMAND",
+                                    "observed_cost_usd": 0.0005,
+                                },
+                            },
+                            {
+                                "trajectory_id": "traj_000004",
+                                "generation_usage": {
+                                    "successful_attempt_number": 2,
+                                    "prompt_tokens": 120,
+                                    "output_tokens": 240,
+                                    "reasoning_tokens": 20,
+                                    "total_tokens": 380,
+                                    "usage_source": "api_usage_metadata",
+                                    "traffic_type": "ON_DEMAND",
+                                    "observed_cost_usd": 0.0005,
+                                },
+                            },
+                            {
+                                "trajectory_id": "traj_000005",
+                                "generation_usage": {
+                                    "successful_attempt_number": 2,
+                                    "prompt_tokens": 120,
+                                    "output_tokens": 240,
+                                    "reasoning_tokens": 20,
+                                    "total_tokens": 380,
+                                    "usage_source": "api_usage_metadata",
+                                    "traffic_type": "ON_DEMAND",
+                                    "observed_cost_usd": 0.0005,
+                                },
+                            },
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            runtime_config = RuntimeConfig(
+                composite_task="PrepareCoffee",
+                num_runs=2,
+                model="gemini-3.1-flash-lite-preview",
+                sdk="google-genai",
+                project="demo-project",
+                location="global",
+                temperature=0.6,
+                max_workers=1,
+                max_retries=5,
+                sampling="verbalized",
+                verbalized_k=3,
+                thinking_level="low",
+                summary_path=output_root / "prepare_coffee" / "20260315T010000Z" / "summary.json",
+            )
+
+            with mock.patch(
+                "data_generation.task_level.trajectory_generation.DEFAULT_OUTPUT_DIR",
+                output_root,
+            ):
+                summary = _build_preflight_cost_estimate_summary(
+                    runtime_config,
+                    PREPARE_COFFEE_TASK,
+                )
+
+        self.assertEqual(
+            summary["best_case_tokens"],
+            {"prompt": 1020, "output": 2040, "reasoning": 150, "total": 3210},
+        )
+        self.assertAlmostEqual(summary["best_case_total_usd"], 0.0035)
+        self.assertIn("observed API usage", summary["notes"][0])
+        self.assertIn("saved API usage metadata", summary["notes"][2])
+        self.assertTrue(
+            any("Matched 2 prior run(s)" in note for note in summary["notes"])
+        )
+        self.assertTrue(
+            any("counted once per model response" in note for note in summary["notes"])
         )
 
     def test_permission_denied_errors_are_treated_as_non_retryable(self):
@@ -4504,6 +4869,13 @@ class GenerationTests(unittest.TestCase):
                     "prompt": "Prompt for traj_000000",
                 }
             ],
+            "attempt_prompts": [
+                {
+                    "run_id": "traj_000000",
+                    "attempt_number": 1,
+                    "prompt": "Prompt for traj_000000 attempt 1",
+                }
+            ],
             "trajectory_outputs": [
                 {
                     "trajectory_id": "traj_000000",
@@ -4555,10 +4927,12 @@ class GenerationTests(unittest.TestCase):
             raw_output_dir = summary_path.parent / "outputs"
             trajectory_path = trajectory_output_dir / "traj_000000.json"
             prompt_path = prompt_output_dir / "traj_000000.md"
+            attempt_prompt_path = prompt_output_dir / "traj_000000_1.md"
             raw_output_path = raw_output_dir / "traj_000000.txt"
 
             self.assertTrue(trajectory_path.exists())
             self.assertTrue(prompt_path.exists())
+            self.assertFalse(attempt_prompt_path.exists())
             self.assertTrue(raw_output_path.exists())
             self.assertEqual(
                 json.loads(trajectory_path.read_text(encoding="utf-8")),
