@@ -8,7 +8,7 @@ import os
 import re
 import sys
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from time import time
@@ -92,6 +92,7 @@ COST_SUMMARY_OUTPUT_FILENAME = "cost_summary.json"
 ERROR_SUMMARY_OUTPUT_FILENAME = "summary_errors.json"
 TRAJECTORY_ID_DIGITS = 6
 BATCH_DIRECTORY_NAME = "batch"
+REQUEST_DIRECTORY_NAME = "requests"
 OVERALL_PROGRESS_COLOR = "cyan"
 PROGRESS_BAR_WIDTH = 30
 RETRY_PROGRESS_ERROR_MESSAGE_MAX_LENGTH = 96
@@ -280,9 +281,20 @@ def _resolve_task_definition_or_raise(composite_task: str) -> TaskDefinition:
     return task_definition
 
 
+def _resolve_task_definitions_or_raise(
+    composite_tasks: tuple[str, ...],
+) -> tuple[TaskDefinition, ...]:
+    """Resolves every selected task definition in CLI order."""
+
+    return tuple(
+        _resolve_task_definition_or_raise(composite_task)
+        for composite_task in composite_tasks
+    )
+
+
 @dataclass(frozen=True)
 class RuntimeConfig:
-    composite_task: str
+    composite_task: str | None
     num_runs: int
     model: str
     sdk: str
@@ -299,6 +311,56 @@ class RuntimeConfig:
     disable_validation: bool = False
     batch_processing: bool = False
     batch_gcs_prefix: str | None = None
+    composite_tasks: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Normalizes single-task and multi-task config fields to a stable shape."""
+
+        normalized_tasks = self._normalize_composite_tasks(
+            self.composite_task,
+            self.composite_tasks,
+        )
+        primary_task = normalized_tasks[0] if normalized_tasks else None
+        object.__setattr__(self, "composite_tasks", normalized_tasks)
+        object.__setattr__(self, "composite_task", primary_task)
+
+    @staticmethod
+    def _normalize_composite_tasks(
+        composite_task: str | None,
+        composite_tasks: tuple[str, ...] | list[str],
+    ) -> tuple[str, ...]:
+        """Builds the ordered task list while preserving explicit request order."""
+
+        requested_tasks: list[str] = []
+        if composite_task is not None:
+            requested_tasks.append(composite_task)
+        requested_tasks.extend(composite_tasks)
+
+        normalized_tasks: list[str] = []
+        for task_name in requested_tasks:
+            if not isinstance(task_name, str):
+                continue
+            normalized_task_name = " ".join(task_name.strip().split())
+            if normalized_task_name:
+                normalized_tasks.append(normalized_task_name)
+        return tuple(normalized_tasks)
+
+    def for_task(
+        self,
+        composite_task: str,
+        *,
+        summary_path: Path | None = None,
+        cost_output_path: Path | None = None,
+    ) -> RuntimeConfig:
+        """Builds one task-scoped runtime config for the shared single-task runtime."""
+
+        return replace(
+            self,
+            composite_task=composite_task,
+            composite_tasks=(composite_task,),
+            summary_path=summary_path,
+            cost_output_path=cost_output_path,
+        )
 
 
 @dataclass(frozen=True)
@@ -1160,22 +1222,25 @@ def _historical_preflight_generation_usages(
     if runtime_config.summary_path is None:
         return []
 
-    task_output_dir = DEFAULT_OUTPUT_DIR / camel_to_snake_case(
-        task_definition.composite_task
-    )
-    if not task_output_dir.exists():
-        return []
-
     current_run_dir = runtime_config.summary_path.parent
+    task_output_directory_name = camel_to_snake_case(task_definition.composite_task)
     trajectories_per_run = _sampling_strategy_for_runtime(
         runtime_config
     ).trajectories_per_run(runtime_config)
     matched_generation_usages: list[dict[str, Any]] = []
 
-    for cost_summary_path in sorted(
-        task_output_dir.glob(f"*/{COST_SUMMARY_OUTPUT_FILENAME}"),
+    candidate_cost_summary_paths = sorted(
+        DEFAULT_OUTPUT_DIR.rglob(COST_SUMMARY_OUTPUT_FILENAME),
         reverse=True,
-    ):
+    )
+    for cost_summary_path in candidate_cost_summary_paths:
+        parent_directory = cost_summary_path.parent
+        grandparent_directory = parent_directory.parent
+        if (
+            parent_directory.name != task_output_directory_name
+            and grandparent_directory.name != task_output_directory_name
+        ):
+            continue
         if cost_summary_path.parent == current_run_dir:
             continue
         payload = _load_json_payload(cost_summary_path)
@@ -1460,12 +1525,42 @@ def resolve_dataset_output_path(
     *,
     generated_at: datetime | None = None,
 ) -> Path:
+    """Resolves the default single-task summary output path."""
+
     timestamp = (generated_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
     task_dir = camel_to_snake_case(composite_task)
     return (
         DEFAULT_OUTPUT_DIR
         / task_dir
         / timestamp.strftime(DATASET_RUN_TIMESTAMP_FORMAT)
+        / SUMMARY_OUTPUT_FILENAME
+    )
+
+
+def resolve_request_output_path(
+    *,
+    generated_at: datetime | None = None,
+) -> Path:
+    """Resolves the request-level combined summary path for multi-task generation."""
+
+    timestamp = (generated_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    return (
+        DEFAULT_OUTPUT_DIR
+        / REQUEST_DIRECTORY_NAME
+        / timestamp.strftime(DATASET_RUN_TIMESTAMP_FORMAT)
+        / SUMMARY_OUTPUT_FILENAME
+    )
+
+
+def resolve_request_task_output_path(
+    request_summary_path: Path,
+    composite_task: str,
+) -> Path:
+    """Resolves one per-task summary path nested under a shared request directory."""
+
+    return (
+        request_summary_path.parent
+        / camel_to_snake_case(composite_task)
         / SUMMARY_OUTPUT_FILENAME
     )
 
@@ -1994,6 +2089,227 @@ def build_error_summary_output_payload(
     return error_payload
 
 
+def _relative_output_path(path: Path, *, root: Path) -> str:
+    """Formats one output path relative to the shared request root."""
+
+    return path.relative_to(root).as_posix()
+
+
+def _aggregate_task_cost_summaries(
+    task_payloads: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Builds one combined cost summary from per-task payload summaries."""
+
+    combined_notes: list[str] = []
+    pricing_payloads: list[dict[str, Any]] = []
+    total_trajectories = sum(
+        int(task_payload.get("num_trajectories", 0))
+        for task_payload in task_payloads
+    )
+    aggregated_cost_summary = {
+        "prompt_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "total_tokens": 0,
+        "input_cost_usd": 0.0,
+        "output_cost_usd": 0.0,
+        "total_cost_usd": 0.0,
+        "average_trajectory_cost_usd": None,
+        "notes": combined_notes,
+    }
+
+    missing_cost_data = False
+    for task_payload in task_payloads:
+        task_cost_summary = task_payload.get("cost_summary", {})
+        if not isinstance(task_cost_summary, dict):
+            missing_cost_data = True
+            continue
+        aggregated_cost_summary["prompt_tokens"] += int(task_cost_summary.get("prompt_tokens", 0))
+        aggregated_cost_summary["output_tokens"] += int(task_cost_summary.get("output_tokens", 0))
+        aggregated_cost_summary["reasoning_tokens"] += int(task_cost_summary.get("reasoning_tokens", 0))
+        aggregated_cost_summary["total_tokens"] += int(task_cost_summary.get("total_tokens", 0))
+
+        for cost_key in ("input_cost_usd", "output_cost_usd", "total_cost_usd"):
+            task_cost_value = task_cost_summary.get(cost_key)
+            if task_cost_value is None:
+                missing_cost_data = True
+                continue
+            aggregated_cost_summary[cost_key] += float(task_cost_value)
+
+        for note in task_cost_summary.get("notes", []):
+            if isinstance(note, str) and note not in combined_notes:
+                combined_notes.append(note)
+
+        pricing_payload = task_cost_summary.get("pricing")
+        if isinstance(pricing_payload, dict):
+            pricing_payloads.append(pricing_payload)
+
+    if missing_cost_data:
+        aggregated_cost_summary["input_cost_usd"] = None
+        aggregated_cost_summary["output_cost_usd"] = None
+        aggregated_cost_summary["total_cost_usd"] = None
+        aggregated_cost_summary["average_trajectory_cost_usd"] = None
+    else:
+        aggregated_cost_summary["input_cost_usd"] = round_cost(
+            aggregated_cost_summary["input_cost_usd"],
+            decimal_places=COST_DECIMAL_PLACES,
+        )
+        aggregated_cost_summary["output_cost_usd"] = round_cost(
+            aggregated_cost_summary["output_cost_usd"],
+            decimal_places=COST_DECIMAL_PLACES,
+        )
+        aggregated_cost_summary["total_cost_usd"] = round_cost(
+            aggregated_cost_summary["total_cost_usd"],
+            decimal_places=COST_DECIMAL_PLACES,
+        )
+        aggregated_cost_summary["average_trajectory_cost_usd"] = round_cost(
+            aggregated_cost_summary["total_cost_usd"] / total_trajectories
+            if total_trajectories > 0 and aggregated_cost_summary["total_cost_usd"] is not None
+            else None,
+            decimal_places=COST_DECIMAL_PLACES,
+        )
+
+    unique_pricing_payloads = {
+        json.dumps(pricing_payload, sort_keys=True)
+        for pricing_payload in pricing_payloads
+    }
+    if len(unique_pricing_payloads) == 1:
+        aggregated_cost_summary["pricing"] = pricing_payloads[0]
+
+    return aggregated_cost_summary
+
+
+def build_request_summary_output_payload(
+    runtime_config: RuntimeConfig,
+    task_run_entries: list[dict[str, Any]],
+    *,
+    request_summary_path: Path,
+) -> dict[str, Any]:
+    """Builds the combined summary payload for one multi-task generation request."""
+
+    task_payloads = [task_run_entry["payload"] for task_run_entry in task_run_entries]
+    summary_payload = {
+        "composite_tasks": [task_run_entry["composite_task"] for task_run_entry in task_run_entries],
+        "sdk": runtime_config.sdk,
+        "model": runtime_config.model,
+        "model_config": _build_model_config_payload(runtime_config),
+        "num_tasks": len(task_run_entries),
+        "num_runs_per_task": runtime_config.num_runs,
+        "total_requested_runs": runtime_config.num_runs * len(task_run_entries),
+        "num_trajectories": sum(
+            int(task_payload.get("num_trajectories", 0))
+            for task_payload in task_payloads
+        ),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "cost_summary": _aggregate_task_cost_summaries(task_payloads),
+        "task_summaries": [],
+    }
+
+    request_root = request_summary_path.parent
+    for task_run_entry in task_run_entries:
+        task_payload = task_run_entry["payload"]
+        output_paths = task_run_entry["output_paths"]
+        task_summary_entry = {
+            "composite_task": task_run_entry["composite_task"],
+            "summary_path": _relative_output_path(output_paths.summary_path, root=request_root),
+            "cost_summary_path": _relative_output_path(output_paths.cost_path, root=request_root),
+            "error_summary_path": _relative_output_path(output_paths.error_summary_path, root=request_root),
+            "trajectory_directory": _relative_output_path(output_paths.trajectory_dir, root=request_root),
+            "prompt_directory": _relative_output_path(output_paths.prompt_dir, root=request_root),
+            "raw_output_directory": _relative_output_path(output_paths.output_dir, root=request_root),
+            "num_runs": task_payload.get("num_runs"),
+            "num_trajectories": task_payload.get("num_trajectories"),
+            "generated_at": task_payload.get("generated_at"),
+            "trajectory_stats": _summary_trajectory_stats(task_payload["trajectories"]),
+            "cost_summary": task_payload.get("cost_summary"),
+        }
+        summary_payload["task_summaries"].append(task_summary_entry)
+
+    return summary_payload
+
+
+def build_request_cost_output_payload(
+    request_summary_payload: dict[str, Any],
+    *,
+    request_summary_path: Path,
+) -> dict[str, Any]:
+    """Builds the cost sidecar for one multi-task generation request."""
+
+    return {
+        "composite_tasks": list(request_summary_payload["composite_tasks"]),
+        "sdk": request_summary_payload["sdk"],
+        "model": request_summary_payload["model"],
+        "model_config": request_summary_payload["model_config"],
+        "num_tasks": request_summary_payload["num_tasks"],
+        "num_runs_per_task": request_summary_payload["num_runs_per_task"],
+        "total_requested_runs": request_summary_payload["total_requested_runs"],
+        "num_trajectories": request_summary_payload["num_trajectories"],
+        "generated_at": request_summary_payload["generated_at"],
+        "summary_output_path": str(request_summary_path),
+        "cost_summary": request_summary_payload["cost_summary"],
+        "task_cost_summaries": [
+            {
+                "composite_task": task_summary["composite_task"],
+                "summary_path": task_summary["summary_path"],
+                "cost_summary_path": task_summary["cost_summary_path"],
+                "cost_summary": task_summary["cost_summary"],
+            }
+            for task_summary in request_summary_payload["task_summaries"]
+        ],
+    }
+
+
+def build_request_error_output_payload(
+    request_summary_payload: dict[str, Any],
+    task_run_entries: list[dict[str, Any]],
+    *,
+    request_summary_path: Path,
+) -> dict[str, Any]:
+    """Builds the error sidecar for one multi-task generation request."""
+
+    error_events: list[dict[str, Any]] = []
+    error_counts_by_type: dict[str, int] = {}
+    for task_run_entry in task_run_entries:
+        task_payload = task_run_entry["payload"]
+        for error_event in _collect_payload_error_events(task_payload):
+            error_event_with_task = {
+                "composite_task": task_run_entry["composite_task"],
+                **error_event,
+            }
+            error_events.append(error_event_with_task)
+            error_type = error_event_with_task["error_type"]
+            error_counts_by_type[error_type] = error_counts_by_type.get(error_type, 0) + 1
+
+    return {
+        "composite_tasks": list(request_summary_payload["composite_tasks"]),
+        "sdk": request_summary_payload["sdk"],
+        "model": request_summary_payload["model"],
+        "num_tasks": request_summary_payload["num_tasks"],
+        "num_runs_per_task": request_summary_payload["num_runs_per_task"],
+        "total_requested_runs": request_summary_payload["total_requested_runs"],
+        "num_trajectories": request_summary_payload["num_trajectories"],
+        "generated_at": request_summary_payload["generated_at"],
+        "summary_output_path": str(request_summary_path),
+        "total_errors": len(error_events),
+        "error_counts_by_type": [
+            {
+                "error_type": error_type,
+                "count": error_counts_by_type[error_type],
+            }
+            for error_type in sorted(error_counts_by_type)
+        ],
+        "task_error_summaries": [
+            {
+                "composite_task": task_summary["composite_task"],
+                "summary_path": task_summary["summary_path"],
+                "error_summary_path": task_summary["error_summary_path"],
+            }
+            for task_summary in request_summary_payload["task_summaries"]
+        ],
+        "error_events": error_events,
+    }
+
+
 def _log_runtime_message(
     message: str,
     *,
@@ -2503,6 +2819,19 @@ def _sanitize_trajectory_for_output(
 
 
 def _validate_runtime_config(runtime_config: RuntimeConfig) -> None:
+    if not runtime_config.composite_tasks:
+        raise TrajectoryGenerationError("At least one task must be selected.")
+    duplicate_tasks = sorted(
+        {
+            composite_task
+            for composite_task in runtime_config.composite_tasks
+            if runtime_config.composite_tasks.count(composite_task) > 1
+        }
+    )
+    if duplicate_tasks:
+        raise TrajectoryGenerationError(
+            "Duplicate tasks are not allowed: " + ", ".join(duplicate_tasks) + "."
+        )
     if runtime_config.num_runs <= 0:
         raise TrajectoryGenerationError("--num-runs must be greater than 0.")
     if runtime_config.max_workers <= 0:
@@ -2707,26 +3036,19 @@ def parse_args(argv: list[str] | None = None) -> RuntimeConfig:
     load_dotenv_file()
     supported_tasks = ", ".join(supported_task_names())
     parser = argparse.ArgumentParser(
-        description="Generate multi-agent task-level trajectories with google-genai on Vertex AI."
+        description="Generate multi-agent task-level trajectories with google-genai on Vertex AI.",
+        allow_abbrev=False,
     )
     parser.add_argument(
-        "--task",
+        "--tasks",
         type=str,
-        default=DEFAULT_COMPOSITE_TASK,
-        dest="composite_task",
-        help=f"Task name. Available tasks: {supported_tasks}.",
-    )
-    parser.add_argument(
-        "--composite-task",
-        type=str,
-        dest="composite_task",
-        help=argparse.SUPPRESS,
-    )
-    parser.add_argument(
-        "--composite_task",
-        type=str,
-        dest="composite_task",
-        help=argparse.SUPPRESS,
+        nargs="+",
+        default=[DEFAULT_COMPOSITE_TASK],
+        dest="composite_tasks",
+        help=(
+            "Task names to generate. Available tasks: "
+            f"{supported_tasks}. --num-runs applies to each selected task."
+        ),
     )
     parser.add_argument(
         "--num-runs",
@@ -2871,9 +3193,15 @@ def parse_args(argv: list[str] | None = None) -> RuntimeConfig:
         help=argparse.SUPPRESS,
     )
     args = parser.parse_args(argv)
+    parsed_tasks = tuple(args.composite_tasks)
+    default_summary_path = (
+        resolve_dataset_output_path(parsed_tasks[0])
+        if len(parsed_tasks) == 1
+        else None
+    )
 
     return RuntimeConfig(
-        composite_task=args.composite_task,
+        composite_task=None,
         num_runs=args.num_runs,
         model=args.model,
         sdk=args.sdk,
@@ -2885,11 +3213,12 @@ def parse_args(argv: list[str] | None = None) -> RuntimeConfig:
         thinking_level=args.thinking_level,
         max_workers=args.max_workers,
         max_retries=args.max_retries,
-        summary_path=resolve_dataset_output_path(args.composite_task),
+        summary_path=default_summary_path,
         cost_output_path=args.cost_output,
         disable_validation=args.disable_validation,
         batch_processing=args.batch_processing,
         batch_gcs_prefix=args.batch_gcs_prefix,
+        composite_tasks=parsed_tasks,
     )
 
 
@@ -2952,15 +3281,54 @@ def _write_generation_outputs(
     return written_trajectory_paths, written_prompt_paths, written_output_paths
 
 
-def main(argv: list[str] | None = None) -> int:
-    runtime_config = parse_args(argv)
-    _resolve_task_definition_or_raise(runtime_config.composite_task)
-    output_paths = _resolve_output_paths(runtime_config)
-    payload = generate_trajectories(runtime_config)
-    written_trajectory_paths, written_prompt_paths, written_output_paths = _write_generation_outputs(
-        payload,
-        output_paths=output_paths,
+def _write_request_outputs(
+    runtime_config: RuntimeConfig,
+    task_run_entries: list[dict[str, Any]],
+    *,
+    request_summary_path: Path,
+) -> None:
+    """Writes the combined summary and sidecars for one multi-task request."""
+
+    request_cost_path = resolve_cost_output_path(
+        request_summary_path,
+        runtime_config.cost_output_path,
     )
+    if request_cost_path.resolve() == request_summary_path.resolve():
+        raise TrajectoryGenerationError(
+            "--cost-output must differ from the generated combined summary output path."
+        )
+
+    request_summary_payload = build_request_summary_output_payload(
+        runtime_config,
+        task_run_entries,
+        request_summary_path=request_summary_path,
+    )
+    request_cost_payload = build_request_cost_output_payload(
+        request_summary_payload,
+        request_summary_path=request_summary_path,
+    )
+    request_error_payload = build_request_error_output_payload(
+        request_summary_payload,
+        task_run_entries,
+        request_summary_path=request_summary_path,
+    )
+    write_json_output(request_summary_payload, request_summary_path)
+    write_json_output(request_cost_payload, request_cost_path)
+    write_json_output(
+        request_error_payload,
+        resolve_error_output_path(request_summary_path),
+    )
+
+
+def _print_written_output_summary(
+    output_paths: OutputPaths,
+    *,
+    written_trajectory_paths: list[Path],
+    written_prompt_paths: list[Path],
+    written_output_paths: list[Path],
+) -> None:
+    """Prints the standard per-task output summary for one saved dataset."""
+
     print(f"Wrote trajectory summary to {output_paths.summary_path}")
     print(
         f"Wrote {len(written_trajectory_paths)} trajectory files to "
@@ -2976,6 +3344,74 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(f"Wrote cost summary to {output_paths.cost_path}")
     print(f"Wrote error summary to {output_paths.error_summary_path}")
+
+
+def main(argv: list[str] | None = None) -> int:
+    runtime_config = parse_args(argv)
+    _validate_runtime_config(runtime_config)
+    _resolve_task_definitions_or_raise(runtime_config.composite_tasks)
+
+    if len(runtime_config.composite_tasks) == 1:
+        output_paths = _resolve_output_paths(runtime_config)
+        payload = generate_trajectories(runtime_config)
+        written_trajectory_paths, written_prompt_paths, written_output_paths = _write_generation_outputs(
+            payload,
+            output_paths=output_paths,
+        )
+        _print_written_output_summary(
+            output_paths,
+            written_trajectory_paths=written_trajectory_paths,
+            written_prompt_paths=written_prompt_paths,
+            written_output_paths=written_output_paths,
+        )
+        return 0
+
+    request_summary_path = resolve_request_output_path()
+    task_run_entries: list[dict[str, Any]] = []
+    for composite_task in runtime_config.composite_tasks:
+        task_summary_path = resolve_request_task_output_path(
+            request_summary_path,
+            composite_task,
+        )
+        task_runtime_config = runtime_config.for_task(
+            composite_task,
+            summary_path=task_summary_path,
+            cost_output_path=None,
+        )
+        output_paths = _resolve_output_paths(task_runtime_config)
+        payload = generate_trajectories(task_runtime_config)
+        written_trajectory_paths, written_prompt_paths, written_output_paths = _write_generation_outputs(
+            payload,
+            output_paths=output_paths,
+        )
+        task_run_entries.append(
+            {
+                "composite_task": composite_task,
+                "payload": payload,
+                "output_paths": output_paths,
+            }
+        )
+        _print_written_output_summary(
+            output_paths,
+            written_trajectory_paths=written_trajectory_paths,
+            written_prompt_paths=written_prompt_paths,
+            written_output_paths=written_output_paths,
+        )
+
+    _write_request_outputs(
+        runtime_config,
+        task_run_entries,
+        request_summary_path=request_summary_path,
+    )
+    print(f"Wrote combined request summary to {request_summary_path}")
+    print(
+        "Wrote combined cost summary to "
+        f"{resolve_cost_output_path(request_summary_path, runtime_config.cost_output_path)}"
+    )
+    print(
+        "Wrote combined error summary to "
+        f"{resolve_error_output_path(request_summary_path)}"
+    )
     return 0
 
 

@@ -30,6 +30,11 @@ from data_generation.task_level.tasks.base import (
     UnsatisfiedGoalSemanticValidationError,
     WaitDurationSemanticValidationError,
 )
+from data_generation.task_level.tasks.hot_dog_setup import (
+    HOT_DOG_SETUP_TASK,
+    HotDogSetupValidator,
+    build_hot_dog_setup_prompt,
+)
 from data_generation.task_level.tasks.prepare_coffee import (
     PREPARE_COFFEE_TASK,
     PrepareCoffeeValidator,
@@ -38,6 +43,7 @@ from data_generation.task_level.tasks.prepare_coffee import (
 
 
 TASK_REGISTRY: dict[str, TaskDefinition] = {
+    HOT_DOG_SETUP_TASK.composite_task: HOT_DOG_SETUP_TASK,
     PREPARE_COFFEE_TASK.composite_task: PREPARE_COFFEE_TASK,
 }
 
@@ -45,6 +51,8 @@ __all__ = [
     "CommunicationStepSemanticValidationError",
     "DuplicateTrajectoryValidationError",
     "HeldObjectSemanticValidationError",
+    "HOT_DOG_SETUP_TASK",
+    "HotDogSetupValidator",
     "InsufficientValidUniqueTrajectoriesDuplicateError",
     "InsufficientValidUniqueTrajectoriesInvalidError",
     "InsufficientValidUniqueTrajectoriesMixedError",
@@ -71,6 +79,7 @@ __all__ = [
     "UnsupportedToolSemanticValidationError",
     "UnsatisfiedGoalSemanticValidationError",
     "WaitDurationSemanticValidationError",
+    "build_hot_dog_setup_prompt",
     "build_prepare_coffee_prompt",
     "get_task_definition",
     "supported_task_names",

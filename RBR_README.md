@@ -61,7 +61,7 @@ Generate validated symbolic two-agent trajectories for `PrepareCoffee` with base
 
 ```bash
 python -m data_generation.task_level.trajectory_generation \
-  --task PrepareCoffee \
+  --tasks PrepareCoffee \
   --num-runs 2 \
   --sampling base \
   --model gemini-3.1-flash-lite-preview \
@@ -77,10 +77,26 @@ trajectories plus a probability label for each one:
 
 ```bash
 python -m data_generation.task_level.trajectory_generation \
-  --task PrepareCoffee \
+  --tasks PrepareCoffee \
   --num-runs 2 \
   --sampling verbalized \
   --verbalized-k 3 \
+  --model gemini-3.1-flash-lite-preview \
+  --location global \
+  --thinking-level low \
+  --max-workers 4 \
+  --max-retries 5 \
+  --enable-validation
+```
+
+Generate both supported tasks with shared runtime settings. `--num-runs` applies
+to each task, so the example below runs 10 model calls total:
+
+```bash
+python -m data_generation.task_level.trajectory_generation \
+  --tasks PrepareCoffee HotDogSetup \
+  --num-runs 5 \
+  --sampling base \
   --model gemini-3.1-flash-lite-preview \
   --location global \
   --thinking-level low \
@@ -105,11 +121,20 @@ The generator also writes sibling sidecar directories next to the dataset summar
 - `prompts/`: the exact prompt used for each saved trajectory
 - `outputs/`: the raw successful model output text for each saved trajectory
 
+When you pass multiple tasks with `--tasks`, the generator writes:
+- one normal output tree per task
+- one combined request-level summary, cost summary, and error summary that aggregate all selected tasks
+
 Sampling notes:
 - `--num-runs` is the number of model calls, not always the number of saved trajectories.
+- With multiple tasks, `--num-runs` applies to each task. For example,
+  `--tasks PrepareCoffee HotDogSetup --num-runs 5` launches 10 runs total.
 - `--sampling base` saves one trajectory per successful run.
 - `--sampling verbalized` saves `--verbalized-k` flattened trajectories per successful run.
 - Verbalized trajectories include `sampling_metadata` with the parsed probability.
+- The task files may define a template agent location such as `staging_area`, but
+  actual per-run agent start positions are sampled from the task's allowed fixture
+  locations before prompt generation and validation.
 
 ## Batch trajectory generation
 
@@ -133,7 +158,7 @@ Use `--batch-processing` when launching trajectory generation.
 
 ```bash
 PYTHONPATH=. uv run python -m data_generation.task_level.trajectory_generation \
-  --task PrepareCoffee \
+  --tasks PrepareCoffee \
   --num-runs 100 \
   --model gemini-2.5-flash \
   --sampling base \
@@ -143,7 +168,7 @@ PYTHONPATH=. uv run python -m data_generation.task_level.trajectory_generation \
 
 Notes:
 
-- V1 only supports `PrepareCoffee`.
+- Supported tasks currently include `PrepareCoffee` and `HotDogSetup`.
 - Batch mode supports both `--sampling base` and `--sampling verbalized`.
 - With `--sampling verbalized`, each successful batch row can save multiple
   flattened trajectories from one model response.

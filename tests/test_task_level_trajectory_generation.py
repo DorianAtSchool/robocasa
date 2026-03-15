@@ -33,6 +33,8 @@ from data_generation.task_level.tasks.base import (
 )
 from data_generation.task_level.tasks import (
     HeldObjectSemanticValidationError,
+    HOT_DOG_SETUP_TASK,
+    HotDogSetupValidator,
     InsufficientValidUniqueTrajectoriesDuplicateError,
     InsufficientValidUniqueTrajectoriesInvalidError,
     InsufficientValidUniqueTrajectoriesMixedError,
@@ -48,6 +50,9 @@ from data_generation.task_level.tasks import (
     TrajectoryValidationError,
     ToolArgumentSemanticValidationError,
     WaitDurationSemanticValidationError,
+)
+from data_generation.task_level.tasks.hot_dog_setup import (
+    HOT_DOG_SETUP_INITIAL_STATE,
 )
 from data_generation.task_level.tasks.prepare_coffee import (
     PREPARE_COFFEE_ALLOWED_TOOL_SPECS,
@@ -113,6 +118,21 @@ PREPARE_COFFEE_ACTION_SPECS = (
         {"object_id": "mug_1", "dispenser_id": "coffee_machine_dispenser"},
     ),
     ("press_button", {"target_id": "coffee_machine_1", "control_id": "start_button"}),
+)
+
+HOT_DOG_SETUP_ACTION_SPECS = (
+    ("navigate_to_fixture", {"fixture_id": "counter_1"}),
+    ("pick_up_object", {"object_id": "hotdog_bun_1", "source_id": "counter_1"}),
+    ("navigate_to_fixture", {"fixture_id": "dining_table_1"}),
+    ("place_on_object", {"object_id": "hotdog_bun_1", "support_object_id": "plate_1"}),
+    ("navigate_to_fixture", {"fixture_id": "cabinet_1"}),
+    ("pick_up_object", {"object_id": "condiment_1", "source_id": "cabinet_1"}),
+    ("navigate_to_fixture", {"fixture_id": "dining_table_1"}),
+    ("place_next_to", {"object_id": "condiment_1", "reference_object_id": "plate_1"}),
+    ("navigate_to_fixture", {"fixture_id": "fridge_1"}),
+    ("pick_up_object", {"object_id": "sausage_1", "source_id": "fridge_1"}),
+    ("navigate_to_fixture", {"fixture_id": "dining_table_1"}),
+    ("place_on_object", {"object_id": "sausage_1", "support_object_id": "plate_1"}),
 )
 
 
@@ -247,6 +267,65 @@ def make_valid_candidate(
                     "message": communicate_messages[1],
                 },
                 "reasoning": "I should confirm the handoff sequence.",
+            },
+            *action_steps,
+        ],
+    }
+    if include_agents:
+        candidate["agents"] = [
+            {"agent": "agent_0"},
+            {"agent": "agent_1"},
+        ]
+    return renumber_candidate_steps(candidate)
+
+
+def make_valid_hot_dog_setup_candidate(*, include_agents=True):
+    """Builds a valid HotDogSetup candidate trajectory for validator tests."""
+
+    action_agents = (
+        ("agent_0",) * 4
+        + ("agent_1",) * 8
+    )
+    action_reasoning = (
+        ("The bun starts on the counter.",) * 4
+        + ("The condiment should be moved beside the plate.",) * 4
+        + ("The sausage still needs to be added to the plate.",) * 4
+    )
+    action_steps = [
+        {
+            "step": -1,
+            "agent": agent_id,
+            "tool": tool_name,
+            "args": dict(tool_args),
+            "reasoning": reasoning,
+        }
+        for (tool_name, tool_args), agent_id, reasoning in zip(
+            HOT_DOG_SETUP_ACTION_SPECS,
+            action_agents,
+            action_reasoning,
+        )
+    ]
+    candidate = {
+        "steps": [
+            {
+                "step": 0,
+                "agent": "agent_0",
+                "tool": "communicate",
+                "args": {
+                    "to": "agent_1",
+                    "message": "I will start with the bun.",
+                },
+                "reasoning": "We need a shared setup plan first.",
+            },
+            {
+                "step": 1,
+                "agent": "agent_1",
+                "tool": "communicate",
+                "args": {
+                    "to": "agent_0",
+                    "message": "I will handle the condiment and sausage.",
+                },
+                "reasoning": "I should confirm the remaining ingredients.",
             },
             *action_steps,
         ],
@@ -923,6 +1002,45 @@ class PrepareCoffeeTaskInstanceTests(unittest.TestCase):
         )
 
 
+class HotDogSetupTaskTests(unittest.TestCase):
+    def test_hot_dog_setup_task_is_registered(self):
+        self.assertEqual(HOT_DOG_SETUP_TASK.composite_task, "HotDogSetup")
+
+    def test_hot_dog_setup_validator_accepts_valid_candidate(self):
+        validator = HotDogSetupValidator(
+            TaskInstance(initial_state=deepcopy(HOT_DOG_SETUP_INITIAL_STATE))
+        )
+
+        validation = validator.validate(make_valid_hot_dog_setup_candidate())
+
+        self.assertTrue(validation["is_valid"])
+        self.assertEqual(
+            validation["final_state"]["objects"]["hotdog_bun_1"]["location"],
+            "plate_1",
+        )
+        self.assertEqual(
+            validation["final_state"]["objects"]["sausage_1"]["location"],
+            "plate_1",
+        )
+        self.assertTrue(
+            validation["final_state"]["machine_state"]["hot_dog_setup"]["condiment_placed_next_to_plate"]
+        )
+
+    def test_hot_dog_setup_validator_requires_condiment_next_to_plate(self):
+        validator = HotDogSetupValidator(
+            TaskInstance(initial_state=deepcopy(HOT_DOG_SETUP_INITIAL_STATE))
+        )
+        candidate = make_valid_hot_dog_setup_candidate()
+        place_condiment_index = find_step_index(candidate, "place_next_to")
+        candidate["steps"].pop(place_condiment_index)
+        renumber_candidate_steps(candidate)
+
+        with self.assertRaises(TaskSemanticValidationError) as raised:
+            validator.validate(candidate)
+
+        self.assertIsInstance(raised.exception, TaskSemanticValidationError)
+
+
 class DotenvLoadingTests(unittest.TestCase):
     def test_load_dotenv_file_populates_missing_environment_values(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1001,24 +1119,29 @@ class DotenvLoadingTests(unittest.TestCase):
         self.assertEqual(runtime_config.sampling, "verbalized")
         self.assertEqual(runtime_config.verbalized_k, 3)
 
-    def test_parse_args_accepts_task_flag_and_legacy_aliases(self):
-        task_runtime_config = parse_args(["--task", "PrepareCoffee"])
-        dashed_legacy_runtime_config = parse_args(
-            ["--composite-task", "PrepareCoffee"]
-        )
-        underscored_legacy_runtime_config = parse_args(
-            ["--composite_task", "PrepareCoffee"]
-        )
+    def test_parse_args_accepts_tasks_flag_for_single_task(self):
+        runtime_config = parse_args(["--tasks", "PrepareCoffee"])
 
-        self.assertEqual(task_runtime_config.composite_task, "PrepareCoffee")
+        self.assertEqual(runtime_config.composite_task, "PrepareCoffee")
+        self.assertEqual(runtime_config.composite_tasks, ("PrepareCoffee",))
+
+    def test_parse_args_accepts_multiple_tasks(self):
+        runtime_config = parse_args(["--tasks", "PrepareCoffee", "HotDogSetup"])
+
+        self.assertEqual(runtime_config.composite_task, "PrepareCoffee")
         self.assertEqual(
-            dashed_legacy_runtime_config.composite_task,
-            "PrepareCoffee",
+            runtime_config.composite_tasks,
+            ("PrepareCoffee", "HotDogSetup"),
         )
-        self.assertEqual(
-            underscored_legacy_runtime_config.composite_task,
-            "PrepareCoffee",
-        )
+        self.assertIsNone(runtime_config.summary_path)
+
+    def test_parse_args_rejects_removed_task_flags(self):
+        with self.assertRaises(SystemExit):
+            parse_args(["--task", "PrepareCoffee"])
+        with self.assertRaises(SystemExit):
+            parse_args(["--composite-task", "PrepareCoffee"])
+        with self.assertRaises(SystemExit):
+            parse_args(["--composite_task", "PrepareCoffee"])
 
     def test_parse_args_accepts_batch_processing_and_env_batch_prefix(self):
         with mock.patch.dict(
@@ -5573,6 +5696,128 @@ class GenerationTests(unittest.TestCase):
             )
             self.assertFalse(
                 any(message.startswith("Estimated cost ") for message in printed_messages)
+            )
+
+    def test_main_writes_combined_summary_for_multiple_tasks(self):
+        prepare_coffee_payload = {
+            "composite_task": "PrepareCoffee",
+            "sdk": "google-genai",
+            "model": "gemini-3-flash-preview",
+            "model_config": {
+                "reasoning": {"thinking_level": None},
+                "sampling": {"temperature": 0.2, "strategy": "base"},
+            },
+            "num_runs": 2,
+            "num_trajectories": 1,
+            "generated_at": "2026-03-10T00:00:00+00:00",
+            "cost_summary": {
+                "prompt_tokens": 100,
+                "output_tokens": 40,
+                "reasoning_tokens": 0,
+                "total_tokens": 140,
+                "input_cost_usd": 0.001,
+                "output_cost_usd": 0.002,
+                "total_cost_usd": 0.003,
+                "average_trajectory_cost_usd": 0.003,
+                "notes": ["prepare"],
+            },
+            "trajectory_prompts": [],
+            "attempt_prompts": [],
+            "trajectory_outputs": [],
+            "error_events": [],
+            "trajectories": [
+                {
+                    "trajectory_id": "traj_000000",
+                    "generation_usage": {
+                        "successful_attempt_number": 1,
+                        "observed_cost_usd": 0.003,
+                    },
+                    "validation": {"is_valid": True},
+                }
+            ],
+        }
+        hot_dog_payload = {
+            "composite_task": "HotDogSetup",
+            "sdk": "google-genai",
+            "model": "gemini-3-flash-preview",
+            "model_config": {
+                "reasoning": {"thinking_level": None},
+                "sampling": {"temperature": 0.2, "strategy": "base"},
+            },
+            "num_runs": 2,
+            "num_trajectories": 1,
+            "generated_at": "2026-03-10T00:00:01+00:00",
+            "cost_summary": {
+                "prompt_tokens": 120,
+                "output_tokens": 50,
+                "reasoning_tokens": 0,
+                "total_tokens": 170,
+                "input_cost_usd": 0.002,
+                "output_cost_usd": 0.003,
+                "total_cost_usd": 0.005,
+                "average_trajectory_cost_usd": 0.005,
+                "notes": ["hotdog"],
+            },
+            "trajectory_prompts": [],
+            "attempt_prompts": [],
+            "trajectory_outputs": [],
+            "error_events": [],
+            "trajectories": [
+                {
+                    "trajectory_id": "traj_000000",
+                    "generation_usage": {
+                        "successful_attempt_number": 1,
+                        "observed_cost_usd": 0.005,
+                    },
+                    "validation": {"is_valid": True},
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            request_summary_path = Path(tmpdir) / "requests" / "summary.json"
+            with mock.patch(
+                "data_generation.task_level.trajectory_generation.generate_trajectories",
+                side_effect=[prepare_coffee_payload, hot_dog_payload],
+            ):
+                with mock.patch(
+                    "data_generation.task_level.trajectory_generation.resolve_request_output_path",
+                    return_value=request_summary_path,
+                ):
+                    exit_code = main(
+                        [
+                            "--tasks",
+                            "PrepareCoffee",
+                            "HotDogSetup",
+                            "--num-runs",
+                            "2",
+                        ]
+                    )
+            self.assertEqual(exit_code, 0)
+            self.assertTrue(request_summary_path.exists())
+            combined_summary = json.loads(request_summary_path.read_text(encoding="utf-8"))
+            combined_cost = json.loads(
+                resolve_cost_output_path(request_summary_path).read_text(encoding="utf-8")
+            )
+            combined_errors = json.loads(
+                resolve_error_output_path(request_summary_path).read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                combined_summary["composite_tasks"],
+                ["PrepareCoffee", "HotDogSetup"],
+            )
+            self.assertEqual(combined_summary["num_runs_per_task"], 2)
+            self.assertEqual(combined_summary["total_requested_runs"], 4)
+            self.assertEqual(combined_summary["num_trajectories"], 2)
+            self.assertEqual(combined_summary["cost_summary"]["total_cost_usd"], 0.008)
+            self.assertEqual(len(combined_summary["task_summaries"]), 2)
+            self.assertEqual(combined_cost["cost_summary"]["total_cost_usd"], 0.008)
+            self.assertEqual(combined_errors["total_errors"], 0)
+            self.assertTrue(
+                (request_summary_path.parent / "prepare_coffee" / "summary.json").exists()
+            )
+            self.assertTrue(
+                (request_summary_path.parent / "hot_dog_setup" / "summary.json").exists()
             )
 
     def test_run_cli_exits_immediately_on_keyboard_interrupt(self):
