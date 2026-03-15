@@ -10,6 +10,7 @@ from data_generation.task_level.tasks.base import PreflightTokenEstimate
 
 if TYPE_CHECKING:
     from data_generation.task_level.trajectory_generation import RuntimeConfig
+    from data_generation.task_level.tasks.base import TaskInstance
 
 
 @dataclass(frozen=True)
@@ -34,6 +35,7 @@ class SamplingStrategy(Protocol):
         *,
         task_definition: TaskDefinition,
         runtime_config: RuntimeConfig,
+        task_instance: TaskInstance,
         variation_key: str,
         retry_feedback: str | None = None,
     ) -> str:
@@ -80,6 +82,7 @@ class BaseSamplingStrategy:
         *,
         task_definition: TaskDefinition,
         runtime_config: RuntimeConfig,
+        task_instance: TaskInstance,
         variation_key: str,
         retry_feedback: str | None = None,
     ) -> str:
@@ -88,6 +91,7 @@ class BaseSamplingStrategy:
         del runtime_config
         return task_definition.build_prompt(
             variation_key,
+            task_instance=task_instance,
             retry_feedback=retry_feedback,
         )
 

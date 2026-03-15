@@ -76,6 +76,11 @@ SUBATOMIC_TOOL_SPECS: tuple[SubatomicToolSpec, ...] = (
         "camera_view",
     ),
     _build_tool_spec(
+        "give_space",
+        "Yield working room at a fixture so the other agent can complete an action there.",
+        "fixture_id",
+    ),
+    _build_tool_spec(
         "navigate_to_fixture",
         "Move the robot base to the working pose of a fixture.",
         "fixture_id",

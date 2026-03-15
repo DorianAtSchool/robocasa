@@ -81,7 +81,8 @@ def generate_single_run(
             location=runtime_config.location,
         )
     )
-    validator = task_definition.validator_factory()
+    task_instance = task_definition.build_task_instance(run_index)
+    validator = task_definition.validator_factory(task_instance)
     sampling_strategy = trajectory_generation._sampling_strategy_for_runtime(runtime_config)
     last_error: Exception | None = None
     trajectory_started = False
@@ -95,6 +96,7 @@ def generate_single_run(
     accumulated_valid_results: list[tuple[Any, dict[str, Any], dict[str, Any], str]] = []
     accumulated_generation_usages: list[dict[str, Any]] = []
     reserved_run_signatures: set[str] = set()
+    previous_invalid_summary: str | None = None
 
     for attempt_index in range(runtime_config.max_retries):
         # Variation keys give retries a stable way to ask for distinct traces.
@@ -105,6 +107,7 @@ def generate_single_run(
         prompt = sampling_strategy.build_prompt(
             task_definition=task_definition,
             runtime_config=runtime_config,
+            task_instance=task_instance,
             variation_key=variation_key,
             retry_feedback=retry_feedback,
         )
@@ -133,6 +136,7 @@ def generate_single_run(
                 trajectory_generation._trajectory_generation_status(
                     runtime_config,
                     attempt_number=attempt_index + 1,
+                    previous_invalid_summary=previous_invalid_summary,
                 )
             )
         try:
@@ -252,15 +256,24 @@ def generate_single_run(
                     accumulated_valid_results.extend(valid_results_this_attempt)
 
                 if len(accumulated_valid_results) < runtime_config.verbalized_k:
-                    last_error = trajectory_generation.TrajectoryValidationError(
-                        "Verbalized run did not produce enough valid unique trajectories."
+                    last_error = trajectory_generation._build_verbalized_insufficient_results_error(
+                        required_count=runtime_config.verbalized_k,
+                        collected_count=len(accumulated_valid_results),
+                        invalid_validations=invalid_validations,
                     )
                     if trajectory_progress is not None:
+                        invalid_summary = (
+                            trajectory_generation._validation_errors_retry_summary(
+                                invalid_validations
+                            )
+                        )
+                        previous_invalid_summary = invalid_summary
                         trajectory_progress.set_postfix_str(
                             trajectory_generation._trajectory_retry_status(
                                 runtime_config,
                                 attempt_number=attempt_index + 1,
                                 tool_call_count=tool_call_count,
+                                invalid_summary=invalid_summary,
                             )
                         )
                     if invalid_validations:
@@ -328,6 +341,7 @@ def generate_single_run(
                         validation=validation,
                         trajectory_id=trajectory_id,
                         generation_usage=generation_usage,
+                        task_instance=task_instance,
                     )
                     if sampled_candidate.probability is not None:
                         trajectory_record["sampling_metadata"] = {
@@ -344,6 +358,7 @@ def generate_single_run(
                     run_index=run_index,
                     runtime_config=runtime_config,
                     task_definition=task_definition,
+                    task_instance=task_instance,
                     sampled_candidates=sampled_candidates,
                     prompt=prompt,
                     raw_response=response_payload,
@@ -454,11 +469,18 @@ def generate_single_run(
                     f"{trajectory_generation._exception_summary(exc)}"
                 ) from exc
             if trajectory_progress is not None:
+                invalid_summary = None
+                if isinstance(exc, trajectory_generation.TrajectoryValidationError):
+                    invalid_summary = trajectory_generation._validation_error_retry_summary(
+                        trajectory_generation._validation_error_payload(exc)
+                    )
+                previous_invalid_summary = invalid_summary
                 trajectory_progress.set_postfix_str(
                     trajectory_generation._trajectory_retry_status(
                         runtime_config,
                         attempt_number=attempt_index + 1,
                         tool_call_count=tool_call_count,
+                        invalid_summary=invalid_summary,
                     )
                 )
 

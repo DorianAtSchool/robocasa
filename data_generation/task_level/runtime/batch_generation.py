@@ -24,6 +24,7 @@ from data_generation.task_level.tasks import (
     TaskDefinition,
     TrajectoryValidationError,
 )
+from data_generation.task_level.tasks.base import TaskInstance
 from data_generation.task_level.trajectory_generation import (
     AccumulatedCostTracker,
     BATCH_DIRECTORY_NAME,
@@ -71,6 +72,7 @@ class BatchTrajectoryRequest:
     attempt_number: int
     variation_key: str
     prompt: str
+    task_instance: TaskInstance
 
 
 @dataclass(frozen=True)
@@ -260,6 +262,7 @@ def _build_batch_trajectory_request(
     attempt_number: int,
     runtime_config: RuntimeConfig,
     task_definition: TaskDefinition,
+    task_instance: TaskInstance,
 ) -> BatchTrajectoryRequest:
     sampling_strategy = _sampling_strategy_for_runtime(runtime_config)
     variation_key = format_trajectory_variation_key(
@@ -273,8 +276,10 @@ def _build_batch_trajectory_request(
         prompt=sampling_strategy.build_prompt(
             task_definition=task_definition,
             runtime_config=runtime_config,
+            task_instance=task_instance,
             variation_key=variation_key,
         ),
+        task_instance=task_instance,
     )
 
 
@@ -566,7 +571,6 @@ def generate_trajectories_batch(
     task_definition: TaskDefinition,
     show_progress: bool,
 ) -> dict[str, Any]:
-    validator = task_definition.validator_factory()
     sampling_strategy = _sampling_strategy_for_runtime(runtime_config)
     seen_signatures: set[str] = set()
     seen_signatures_lock = threading.Lock()
@@ -591,6 +595,10 @@ def generate_trajectories_batch(
     )
     active_job_names: set[str] = set()
     results: dict[int, list[dict[str, Any]]] = {}
+    task_instances = {
+        trajectory_index: task_definition.build_task_instance(trajectory_index)
+        for trajectory_index in range(runtime_config.num_runs)
+    }
     attempt_numbers = {
         trajectory_index: 1 for trajectory_index in range(runtime_config.num_runs)
     }
@@ -630,6 +638,7 @@ def generate_trajectories_batch(
                     attempt_number=attempt_numbers[trajectory_index],
                     runtime_config=runtime_config,
                     task_definition=task_definition,
+                    task_instance=task_instances[trajectory_index],
                 )
                 for trajectory_index in sorted(pending_indices)
             ]
@@ -765,11 +774,14 @@ def generate_trajectories_batch(
                                 run_index=batch_request.trajectory_index,
                                 runtime_config=runtime_config,
                                 task_definition=task_definition,
+                                task_instance=batch_request.task_instance,
                                 sampled_candidates=sampled_candidates,
                                 prompt=batch_request.prompt,
                                 raw_response=response_payload,
                                 usage=usage,
-                                validator=validator,
+                                validator=task_definition.validator_factory(
+                                    batch_request.task_instance
+                                ),
                                 seen_signatures=seen_signatures,
                                 seen_signatures_lock=seen_signatures_lock,
                                 attempt_number=batch_request.attempt_number,

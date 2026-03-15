@@ -5,6 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass, field
 import json
+import random
 from typing import Any, Callable, Protocol, Sequence
 
 from data_generation.utils import stable_json_sha256
@@ -25,6 +26,7 @@ RELEASE_TOOL_NAMES = frozenset(
 )
 OBSERVATION_TOOL_NAMES = frozenset({"get_image"})
 WAIT_TOOL_NAMES = frozenset({"wait"})
+GIVE_SPACE_TOOL_NAMES = frozenset({"give_space"})
 OPEN_PART_TOOL_NAMES = frozenset({"open_hinged_part", "open_sliding_part"})
 CLOSE_PART_TOOL_NAMES = frozenset({"close_hinged_part", "close_sliding_part"})
 PLACE_LOCATION_ARG_NAMES = (
@@ -80,6 +82,28 @@ class ResponseFormatValidationError(TrajectoryValidationError):
 
 class DuplicateTrajectoryValidationError(TrajectoryValidationError):
     """Raised when a candidate duplicates an existing saved trajectory."""
+
+
+class InsufficientValidUniqueTrajectoriesValidationError(TrajectoryValidationError):
+    """Raised when a verbalized run yields too few distinct valid trajectories."""
+
+
+class InsufficientValidUniqueTrajectoriesInvalidError(
+    InsufficientValidUniqueTrajectoriesValidationError
+):
+    """Raised when too many verbalized candidates fail validation checks."""
+
+
+class InsufficientValidUniqueTrajectoriesDuplicateError(
+    InsufficientValidUniqueTrajectoriesValidationError
+):
+    """Raised when too many verbalized candidates duplicate existing trajectories."""
+
+
+class InsufficientValidUniqueTrajectoriesMixedError(
+    InsufficientValidUniqueTrajectoriesValidationError
+):
+    """Raised when verbalized candidates fail from both invalid and duplicate causes."""
 
 
 class TrajectoryStructureValidationError(TrajectoryValidationError):
@@ -163,6 +187,7 @@ class TaskPromptBuilder(Protocol):
     def __call__(
         self,
         variation_key: str,
+        task_instance: TaskInstance | None = None,
         retry_feedback: str | None = None,
     ) -> str:
         """Builds one task prompt, optionally including retry feedback."""
@@ -175,6 +200,13 @@ class PreflightTokenEstimate:
     prompt_tokens: int
     output_tokens: int
     reasoning_tokens: int = 0
+
+
+@dataclass(frozen=True)
+class TaskInstance:
+    """Stores the concrete task state used for one generation run."""
+
+    initial_state: dict[str, Any]
 
 
 @dataclass
@@ -207,6 +239,21 @@ def _format_agent_id_list(agent_ids: Sequence[str]) -> str:
     if len(agent_ids) == 2:
         return f"{agent_ids[0]} and {agent_ids[1]}"
     return f"{', '.join(agent_ids[:-1])}, and {agent_ids[-1]}"
+
+
+def _format_initial_agent_positions(
+    initial_state: dict[str, Any],
+    agent_ids: Sequence[str],
+) -> str:
+    """Formats the prompt-facing list of starting fixture positions."""
+
+    position_lines: list[str] = []
+    for agent_id in agent_ids:
+        agent_state = initial_state.get("agents", {}).get(agent_id, {})
+        location = agent_state.get("location")
+        location_label = location if isinstance(location, str) and location else "unknown"
+        position_lines.append(f"- {agent_id}: {location_label}")
+    return "\n".join(position_lines)
 
 
 def _normalize_text(value: Any, field_name: str) -> str:
@@ -314,6 +361,10 @@ def _build_fsm_prompt_rules(
         prompt_rules.append(
             "Use wait only to pause in place when a delay is necessary, and provide a positive integer number of seconds."
         )
+    if allowed_tool_names & GIVE_SPACE_TOOL_NAMES:
+        prompt_rules.append(
+            "Use give_space only at the fixture where that agent is already positioned, after the agents communicate that another agent is about to navigate there, so the yielding agent clears the space before the other agent arrives."
+        )
     # Keep later symbolic references aligned with prior FSM effects.
     prompt_rules.append(
         "Keep object locations consistent across steps. After an object moves, later source_id and destination references must match its new symbolic location."
@@ -327,6 +378,63 @@ def _build_fsm_prompt_rules(
         if normalized_rule:
             prompt_rules.append(normalized_rule)
     return prompt_rules
+
+
+def resolve_initial_position_fixture_ids(
+    *,
+    initial_state: dict[str, Any],
+    allowed_tool_specs: dict[str, dict[str, Any]],
+) -> tuple[str, ...]:
+    """Resolves the fixture IDs agents may use as randomized starting positions."""
+
+    navigate_spec = allowed_tool_specs.get("navigate_to_fixture", {})
+    allowed_fixture_ids = navigate_spec.get("allowed_fixture_ids")
+    if isinstance(allowed_fixture_ids, list) and allowed_fixture_ids:
+        if not all(isinstance(fixture_id, str) for fixture_id in allowed_fixture_ids):
+            raise ValueError("navigate_to_fixture.allowed_fixture_ids must be a list of strings.")
+        return tuple(allowed_fixture_ids)
+
+    fixture_state = initial_state.get("fixtures", {})
+    if isinstance(fixture_state, dict) and fixture_state:
+        fixture_ids = tuple(fixture_state)
+        if not all(isinstance(fixture_id, str) for fixture_id in fixture_ids):
+            raise ValueError("initial_state.fixtures keys must be strings.")
+        return fixture_ids
+
+    raise ValueError("Tasks must define at least one fixture position for initial agent placement.")
+
+
+def build_randomized_fixture_task_instance(
+    *,
+    composite_task: str,
+    agent_ids: Sequence[str],
+    initial_state: dict[str, Any],
+    allowed_tool_specs: dict[str, dict[str, Any]],
+    run_index: int,
+) -> TaskInstance:
+    """Builds one deterministic per-run task instance with randomized start fixtures."""
+
+    fixture_ids = resolve_initial_position_fixture_ids(
+        initial_state=initial_state,
+        allowed_tool_specs=allowed_tool_specs,
+    )
+    sampled_initial_state = deepcopy(initial_state)
+    seed_material = stable_json_sha256(
+        {
+            "composite_task": composite_task,
+            "run_index": run_index,
+            "fixture_ids": fixture_ids,
+            "agent_ids": tuple(agent_ids),
+        }
+    )
+    rng = random.Random(seed_material)
+
+    for agent_id in agent_ids:
+        agent_state = sampled_initial_state.setdefault("agents", {}).setdefault(agent_id, {})
+        agent_state["location"] = rng.choice(fixture_ids)
+        agent_state.setdefault("held_object", None)
+
+    return TaskInstance(initial_state=sampled_initial_state)
 
 
 def build_canonical_agents(agent_ids: Sequence[str]) -> list[dict[str, str]]:
@@ -561,6 +669,7 @@ class FiniteStateTaskValidator:
         """Builds a stable signature for duplicate-trajectory rejection."""
 
         normalized = {
+            "initial_state": self.initial_state,
             "agents": sorted(candidate["agents"], key=lambda agent: agent["agent"]),
             "steps": sorted(candidate["steps"], key=lambda step: step["step"]),
         }
@@ -805,6 +914,7 @@ class FiniteStateTaskValidator:
             and tool_name not in RELEASE_TOOL_NAMES
             and tool_name not in OBSERVATION_TOOL_NAMES
             and tool_name not in WAIT_TOOL_NAMES
+            and tool_name not in GIVE_SPACE_TOOL_NAMES
         ):
             raise HeldObjectSemanticValidationError(
                 f"{step['agent']} must place {agent_state.held_object} before using {tool_name}.",
@@ -816,6 +926,20 @@ class FiniteStateTaskValidator:
             )
 
         if tool_name in OBSERVATION_TOOL_NAMES or tool_name in WAIT_TOOL_NAMES:
+            return
+
+        if tool_name in GIVE_SPACE_TOOL_NAMES:
+            if required_fixture is not None:
+                self._require_agent_location(
+                    step=step,
+                    current_location=agent_state.location,
+                    expected_location=required_fixture,
+                )
+                self._require_other_agent_at_fixture(
+                    step=step,
+                    runtime_state=runtime_state,
+                    fixture_id=required_fixture,
+                )
             return
 
         if tool_name in RELEASE_TOOL_NAMES:
@@ -918,6 +1042,9 @@ class FiniteStateTaskValidator:
             return
 
         if tool_name in WAIT_TOOL_NAMES:
+            return
+
+        if tool_name in GIVE_SPACE_TOOL_NAMES:
             return
 
         if tool_name in OPEN_PART_TOOL_NAMES:
@@ -1041,6 +1168,49 @@ class FiniteStateTaskValidator:
                 },
             )
 
+    def _require_other_agent_at_fixture(
+        self,
+        *,
+        step: dict[str, Any],
+        runtime_state: TaskRuntimeState,
+        fixture_id: str,
+    ) -> None:
+        """Checks that give_space is only used for an occupied or coordinated shared fixture."""
+
+        other_agents_at_fixture = sorted(
+            agent_id
+            for agent_id, agent_state in runtime_state.agents.items()
+            if agent_id != step["agent"] and agent_state.location == fixture_id
+        )
+        if other_agents_at_fixture:
+            return
+
+        # Allow the yielding agent to clear a fixture before the incoming agent arrives
+        # once both agents have already coordinated through communicate.
+        if runtime_state.communicated_agents == self._agent_id_set:
+            return
+
+        step_number = step.get("step")
+        step_prefix = (
+            f"Step {step_number} ({step['tool']}): "
+            if isinstance(step_number, int)
+            else ""
+        )
+        raise TaskPreconditionSemanticValidationError(
+            f"{step_prefix}{step['agent']} can use give_space at {fixture_id} only "
+            "when the agents have already coordinated and the fixture needs to be cleared.",
+            step=step_number if isinstance(step_number, int) else None,
+            details={
+                "agent": step["agent"],
+                "fixture_id": fixture_id,
+                "other_agent_locations": {
+                    agent_id: agent_state.location
+                    for agent_id, agent_state in runtime_state.agents.items()
+                    if agent_id != step["agent"]
+                },
+            },
+        )
+
     def _require_held_object(
         self,
         agent_id: str,
@@ -1068,6 +1238,7 @@ class FiniteStateTaskValidator:
 
         tool_args = step["args"]
         for arg_name in (
+            "fixture_id",
             "target_id",
             "source_id",
             "support_id",
@@ -1147,12 +1318,6 @@ def make_task_prompt_builder(
         indent=2,
         sort_keys=True,
     )
-    initial_state_text = json.dumps(
-        initial_state,
-        indent=2,
-        sort_keys=True,
-    )
-    non_communicate_tool_text = ", ".join(non_communicate_tool_names)
     execution_rules_text = "\n".join(
         f"- {rule}"
         for rule in _build_fsm_prompt_rules(
@@ -1160,28 +1325,47 @@ def make_task_prompt_builder(
             extra_rules=extra_execution_rules,
         )
     )
+    _ = non_communicate_tool_names
 
     def build_prompt(
         variation_key: str,
+        task_instance: TaskInstance | None = None,
         retry_feedback: str | None = None,
     ) -> str:
         """Renders the shared task-level prompt with task-specific content."""
 
+        prompt_initial_state = (
+            deepcopy(task_instance.initial_state)
+            if task_instance is not None
+            else deepcopy(initial_state)
+        )
+        initial_state_text = json.dumps(
+            prompt_initial_state,
+            indent=2,
+            sort_keys=True,
+        )
+        initial_position_text = _format_initial_agent_positions(
+            prompt_initial_state,
+            agent_ids,
+        )
         prompt = f"""
 You are simulating {agent_count} cooperative robot agents in a physical kitchen environment.
 Generate a single valid multi-agent task-level trajectory for the composite task {composite_task}.
-Think about the physical constraints and limitations when building the trajectory.
 
 Important rules:
 - Simulate both agents: {agent_id_list_text}.
+- Keep track of what object each agent is holding and where the agent's location is at all times.
+- Keep track of all agent's locations which can only be at fixture locations. Be sure that the agent is not "teleporting" across the environment to complete tasks; the agent should navigate first via a tool call.
+- If agent_A plans to navigate to a fixture where agent_B is already positioned, have the agents communicate first about that upcoming navigation, then have agent_B execute give_space(fixture_id) at that fixture before agent_A arrives so they avoid a location conflict.
 - In the initial steps, the agents must coordinate through communication tool calls before any task action. Both agents must communicate during this time.
-- Throughout the simulation, both agents should actively communicate with each other to communicate intentions, plans, and needs, not just at the beginning of the simulation.
+- Throughout the trajectory, both agents should actively communicate with each other to communicate intentions, plans, and needs, not just in the initial steps.
+- If an agent is not performing an action, be sure the agent communicates what the agent is waiting for so that no agent is doing nothing.
 - Both agents must cooperatively complete the task, a single agent should not do all subtasks.
 - Use only the allowed tools for this task.
 - Every step must be executable and symbolically valid.
 - Track each agent’s current fixture after every navigation and verify that each non-navigation action matches that current fixture.
 - Number steps consecutively starting at 0 with no gaps.
-- The reasoning text should explain why the agent is using the tool call, referencing what happened before or what the agent plans on doing. Keep reasoning text short and explicit. Each reasoning text must be a single short sentence.
+- The reasoning text should explain why the agent is using the tool call, referencing what happened before or what the agent plans on doing. Each reasoning text must be a single short sentence.
 - In reasoning text and communicate.message text, refer to agents using exact IDs like agent_0 and agent_1, not Agent 0 or Agent 1.
 - Agents can pass each other freely in the kitchen, including around the island.
 - If an agent has no immediate legal task action because it is waiting on the other agent, emit wait(seconds) instead of skipping that agent.
@@ -1194,6 +1378,9 @@ Simple execution rules:
 Composite task:
 - {composite_task}
 - Goal: {task_goal}
+
+Initial agent positions:
+{initial_position_text}
 
 Initial symbolic state:
 {initial_state_text}
@@ -1216,9 +1403,10 @@ class TaskDefinition:
     composite_task: str
     response_schema: dict[str, Any]
     preflight_token_estimate: PreflightTokenEstimate
+    build_task_instance: Callable[[int], TaskInstance]
     build_prompt: TaskPromptBuilder
     build_trajectory_record: Callable[
-        [dict[str, Any], dict[str, Any], str, dict[str, Any]],
+        [dict[str, Any], dict[str, Any], str, dict[str, Any], TaskInstance],
         dict[str, Any],
     ]
-    validator_factory: Callable[[], TaskValidator]
+    validator_factory: Callable[[TaskInstance | None], TaskValidator]

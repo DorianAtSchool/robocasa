@@ -6,12 +6,14 @@ from typing import Any
 
 from data_generation.task_level.subatomic_tool_specs import build_allowed_tool_specs
 from data_generation.task_level.tasks.base import (
+    build_randomized_fixture_task_instance,
     build_canonical_agents,
     build_task_response_schema,
     FiniteStateTaskValidator,
     PreflightTokenEstimate,
     TaskPreconditionSemanticValidationError,
     TaskDefinition,
+    TaskInstance,
     TaskRuntimeState,
     make_task_prompt_builder,
 )
@@ -142,13 +144,18 @@ build_prepare_coffee_prompt = make_task_prompt_builder(
 class PrepareCoffeeValidator(FiniteStateTaskValidator):
     """Validates PrepareCoffee subatomic trajectories with the shared FSM."""
 
-    def __init__(self) -> None:
+    def __init__(self, task_instance: TaskInstance | None = None) -> None:
         """Initializes the shared FSM with PrepareCoffee-specific configuration."""
 
+        effective_initial_state = (
+            task_instance.initial_state
+            if task_instance is not None
+            else PREPARE_COFFEE_INITIAL_STATE
+        )
         super().__init__(
             composite_task="PrepareCoffee",
             agent_ids=AGENT_IDS,
-            initial_state=PREPARE_COFFEE_INITIAL_STATE,
+            initial_state=effective_initial_state,
             allowed_tool_specs=PREPARE_COFFEE_ALLOWED_TOOL_SPECS,
             checks=(
                 "initial_communication",
@@ -160,8 +167,8 @@ class PrepareCoffeeValidator(FiniteStateTaskValidator):
             ),
             max_reasoning_chars=MAX_REASONING_CHARS,
             initial_public_state={
-                "mug_location": PREPARE_COFFEE_INITIAL_STATE["objects"]["mug_1"]["location"],
-                "coffee_machine_started": PREPARE_COFFEE_INITIAL_STATE["machine_state"]["coffee_machine_1"]["started"],
+                "mug_location": effective_initial_state["objects"]["mug_1"]["location"],
+                "coffee_machine_started": effective_initial_state["machine_state"]["coffee_machine_1"]["started"],
             },
         )
 
@@ -241,6 +248,7 @@ def build_prepare_coffee_trajectory_record(
     validation: dict[str, Any],
     trajectory_id: str,
     generation_usage: dict[str, Any],
+    task_instance: TaskInstance,
 ) -> dict[str, Any]:
     """Builds the persisted trajectory payload for PrepareCoffee."""
 
@@ -248,7 +256,7 @@ def build_prepare_coffee_trajectory_record(
         "trajectory_id": trajectory_id,
         "composite_task": "PrepareCoffee",
         "agents": build_canonical_agents(AGENT_IDS),
-        "initial_state": PREPARE_COFFEE_INITIAL_STATE,
+        "initial_state": task_instance.initial_state,
         "steps": candidate.get("steps"),
         "validation": validation,
         "generation_usage": generation_usage,
@@ -259,6 +267,13 @@ PREPARE_COFFEE_TASK = TaskDefinition(
     composite_task="PrepareCoffee",
     response_schema=PREPARE_COFFEE_RESPONSE_SCHEMA,
     preflight_token_estimate=PREPARE_COFFEE_PREFLIGHT_TOKEN_ESTIMATE,
+    build_task_instance=lambda run_index: build_randomized_fixture_task_instance(
+        composite_task="PrepareCoffee",
+        agent_ids=AGENT_IDS,
+        initial_state=PREPARE_COFFEE_INITIAL_STATE,
+        allowed_tool_specs=PREPARE_COFFEE_ALLOWED_TOOL_SPECS,
+        run_index=run_index,
+    ),
     build_prompt=build_prepare_coffee_prompt,
     build_trajectory_record=build_prepare_coffee_trajectory_record,
     validator_factory=PrepareCoffeeValidator,

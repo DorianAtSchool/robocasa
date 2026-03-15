@@ -18,6 +18,7 @@ from data_generation.utils import stable_json_sha256
 if TYPE_CHECKING:
     from data_generation.task_level.tasks import TaskDefinition
     from data_generation.task_level.trajectory_generation import RuntimeConfig
+    from data_generation.task_level.tasks.base import TaskInstance
 
 
 class VerbalizedSamplingValidationError(TrajectoryStructureValidationError):
@@ -104,6 +105,7 @@ class VerbalizedSamplingStrategy:
         *,
         task_definition: TaskDefinition,
         runtime_config: RuntimeConfig,
+        task_instance: TaskInstance,
         variation_key: str,
         retry_feedback: str | None = None,
     ) -> str:
@@ -111,6 +113,7 @@ class VerbalizedSamplingStrategy:
 
         base_prompt = task_definition.build_prompt(
             variation_key,
+            task_instance=task_instance,
             retry_feedback=retry_feedback,
         )
         return (
@@ -122,7 +125,8 @@ class VerbalizedSamplingStrategy:
             "- Each item must be an object with keys probability and trajectory.\n"
             "- Probability must be a number between 0 and 1 representing the model's estimated likelihood for that full trajectory.\n"
             "- Trajectory must be one complete trajectory object that satisfies the trajectory object requirements above.\n"
-            "- For each trajectory, also vary amount of communication between agents. The range is between communicating with high frequency (every step) to communicating infrequently (just at the beginning). You should include both extremes as trajectories."
+            "- For each trajectory, vary the amount of communication between agents while keeping both agents actively coordinating beyond the opening steps.\n"
+            "- Include trajectories with moderate and high communication frequency, and do not concentrate communication only at the beginning.\n"
             "- Do not return a standalone top-level steps object.\n"
             "- Make the trajectories meaningfully distinct from each other.\n"
             "- Output JSON only and do not include markdown."

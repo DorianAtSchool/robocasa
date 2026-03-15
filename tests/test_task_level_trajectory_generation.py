@@ -1,3 +1,4 @@
+from copy import deepcopy
 import json
 import sys
 import threading
@@ -27,10 +28,14 @@ from data_generation.task_level.sampling.verbalized import (
 from data_generation.task_level.subatomic_tool_specs import build_allowed_tool_specs
 from data_generation.task_level.tasks.base import (
     FiniteStateTaskValidator,
+    TaskInstance,
     build_task_response_schema,
 )
 from data_generation.task_level.tasks import (
     HeldObjectSemanticValidationError,
+    InsufficientValidUniqueTrajectoriesDuplicateError,
+    InsufficientValidUniqueTrajectoriesInvalidError,
+    InsufficientValidUniqueTrajectoriesMixedError,
     MissingInitialCommunicationSemanticValidationError,
     NavigationSemanticValidationError,
     ObservationSequenceSemanticValidationError,
@@ -47,6 +52,7 @@ from data_generation.task_level.tasks import (
 from data_generation.task_level.tasks.prepare_coffee import (
     PREPARE_COFFEE_ALLOWED_TOOL_SPECS,
     PREPARE_COFFEE_NON_COMMUNICATE_TOOL_NAMES,
+    PREPARE_COFFEE_INITIAL_STATE,
     PrepareCoffeeValidator,
     build_prepare_coffee_prompt,
 )
@@ -576,13 +582,21 @@ def make_batch_output_row(
     status="",
     usage_metadata=None,
 ):
+    run_index = int(variation_key.split("-")[1])
     row = {
         "variation_key": variation_key,
         "request": {
             "contents": [
                 {
                     "role": "user",
-                    "parts": [{"text": build_prepare_coffee_prompt(variation_key)}],
+                    "parts": [
+                        {
+                            "text": build_prepare_coffee_prompt(
+                                variation_key,
+                                task_instance=PREPARE_COFFEE_TASK.build_task_instance(run_index),
+                            )
+                        }
+                    ],
                 }
             ]
         },
@@ -633,6 +647,22 @@ def make_verbalized_response(
     if as_json_string:
         return json.dumps(payload)
     return payload
+
+
+def make_prepare_coffee_task_instance(run_index=0):
+    """Builds the deterministic PrepareCoffee task instance used by runtime."""
+
+    return PREPARE_COFFEE_TASK.build_task_instance(run_index)
+
+
+def build_prepare_coffee_prompt_for_run(variation_key, *, run_index=0, retry_feedback=None):
+    """Builds the exact runtime prompt for one PrepareCoffee run."""
+
+    return build_prepare_coffee_prompt(
+        variation_key,
+        task_instance=make_prepare_coffee_task_instance(run_index),
+        retry_feedback=retry_feedback,
+    )
 
 
 class FakeBatchService:
@@ -711,6 +741,7 @@ def make_fake_google_genai_modules(client_cls):
 class SubatomicToolCatalogTests(unittest.TestCase):
     def test_discover_subatomic_tools_exposes_shared_catalog(self):
         tool_names = {tool.name for tool in discover_subatomic_tools()}
+        self.assertIn("give_space", tool_names)
         self.assertIn("get_image", tool_names)
         self.assertIn("place_next_to", tool_names)
         self.assertIn("pick_up_object", tool_names)
@@ -722,6 +753,7 @@ class SubatomicToolCatalogTests(unittest.TestCase):
 
     def test_prepare_coffee_prompt_contains_allowed_tools_and_rules(self):
         prompt = build_prepare_coffee_prompt("unit-test")
+        self.assertIn("give_space", prompt)
         self.assertIn("pick_up_object", prompt)
         self.assertIn("place_under_dispenser", prompt)
         self.assertIn("press_button", prompt)
@@ -757,6 +789,19 @@ class SubatomicToolCatalogTests(unittest.TestCase):
             "emit wait(seconds) instead of skipping that agent",
             prompt,
         )
+        self.assertIn(
+            "execute give_space(fixture_id)",
+            prompt,
+        )
+        self.assertIn(
+            "communicate first about that upcoming navigation",
+            prompt,
+        )
+        self.assertIn(
+            "before agent_A arrives",
+            prompt,
+        )
+        self.assertIn("Initial agent positions:", prompt)
 
     def test_prepare_coffee_prompt_appends_retry_feedback(self):
         prompt = build_prepare_coffee_prompt(
@@ -804,8 +849,78 @@ class SubatomicToolCatalogTests(unittest.TestCase):
         )
 
     def test_prepare_coffee_allowed_tools_include_wait(self):
+        self.assertIn("give_space", PREPARE_COFFEE_ALLOWED_TOOL_SPECS)
+        self.assertIn("give_space", PREPARE_COFFEE_NON_COMMUNICATE_TOOL_NAMES)
         self.assertIn("wait", PREPARE_COFFEE_ALLOWED_TOOL_SPECS)
         self.assertIn("wait", PREPARE_COFFEE_NON_COMMUNICATE_TOOL_NAMES)
+
+
+class PrepareCoffeeTaskInstanceTests(unittest.TestCase):
+    def test_task_instance_samples_start_positions_from_existing_fixtures(self):
+        task_instance = make_prepare_coffee_task_instance(0)
+        allowed_fixture_ids = set(
+            PREPARE_COFFEE_ALLOWED_TOOL_SPECS["navigate_to_fixture"]["allowed_fixture_ids"]
+        )
+
+        for agent_id in ("agent_0", "agent_1"):
+            self.assertIn(
+                task_instance.initial_state["agents"][agent_id]["location"],
+                allowed_fixture_ids,
+            )
+
+    def test_task_instance_sampling_is_stable_for_the_same_run(self):
+        first_task_instance = make_prepare_coffee_task_instance(0)
+        second_task_instance = make_prepare_coffee_task_instance(0)
+
+        self.assertEqual(first_task_instance.initial_state, second_task_instance.initial_state)
+
+    def test_runtime_prompt_uses_sampled_initial_positions(self):
+        task_instance = make_prepare_coffee_task_instance(0)
+        prompt = build_prepare_coffee_prompt(
+            "traj-000000-attempt-00",
+            task_instance=task_instance,
+        )
+
+        self.assertIn("Initial agent positions:", prompt)
+        for agent_id in ("agent_0", "agent_1"):
+            self.assertIn(
+                f"- {agent_id}: {task_instance.initial_state['agents'][agent_id]['location']}",
+                prompt,
+            )
+        self.assertNotIn('"location": "staging_area"', prompt)
+
+    def test_validator_uses_sampled_initial_positions(self):
+        initial_state = deepcopy(PREPARE_COFFEE_INITIAL_STATE)
+        initial_state["agents"]["agent_0"]["location"] = "cabinet_1"
+        initial_state["agents"]["agent_1"]["location"] = "counter_1"
+        validator = PrepareCoffeeValidator(TaskInstance(initial_state=initial_state))
+        candidate = make_valid_candidate()
+        candidate["steps"].pop(find_step_index(candidate, "navigate_to_fixture", occurrence=0))
+        renumber_candidate_steps(candidate)
+
+        validation = validator.validate(candidate)
+
+        self.assertTrue(validation["is_valid"])
+
+    def test_build_allowed_tool_specs_adds_basic_give_space(self):
+        allowed_tool_specs = build_allowed_tool_specs(
+            ("communicate", "navigate_to_fixture"),
+            overrides={
+                "navigate_to_fixture": {
+                    "allowed_fixture_ids": ["table_1", "shelf_1"],
+                }
+            },
+        )
+
+        self.assertIn("give_space", allowed_tool_specs)
+        self.assertEqual(
+            allowed_tool_specs["give_space"]["tool_args"],
+            ["fixture_id"],
+        )
+        self.assertEqual(
+            allowed_tool_specs["give_space"]["allowed_fixture_ids"],
+            ["table_1", "shelf_1"],
+        )
 
 
 class DotenvLoadingTests(unittest.TestCase):
@@ -1240,6 +1355,7 @@ class FiniteStateTaskValidatorTests(unittest.TestCase):
                 "control_id",
                 "goal",
                 "seconds",
+                "fixture_id",
             ],
         )
         self.assertEqual(
@@ -1362,6 +1478,96 @@ class FiniteStateTaskValidatorTests(unittest.TestCase):
             validation["final_state"]["objects"]["apple_1"]["location"],
             "shelf_1",
         )
+
+    def test_validator_allows_give_space_while_holding(self):
+        actions = (
+            make_toy_action_spec(
+                "navigate_to_fixture",
+                {"fixture_id": "table_1"},
+            ),
+            make_toy_action_spec(
+                "navigate_to_fixture",
+                {"fixture_id": "table_1"},
+            ),
+            make_toy_action_spec(
+                "pick_up_object",
+                {"object_id": "apple_1", "source_id": "table_1"},
+            ),
+            make_toy_action_spec(
+                "give_space",
+                {"fixture_id": "table_1"},
+            ),
+            make_toy_action_spec(
+                "navigate_to_fixture",
+                {"fixture_id": "shelf_1"},
+            ),
+            make_toy_action_spec(
+                "place_on_surface",
+                {"object_id": "apple_1", "support_id": "shelf_1"},
+            ),
+        )
+
+        validator = ToyFiniteStateValidator()
+        validation = validator.validate(
+            make_toy_candidate(
+                actions,
+                action_agents=(
+                    "agent_0",
+                    "agent_1",
+                    "agent_0",
+                    "agent_0",
+                    "agent_0",
+                    "agent_0",
+                ),
+            )
+        )
+
+        self.assertTrue(validation["is_valid"])
+
+    def test_validator_allows_give_space_before_other_agent_arrives(self):
+        actions = (
+            make_toy_action_spec(
+                "navigate_to_fixture",
+                {"fixture_id": "table_1"},
+            ),
+            make_toy_action_spec(
+                "pick_up_object",
+                {"object_id": "apple_1", "source_id": "table_1"},
+            ),
+            make_toy_action_spec(
+                "give_space",
+                {"fixture_id": "table_1"},
+            ),
+            make_toy_action_spec(
+                "navigate_to_fixture",
+                {"fixture_id": "table_1"},
+            ),
+            make_toy_action_spec(
+                "navigate_to_fixture",
+                {"fixture_id": "shelf_1"},
+            ),
+            make_toy_action_spec(
+                "place_on_surface",
+                {"object_id": "apple_1", "support_id": "shelf_1"},
+            ),
+        )
+
+        validator = ToyFiniteStateValidator()
+        validation = validator.validate(
+            make_toy_candidate(
+                actions,
+                action_agents=(
+                    "agent_0",
+                    "agent_0",
+                    "agent_0",
+                    "agent_1",
+                    "agent_0",
+                    "agent_0",
+                ),
+            )
+        )
+
+        self.assertTrue(validation["is_valid"])
 
     def test_validator_allows_place_next_to_using_reference_object_location(self):
         actions = (
@@ -1906,6 +2112,19 @@ class PrepareCoffeeValidatorTests(unittest.TestCase):
                 seen_signatures_lock=threading.Lock(),
             )
 
+    def test_trajectory_signature_includes_initial_state(self):
+        first_validation = self.validator.validate(make_valid_candidate())
+        alternate_initial_state = deepcopy(PREPARE_COFFEE_INITIAL_STATE)
+        alternate_initial_state["agents"]["agent_0"]["location"] = "counter_1"
+        alternate_initial_state["agents"]["agent_1"]["location"] = "cabinet_1"
+        alternate_validator = PrepareCoffeeValidator(
+            TaskInstance(initial_state=alternate_initial_state)
+        )
+
+        second_validation = alternate_validator.validate(make_valid_candidate())
+
+        self.assertNotEqual(first_validation["signature"], second_validation["signature"])
+
     def test_base_sampling_strategy_preserves_task_prompt(self):
         strategy = BaseSamplingStrategy()
 
@@ -1922,6 +2141,7 @@ class PrepareCoffeeValidatorTests(unittest.TestCase):
                 max_workers=1,
                 max_retries=1,
             ),
+            task_instance=make_prepare_coffee_task_instance(0),
             variation_key="traj-000000-attempt-00",
         )
 
@@ -1947,12 +2167,17 @@ class PrepareCoffeeValidatorTests(unittest.TestCase):
                 sampling="verbalized",
                 verbalized_k=2,
             ),
+            task_instance=make_prepare_coffee_task_instance(0),
             variation_key="traj-000000-attempt-00",
         )
 
         self.assertNotIn("Output requirements:", prompt)
         self.assertIn("Verbalized sampling instructions:", prompt)
         self.assertIn("Return one JSON object with key responses.", prompt)
+        self.assertIn(
+            "do not concentrate communication only at the beginning",
+            prompt,
+        )
         self.assertIn("Do not return a standalone top-level steps object.", prompt)
         self.assertNotIn("Ignore the single-trajectory output shape above", prompt)
 
@@ -2674,7 +2899,10 @@ class GenerationTests(unittest.TestCase):
             [
                 {
                     "trajectory_id": "traj_000000",
-                    "prompt": build_prepare_coffee_prompt("traj-000000-attempt-00"),
+                    "prompt": build_prepare_coffee_prompt_for_run(
+                        "traj-000000-attempt-00",
+                        run_index=0,
+                    ),
                 }
             ],
         )
@@ -2684,7 +2912,10 @@ class GenerationTests(unittest.TestCase):
                 {
                     "run_id": "traj_000000",
                     "attempt_number": 1,
-                    "prompt": build_prepare_coffee_prompt("traj-000000-attempt-00"),
+                    "prompt": build_prepare_coffee_prompt_for_run(
+                        "traj-000000-attempt-00",
+                        run_index=0,
+                    ),
                 }
             ],
         )
@@ -3685,7 +3916,28 @@ class GenerationTests(unittest.TestCase):
         ]
         trajectory_progress.start.assert_called_once()
         trajectory_progress.complete.assert_called_once_with(1)
-        self.assertIn("attempt 1/2 retry calls=11", status_updates)
+        retry_status = next(
+            status
+            for status in status_updates
+            if status.startswith("attempt 1/2 retry calls=11")
+        )
+        self.assertIn(
+            "MissingInitialCommunicationSemanticValidationError step=1",
+            retry_status,
+        )
+        self.assertIn(
+            "Both agents must coordinate via communication before the first task action.",
+            retry_status,
+        )
+        resumed_generation_status = next(
+            status
+            for status in status_updates
+            if status.startswith("attempt 2/2 generating after invalid ")
+        )
+        self.assertIn(
+            "MissingInitialCommunicationSemanticValidationError step=1",
+            resumed_generation_status,
+        )
         self.assertTrue(status_updates[-1].startswith("done attempts=2/2 total=$"))
         self.assertTrue(status_updates[-1].endswith(" calls=12"))
 
@@ -3764,7 +4016,18 @@ class GenerationTests(unittest.TestCase):
         trajectory_progress.start.assert_called_once()
         trajectory_progress.complete.assert_called_once_with(1)
         self.assertEqual(status_updates[0], "generating")
-        self.assertIn("retrying", status_updates)
+        retry_status = next(
+            status for status in status_updates if status.startswith("retrying")
+        )
+        self.assertIn("ResponseFormatValidationError", retry_status)
+        self.assertIn("Model response did not contain JSON.", retry_status)
+        self.assertIn(
+            (
+                "generating after invalid ResponseFormatValidationError: "
+                "Model response did not contain JSON."
+            ),
+            status_updates,
+        )
         self.assertNotIn("valid", status_updates)
         self.assertTrue(status_updates[-1].startswith("done attempts=2/2 total=$"))
         self.assertIn("calls=11", status_updates[-1])
@@ -3856,6 +4119,251 @@ class GenerationTests(unittest.TestCase):
         self.assertEqual(
             trajectory_progress.set_postfix_str.call_args_list[-1].args[0],
             "done attempts=1/3 total=$0.0014 avg=$0.0007 success=2/2 avg_calls=12.5",
+        )
+
+    def test_generate_single_trajectory_retry_status_includes_verbalized_invalid_error(self):
+        runtime_config = RuntimeConfig(
+            composite_task="PrepareCoffee",
+            num_runs=1,
+            model="gemini-3-flash-preview",
+            sdk="google-genai",
+            project="demo-project",
+            location="global",
+            temperature=0.5,
+            max_workers=1,
+            max_retries=2,
+            sampling="verbalized",
+            verbalized_k=2,
+        )
+        trajectory_progress = mock.Mock()
+
+        generate_single_trajectory(
+            trajectory_index=0,
+            runtime_config=runtime_config,
+            task_definition=PREPARE_COFFEE_TASK,
+            client_factory=lambda: SequencedFakeClient(
+                [
+                    GenerationResult(
+                        payload=make_verbalized_response(
+                            make_valid_candidate(include_agents=False),
+                            make_invalid_candidate_missing_initial_communication(),
+                            probabilities=[0.6, 0.4],
+                        ),
+                        usage=GenerationUsage(
+                            prompt_tokens=900,
+                            candidates_tokens=300,
+                            thoughts_tokens=0,
+                            total_tokens=1200,
+                            traffic_type="ON_DEMAND",
+                        ),
+                    ),
+                    GenerationResult(
+                        payload=make_verbalized_response(
+                            make_alternative_valid_candidate(),
+                            make_invalid_candidate_missing_initial_communication(),
+                            probabilities=[0.7, 0.3],
+                        ),
+                        usage=GenerationUsage(
+                            prompt_tokens=900,
+                            candidates_tokens=300,
+                            thoughts_tokens=0,
+                            total_tokens=1200,
+                            traffic_type="ON_DEMAND",
+                        ),
+                    ),
+                ]
+            ),
+            overall_progress=mock.Mock(),
+            trajectory_progress=trajectory_progress,
+        )
+
+        status_updates = [
+            call.args[0] for call in trajectory_progress.set_postfix_str.call_args_list
+        ]
+        retry_status = next(
+            status
+            for status in status_updates
+            if status.startswith("attempt 1/2 retry calls=")
+        )
+        self.assertIn(
+            "MissingInitialCommunicationSemanticValidationError step=1",
+            retry_status,
+        )
+        resumed_generation_status = next(
+            status
+            for status in status_updates
+            if status.startswith("attempt 2/2 generating after invalid ")
+        )
+        self.assertIn(
+            "MissingInitialCommunicationSemanticValidationError step=1",
+            resumed_generation_status,
+        )
+
+    def test_generate_single_trajectory_raises_specific_error_for_insufficient_verbalized_results(self):
+        runtime_config = RuntimeConfig(
+            composite_task="PrepareCoffee",
+            num_runs=1,
+            model="gemini-3-flash-preview",
+            sdk="google-genai",
+            project="demo-project",
+            location="global",
+            temperature=0.5,
+            max_workers=1,
+            max_retries=1,
+            sampling="verbalized",
+            verbalized_k=2,
+        )
+
+        with self.assertRaises(TrajectoryGenerationError) as raised:
+            generate_single_trajectory(
+                trajectory_index=0,
+                runtime_config=runtime_config,
+                task_definition=PREPARE_COFFEE_TASK,
+                client_factory=lambda: SequencedFakeClient(
+                    [
+                        GenerationResult(
+                            payload=make_verbalized_response(
+                                make_valid_candidate(include_agents=False),
+                                make_invalid_candidate_missing_initial_communication(),
+                                probabilities=[0.6, 0.4],
+                            ),
+                            usage=GenerationUsage(
+                                prompt_tokens=900,
+                                candidates_tokens=300,
+                                thoughts_tokens=0,
+                                total_tokens=1200,
+                                traffic_type="ON_DEMAND",
+                            ),
+                        )
+                    ]
+                ),
+                overall_progress=mock.Mock(),
+                trajectory_progress=mock.Mock(),
+            )
+
+        self.assertIn(
+            InsufficientValidUniqueTrajectoriesInvalidError.__name__,
+            str(raised.exception),
+        )
+        self.assertIn(
+            "Verbalized run did not produce enough valid unique trajectories because some candidates failed validation.",
+            str(raised.exception),
+        )
+
+    def test_generate_single_trajectory_raises_duplicate_specific_error_for_insufficient_verbalized_results(self):
+        runtime_config = RuntimeConfig(
+            composite_task="PrepareCoffee",
+            num_runs=1,
+            model="gemini-3-flash-preview",
+            sdk="google-genai",
+            project="demo-project",
+            location="global",
+            temperature=0.5,
+            max_workers=1,
+            max_retries=1,
+            sampling="verbalized",
+            verbalized_k=2,
+        )
+        first_candidate = make_valid_candidate(include_agents=False)
+        second_candidate = make_alternative_valid_candidate()
+        validator = PREPARE_COFFEE_TASK.validator_factory()
+        seen_signatures = {
+            validator.validate(first_candidate)["signature"],
+            validator.validate(second_candidate)["signature"],
+        }
+
+        with self.assertRaises(TrajectoryGenerationError) as raised:
+            generate_single_trajectory(
+                trajectory_index=0,
+                runtime_config=runtime_config,
+                task_definition=PREPARE_COFFEE_TASK,
+                client_factory=lambda: SequencedFakeClient(
+                    [
+                        GenerationResult(
+                            payload=make_verbalized_response(
+                                first_candidate,
+                                second_candidate,
+                                probabilities=[0.6, 0.4],
+                            ),
+                            usage=GenerationUsage(
+                                prompt_tokens=900,
+                                candidates_tokens=300,
+                                thoughts_tokens=0,
+                                total_tokens=1200,
+                                traffic_type="ON_DEMAND",
+                            ),
+                        )
+                    ]
+                ),
+                overall_progress=mock.Mock(),
+                trajectory_progress=mock.Mock(),
+                seen_signatures=seen_signatures,
+                seen_signatures_lock=threading.Lock(),
+            )
+
+        self.assertIn(
+            InsufficientValidUniqueTrajectoriesDuplicateError.__name__,
+            str(raised.exception),
+        )
+        self.assertIn(
+            "Verbalized run did not produce enough valid unique trajectories because some candidates duplicated existing trajectories.",
+            str(raised.exception),
+        )
+
+    def test_generate_single_trajectory_raises_mixed_specific_error_for_insufficient_verbalized_results(self):
+        runtime_config = RuntimeConfig(
+            composite_task="PrepareCoffee",
+            num_runs=1,
+            model="gemini-3-flash-preview",
+            sdk="google-genai",
+            project="demo-project",
+            location="global",
+            temperature=0.5,
+            max_workers=1,
+            max_retries=1,
+            sampling="verbalized",
+            verbalized_k=2,
+        )
+        duplicate_candidate = make_valid_candidate(include_agents=False)
+        validator = PREPARE_COFFEE_TASK.validator_factory()
+        seen_signatures = {validator.validate(duplicate_candidate)["signature"]}
+
+        with self.assertRaises(TrajectoryGenerationError) as raised:
+            generate_single_trajectory(
+                trajectory_index=0,
+                runtime_config=runtime_config,
+                task_definition=PREPARE_COFFEE_TASK,
+                client_factory=lambda: SequencedFakeClient(
+                    [
+                        GenerationResult(
+                            payload=make_verbalized_response(
+                                duplicate_candidate,
+                                make_invalid_candidate_missing_initial_communication(),
+                                probabilities=[0.7, 0.3],
+                            ),
+                            usage=GenerationUsage(
+                                prompt_tokens=900,
+                                candidates_tokens=300,
+                                thoughts_tokens=0,
+                                total_tokens=1200,
+                                traffic_type="ON_DEMAND",
+                            ),
+                        )
+                    ]
+                ),
+                overall_progress=mock.Mock(),
+                trajectory_progress=mock.Mock(),
+                seen_signatures=seen_signatures,
+                seen_signatures_lock=threading.Lock(),
+            )
+
+        self.assertIn(
+            InsufficientValidUniqueTrajectoriesMixedError.__name__,
+            str(raised.exception),
+        )
+        self.assertIn(
+            "Verbalized run did not produce enough valid unique trajectories because some candidates failed validation and others duplicated existing trajectories.",
+            str(raised.exception),
         )
 
     def test_generate_single_trajectory_returns_all_records_for_verbalized_sampling(self):

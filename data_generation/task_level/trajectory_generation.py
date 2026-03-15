@@ -62,6 +62,10 @@ from data_generation.task_level.sampling import (
 )
 from data_generation.task_level.tasks import (
     DuplicateTrajectoryValidationError,
+    InsufficientValidUniqueTrajectoriesDuplicateError,
+    InsufficientValidUniqueTrajectoriesInvalidError,
+    InsufficientValidUniqueTrajectoriesMixedError,
+    InsufficientValidUniqueTrajectoriesValidationError,
     ResponseFormatValidationError,
     TaskDefinition,
     TaskValidator,
@@ -90,6 +94,7 @@ TRAJECTORY_ID_DIGITS = 6
 BATCH_DIRECTORY_NAME = "batch"
 OVERALL_PROGRESS_COLOR = "cyan"
 PROGRESS_BAR_WIDTH = 30
+RETRY_PROGRESS_ERROR_MESSAGE_MAX_LENGTH = 96
 THINKING_LEVEL_CHOICES = ("minimal", "low", "medium", "high")
 TQDM_BAR_FORMAT = f"{{l_bar}}{{bar:{PROGRESS_BAR_WIDTH}}}{{r_bar}}"
 GENERATION_ERROR_EXIT_CODE = 1
@@ -543,6 +548,52 @@ def _validation_error_progress_summary(validation: dict[str, Any]) -> str | None
     return None
 
 
+def _truncate_progress_text(text: str, *, max_length: int) -> str:
+    """Collapses whitespace and truncates long progress-bar text with an ellipsis."""
+
+    normalized_text = " ".join(text.split())
+    if len(normalized_text) <= max_length:
+        return normalized_text
+    return f"{normalized_text[: max_length - 3].rstrip()}..."
+
+
+def _validation_error_retry_summary(validation: dict[str, Any]) -> str | None:
+    """Builds a retry status summary that includes the failing validation message."""
+
+    progress_summary = _validation_error_progress_summary(validation)
+    error_message = validation.get("error")
+    if isinstance(error_message, str) and error_message.strip():
+        truncated_message = _truncate_progress_text(
+            error_message,
+            max_length=RETRY_PROGRESS_ERROR_MESSAGE_MAX_LENGTH,
+        )
+        if progress_summary is not None:
+            return f"{progress_summary}: {truncated_message}"
+        return truncated_message
+    return progress_summary
+
+
+def _validation_errors_retry_summary(validations: list[dict[str, Any]]) -> str | None:
+    """Aggregates one attempt's invalid validations into a compact retry suffix."""
+
+    distinct_summaries: list[str] = []
+    for validation in validations:
+        retry_summary = _validation_error_retry_summary(validation)
+        if retry_summary is None or retry_summary in distinct_summaries:
+            continue
+        distinct_summaries.append(retry_summary)
+
+    if not distinct_summaries:
+        return None
+    if len(distinct_summaries) == 1:
+        return distinct_summaries[0]
+
+    displayed_summaries = "; ".join(distinct_summaries[:2])
+    if len(distinct_summaries) > 2:
+        return f"{displayed_summaries}; +{len(distinct_summaries) - 2} more"
+    return displayed_summaries
+
+
 def _unwrap_generation_response(
     raw_response: Any,
 ) -> tuple[Any, GenerationUsage | None]:
@@ -602,6 +653,56 @@ def _validation_error_payload(
     if candidate is not None:
         payload["signature"] = _candidate_signature(candidate)
     return payload
+
+
+def _build_verbalized_insufficient_results_error(
+    *,
+    required_count: int,
+    collected_count: int,
+    invalid_validations: list[dict[str, Any]],
+) -> TrajectoryValidationError:
+    """Builds one descriptive insufficiency error for verbalized sampling retries."""
+
+    duplicate_count = 0
+    invalid_count = 0
+    for validation in invalid_validations:
+        if _validation_error_type(validation) == "DuplicateTrajectoryValidationError":
+            duplicate_count += 1
+            continue
+        invalid_count += 1
+
+    missing_count = max(required_count - collected_count, 0)
+    details = {
+        "required_valid_unique_trajectories": required_count,
+        "collected_valid_unique_trajectories": collected_count,
+        "missing_valid_unique_trajectories": missing_count,
+        "duplicate_candidate_count": duplicate_count,
+        "invalid_candidate_count": invalid_count,
+    }
+
+    if duplicate_count and invalid_count:
+        return InsufficientValidUniqueTrajectoriesMixedError(
+            "Verbalized run did not produce enough valid unique trajectories because "
+            "some candidates failed validation and others duplicated existing "
+            "trajectories.",
+            details=details,
+        )
+    if duplicate_count:
+        return InsufficientValidUniqueTrajectoriesDuplicateError(
+            "Verbalized run did not produce enough valid unique trajectories because "
+            "some candidates duplicated existing trajectories.",
+            details=details,
+        )
+    if invalid_count:
+        return InsufficientValidUniqueTrajectoriesInvalidError(
+            "Verbalized run did not produce enough valid unique trajectories because "
+            "some candidates failed validation.",
+            details=details,
+        )
+    return InsufficientValidUniqueTrajectoriesValidationError(
+        "Verbalized run did not produce enough valid unique trajectories.",
+        details=details,
+    )
 
 
 def _split_integer_total(total: int, parts: int) -> list[int]:
@@ -704,6 +805,7 @@ def _build_trajectory_records_from_sampled_candidates(
     run_index: int,
     runtime_config: RuntimeConfig,
     task_definition: TaskDefinition,
+    task_instance: Any,
     sampled_candidates: list[SampledTrajectoryCandidate],
     prompt: str,
     raw_response: Any,
@@ -772,6 +874,7 @@ def _build_trajectory_records_from_sampled_candidates(
             validation=validation,
             trajectory_id=trajectory_id,
             generation_usage=generation_usage,
+            task_instance=task_instance,
         )
         if sampled_candidate.probability is not None:
             trajectory_record["sampling_metadata"] = {
@@ -2312,10 +2415,15 @@ def _trajectory_generation_status(
     runtime_config: RuntimeConfig,
     *,
     attempt_number: int,
+    previous_invalid_summary: str | None = None,
 ) -> str:
     if runtime_config.disable_validation:
-        return "generating"
-    return f"attempt {attempt_number}/{runtime_config.max_retries} generating"
+        status_text = "generating"
+    else:
+        status_text = f"attempt {attempt_number}/{runtime_config.max_retries} generating"
+    if previous_invalid_summary:
+        return f"{status_text} after invalid {previous_invalid_summary}"
+    return status_text
 
 
 def _trajectory_retry_status(
@@ -2323,14 +2431,19 @@ def _trajectory_retry_status(
     *,
     attempt_number: int,
     tool_call_count: int | None = None,
+    invalid_summary: str | None = None,
 ) -> str:
     if runtime_config.disable_validation:
         retry_text = "retrying"
     else:
         retry_text = f"attempt {attempt_number}/{runtime_config.max_retries} retry"
     if tool_call_count is None:
-        return retry_text
-    return f"{retry_text} calls={tool_call_count}"
+        status_text = retry_text
+    else:
+        status_text = f"{retry_text} calls={tool_call_count}"
+    if invalid_summary:
+        return f"{status_text} invalid {invalid_summary}"
+    return status_text
 
 
 def _trajectory_completion_log_message(
