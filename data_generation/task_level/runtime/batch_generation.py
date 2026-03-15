@@ -25,6 +25,7 @@ from data_generation.task_level.tasks import (
     TrajectoryValidationError,
 )
 from data_generation.task_level.trajectory_generation import (
+    AccumulatedCostTracker,
     BATCH_DIRECTORY_NAME,
     BATCH_INTERRUPTED_MESSAGE,
     BATCH_POLL_INTERVAL_SECONDS,
@@ -39,28 +40,28 @@ from data_generation.task_level.trajectory_generation import (
     RichTaskProgressAdapter,
     RuntimeConfig,
     SpinnerColumn,
+    StaticQueuedTimeElapsedColumn,
     TaskProgressColumn,
     TQDM_BAR_FORMAT,
     TextColumn,
-    TimeElapsedColumn,
     _build_generation_payload,
     _build_preflight_cost_estimate_summary,
+    _build_shared_generation_usage,
+    _build_trajectory_records_from_sampled_candidates,
     _append_error_event,
     _exception_error_event,
     _resolve_summary_path,
-    _build_trajectory_record_from_candidate,
     _close_progress_handles,
     _exception_summary,
     _log_cost_summary,
     _log_runtime_message,
+    _sampling_strategy_for_runtime,
     _trajectory_completion_log_message,
+    _update_overall_progress_status,
     _validation_error_event,
-    extract_json_candidate,
     format_trajectory_variation_key,
 )
 from data_generation.utils import camel_to_snake_case
-
-VARIATION_KEY_PATTERN = __import__("re").compile(r"variation key:\s*([^\n]+)")
 
 
 @dataclass(frozen=True)
@@ -227,10 +228,14 @@ def _batch_request_payload(
     runtime_config: RuntimeConfig,
     task_definition: TaskDefinition,
 ) -> dict[str, Any]:
+    sampling_strategy = _sampling_strategy_for_runtime(runtime_config)
     generation_config = {
         "temperature": runtime_config.temperature,
         "responseMimeType": "application/json",
-        "responseSchema": task_definition.response_schema,
+        "responseSchema": sampling_strategy.response_schema(
+            task_definition=task_definition,
+            runtime_config=runtime_config,
+        ),
     }
     if runtime_config.thinking_level is not None:
         generation_config["thinkingConfig"] = {
@@ -255,6 +260,7 @@ def _build_batch_trajectory_request(
     runtime_config: RuntimeConfig,
     task_definition: TaskDefinition,
 ) -> BatchTrajectoryRequest:
+    sampling_strategy = _sampling_strategy_for_runtime(runtime_config)
     variation_key = format_trajectory_variation_key(
         trajectory_index,
         attempt_number - 1,
@@ -263,7 +269,11 @@ def _build_batch_trajectory_request(
         trajectory_index=trajectory_index,
         attempt_number=attempt_number,
         variation_key=variation_key,
-        prompt=task_definition.build_prompt(variation_key),
+        prompt=sampling_strategy.build_prompt(
+            task_definition=task_definition,
+            runtime_config=runtime_config,
+            variation_key=variation_key,
+        ),
     )
 
 
@@ -278,6 +288,9 @@ def _write_batch_input_jsonl(
     lines = [
         json.dumps(
             {
+                # Store the stable request identifier outside the prompt so
+                # batch result matching does not depend on prompt wording.
+                "variation_key": batch_request.variation_key,
                 "request": _batch_request_payload(
                     prompt=batch_request.prompt,
                     runtime_config=runtime_config,
@@ -325,36 +338,6 @@ def _is_ignorable_batch_cancel_error(exc: Exception) -> bool:
             "409",
         )
     )
-
-
-def _extract_batch_prompt_from_request(request_payload: Any) -> str:
-    if not isinstance(request_payload, dict):
-        raise ResponseFormatValidationError("Batch output request payload was missing.")
-    contents = request_payload.get("contents")
-    if not isinstance(contents, list):
-        raise ResponseFormatValidationError("Batch output request contents were missing.")
-    prompt_parts: list[str] = []
-    for content in contents:
-        if not isinstance(content, dict):
-            continue
-        for part in content.get("parts", []):
-            if not isinstance(part, dict):
-                continue
-            text = part.get("text")
-            if isinstance(text, str):
-                prompt_parts.append(text)
-    if not prompt_parts:
-        raise ResponseFormatValidationError("Batch output request prompt was missing.")
-    return "\n".join(prompt_parts)
-
-
-def _extract_variation_key_from_prompt(prompt: str) -> str:
-    match = VARIATION_KEY_PATTERN.search(prompt)
-    if match is None:
-        raise ResponseFormatValidationError(
-            "Batch output request prompt did not contain a variation key."
-        )
-    return match.group(1).strip()
 
 
 def _extract_batch_response_payload(response_payload: Any) -> Any:
@@ -412,12 +395,11 @@ class RichBatchProgressDisplay:
 
         self.console = Console(stderr=True)
         self._progress = RichProgress(
-            SpinnerColumn(style="cyan"),
             TextColumn("[bold]{task.description}[/bold]"),
             BarColumn(bar_width=PROGRESS_BAR_WIDTH),
             TaskProgressColumn(),
             MofNCompleteColumn(),
-            TimeElapsedColumn(),
+            StaticQueuedTimeElapsedColumn(),
             TextColumn("[dim]{task.fields[status]}"),
             console=self.console,
             transient=False,
@@ -427,11 +409,11 @@ class RichBatchProgressDisplay:
         self.overall_progress = RichTaskProgressAdapter(
             self._progress,
             self._progress.add_task(
-                "[cyan]trajectories[/cyan]",
-                total=runtime_config.num_trajectories,
+                "[cyan]runs[/cyan]",
+                total=runtime_config.num_runs,
                 status="waiting for batch results",
             ),
-            runtime_config.num_trajectories,
+            runtime_config.num_runs,
         )
 
     def close(self) -> None:
@@ -454,8 +436,8 @@ def _create_batch_progress_handles(
         )
 
     overall_progress = tqdm(
-        total=runtime_config.num_trajectories,
-        desc="Trajectories",
+        total=runtime_config.num_runs,
+        desc="Runs",
         position=0,
         disable=disable_progress,
         dynamic_ncols=True,
@@ -470,11 +452,19 @@ def _create_batch_progress_handles(
     )
 
 
-def _set_batch_progress_status(progress_handles: ProgressHandles, status: str) -> None:
+def _set_batch_progress_status(
+    progress_handles: ProgressHandles,
+    status: str,
+    *,
+    accumulated_cost_text: str | None = None,
+) -> None:
     """Updates the shared batch progress status text when a progress bar is active."""
 
-    progress_handles.overall_progress.set_postfix_str(status)
-    progress_handles.overall_progress.refresh()
+    _update_overall_progress_status(
+        progress_handles.overall_progress,
+        status=status,
+        accumulated_cost_text=accumulated_cost_text,
+    )
 
 
 def _batch_round_display_name(
@@ -576,6 +566,7 @@ def generate_trajectories_batch(
     show_progress: bool,
 ) -> dict[str, Any]:
     validator = task_definition.validator_factory()
+    sampling_strategy = _sampling_strategy_for_runtime(runtime_config)
     seen_signatures: set[str] = set()
     seen_signatures_lock = threading.Lock()
     error_events: list[dict[str, Any]] = []
@@ -592,15 +583,19 @@ def generate_trajectories_batch(
         runtime_config,
         task_definition,
     )
+    accumulated_cost_tracker = AccumulatedCostTracker(
+        total_trajectories=runtime_config.num_runs
+        * sampling_strategy.trajectories_per_run(runtime_config),
+    )
     active_job_names: set[str] = set()
-    results: dict[int, dict[str, Any]] = {}
+    results: dict[int, list[dict[str, Any]]] = {}
     attempt_numbers = {
-        trajectory_index: 1 for trajectory_index in range(runtime_config.num_trajectories)
+        trajectory_index: 1 for trajectory_index in range(runtime_config.num_runs)
     }
-    pending_indices = list(range(runtime_config.num_trajectories))
+    pending_indices = list(range(runtime_config.num_runs))
 
     _log_cost_summary(
-        label="Projected cost",
+        label="Initial projected cost",
         cost_estimate=projected_cost_estimate,
         runtime_config=runtime_config,
         enabled=show_progress,
@@ -611,7 +606,11 @@ def generate_trajectories_batch(
         enabled=show_progress,
         writer=progress_handles.log_writer,
     )
-    _set_batch_progress_status(progress_handles, "starting")
+    _set_batch_progress_status(
+        progress_handles,
+        "starting",
+        accumulated_cost_text=accumulated_cost_tracker.status_text(),
+    )
 
     try:
         for round_number in range(1, runtime_config.max_retries + 1):
@@ -620,6 +619,7 @@ def generate_trajectories_batch(
             _set_batch_progress_status(
                 progress_handles,
                 f"round {round_number}: preparing {len(pending_indices)}",
+                accumulated_cost_text=accumulated_cost_tracker.status_text(),
             )
 
             batch_requests = [
@@ -662,6 +662,7 @@ def generate_trajectories_batch(
             _set_batch_progress_status(
                 progress_handles,
                 f"round {round_number}: running",
+                accumulated_cost_text=accumulated_cost_tracker.status_text(),
             )
             _log_runtime_message(
                 "Submitted batch round "
@@ -681,6 +682,7 @@ def generate_trajectories_batch(
             _set_batch_progress_status(
                 progress_handles,
                 f"round {round_number}: processing results",
+                accumulated_cost_text=accumulated_cost_tracker.status_text(),
             )
 
             round_rows = _load_batch_output_rows(
@@ -689,10 +691,8 @@ def generate_trajectories_batch(
             )
             rows_by_variation_key: dict[str, dict[str, Any]] = {}
             for row in round_rows:
-                try:
-                    request_prompt = _extract_batch_prompt_from_request(row.get("request"))
-                    variation_key = _extract_variation_key_from_prompt(request_prompt)
-                except ResponseFormatValidationError:
+                variation_key = row.get("variation_key")
+                if not isinstance(variation_key, str) or not variation_key.strip():
                     continue
                 rows_by_variation_key.setdefault(variation_key, row)
 
@@ -719,20 +719,42 @@ def generate_trajectories_batch(
                             response_payload = _extract_batch_response_payload(
                                 row.get("response")
                             )
-                            candidate = extract_json_candidate(response_payload)
+                            sampled_candidates = sampling_strategy.extract_candidates(
+                                raw_response=response_payload,
+                                task_definition=task_definition,
+                                runtime_config=runtime_config,
+                            )
                             usage = build_generation_usage_metadata(
                                 row.get("response", {}).get("usageMetadata")
                                 if isinstance(row.get("response"), dict)
                                 else None,
                                 default_traffic_type=BATCH_TRAFFIC_TYPE,
                             )
-                            trajectory_record = _build_trajectory_record_from_candidate(
-                                trajectory_index=batch_request.trajectory_index,
+                            shared_generation_usage = _build_shared_generation_usage(
+                                runtime_config=runtime_config,
+                                sampled_candidates=sampled_candidates,
+                                prompt=batch_request.prompt,
+                                raw_response=response_payload,
+                                usage=usage,
+                                attempt_number=batch_request.attempt_number,
+                            )
+                            accumulated_cost_text = (
+                                accumulated_cost_tracker.add_observed_cost(
+                                    shared_generation_usage.get("observed_cost_usd")
+                                )
+                            )
+                            _set_batch_progress_status(
+                                progress_handles,
+                                f"round {round_number}: processing results",
+                                accumulated_cost_text=accumulated_cost_text,
+                            )
+                            trajectory_records = _build_trajectory_records_from_sampled_candidates(
+                                run_index=batch_request.trajectory_index,
                                 runtime_config=runtime_config,
                                 task_definition=task_definition,
-                                candidate=candidate,
+                                sampled_candidates=sampled_candidates,
                                 prompt=batch_request.prompt,
-                                raw_output=response_payload,
+                                raw_response=response_payload,
                                 usage=usage,
                                 validator=validator,
                                 seen_signatures=seen_signatures,
@@ -742,30 +764,39 @@ def generate_trajectories_batch(
                         except Exception as exc:
                             row_error = exc
                         else:
-                            results[batch_request.trajectory_index] = trajectory_record
-                            _append_error_event(
-                                error_events,
-                                _validation_error_event(
-                                    trajectory_record["validation"],
-                                    source="batch",
-                                    trajectory_id=trajectory_record["trajectory_id"],
-                                    trajectory_index=batch_request.trajectory_index,
-                                    attempt_number=batch_request.attempt_number,
+                            results[batch_request.trajectory_index] = trajectory_records
+                            for trajectory_record in trajectory_records:
+                                _append_error_event(
+                                    error_events,
+                                    _validation_error_event(
+                                        trajectory_record["validation"],
+                                        source="batch",
+                                        trajectory_id=trajectory_record["trajectory_id"],
+                                        trajectory_index=batch_request.trajectory_index,
+                                        attempt_number=batch_request.attempt_number,
+                                    ),
+                                    error_events_lock=error_events_lock,
+                                )
+                            _update_overall_progress_status(
+                                progress_handles.overall_progress,
+                                amount=1,
+                                status=f"round {round_number}: processing results",
+                                accumulated_cost_text=accumulated_cost_tracker.complete_trajectories(
+                                    len(trajectory_records)
                                 ),
-                                error_events_lock=error_events_lock,
                             )
-                            progress_handles.overall_progress.update(1)
                             succeeded_count += 1
-                            _log_runtime_message(
-                                _trajectory_completion_log_message(
-                                    runtime_config,
-                                    trajectory_id=trajectory_record["trajectory_id"],
-                                    generation_usage=trajectory_record["generation_usage"],
-                                    validation=trajectory_record["validation"],
-                                ),
-                                enabled=show_progress,
-                                writer=progress_handles.log_writer,
-                            )
+                            for trajectory_record in trajectory_records:
+                                _log_runtime_message(
+                                    _trajectory_completion_log_message(
+                                        runtime_config,
+                                        trajectory_id=trajectory_record["trajectory_id"],
+                                        generation_usage=trajectory_record["generation_usage"],
+                                        validation=trajectory_record["validation"],
+                                    ),
+                                    enabled=show_progress,
+                                    writer=progress_handles.log_writer,
+                                )
                             continue
 
                 _append_error_event(
@@ -800,7 +831,7 @@ def generate_trajectories_batch(
                     retryable_count=retryable_count,
                     failed_count=failed_count,
                     completed_count=len(results),
-                    total_count=runtime_config.num_trajectories,
+                    total_count=runtime_config.num_runs,
                 ),
                 enabled=show_progress,
                 writer=progress_handles.log_writer,
@@ -808,7 +839,11 @@ def generate_trajectories_batch(
             if exhausted_errors:
                 _raise_exhausted_batch_errors(runtime_config, exhausted_errors)
             pending_indices = sorted(next_pending_indices)
-        _set_batch_progress_status(progress_handles, "complete")
+        _set_batch_progress_status(
+            progress_handles,
+            "complete",
+            accumulated_cost_text=accumulated_cost_tracker.status_text(),
+        )
     except KeyboardInterrupt:
         _cancel_active_batch_jobs(
             batch_service,
@@ -820,7 +855,11 @@ def generate_trajectories_batch(
     finally:
         _close_progress_handles(progress_handles)
 
-    ordered_trajectories = [results[index] for index in sorted(results)]
+    ordered_trajectories = [
+        trajectory_record
+        for index in sorted(results)
+        for trajectory_record in results[index]
+    ]
     return _build_generation_payload(
         runtime_config,
         ordered_trajectories,

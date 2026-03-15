@@ -10,8 +10,8 @@ from data_generation.task_level.tasks.base import (
     build_task_response_schema,
     FiniteStateTaskValidator,
     PreflightTokenEstimate,
+    TaskPreconditionSemanticValidationError,
     TaskDefinition,
-    TaskSemanticValidationError,
     TaskRuntimeState,
     make_task_prompt_builder,
 )
@@ -74,6 +74,7 @@ PREPARE_COFFEE_ALLOWED_TOOL_SPECS = build_allowed_tool_specs(
         "place_on_surface",
         "place_under_dispenser",
         "press_button",
+        "wait",
     ),
     overrides={
         "navigate_to_fixture": {
@@ -133,6 +134,7 @@ build_prepare_coffee_prompt = make_task_prompt_builder(
     extra_execution_rules=(
         "Open cabinet_1.door before using pick_up_object on mug_1 from cabinet_1.",
         "Only press coffee_machine_1.start_button after mug_1 is already at coffee_machine_dispenser.",
+        "If an agent is blocked because the other agent still needs to open the cabinet, move the mug, or place the mug under the dispenser, use wait with a short positive duration.",
     ),
 )
 
@@ -186,16 +188,29 @@ class PrepareCoffeeValidator(FiniteStateTaskValidator):
             and step["args"]["source_id"] == "cabinet_1"
             and runtime_state.fixtures["cabinet_1"]["parts"]["door"]["state"] != "open"
         ):
-            raise TaskSemanticValidationError(
-                "pick_up_object from cabinet_1 requires the cabinet door to be open."
+            raise TaskPreconditionSemanticValidationError(
+                "pick_up_object from cabinet_1 requires the cabinet door to be open.",
+                details={
+                    "tool": step["tool"],
+                    "fixture_id": "cabinet_1",
+                    "part_id": "door",
+                    "required_state": "open",
+                    "actual_state": runtime_state.fixtures["cabinet_1"]["parts"]["door"]["state"],
+                },
             )
 
         if (
             step["tool"] == "press_button"
             and runtime_state.objects["mug_1"]["location"] != "coffee_machine_dispenser"
         ):
-            raise TaskSemanticValidationError(
-                "press_button on the coffee machine requires mug_1 under the coffee machine dispenser."
+            raise TaskPreconditionSemanticValidationError(
+                "press_button on the coffee machine requires mug_1 under the coffee machine dispenser.",
+                details={
+                    "tool": step["tool"],
+                    "object_id": "mug_1",
+                    "required_location": "coffee_machine_dispenser",
+                    "actual_location": runtime_state.objects["mug_1"]["location"],
+                },
             )
 
     def is_goal_state_satisfied(self, runtime_state: TaskRuntimeState) -> bool:

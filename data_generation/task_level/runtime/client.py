@@ -126,6 +126,36 @@ class BaseGenerationClient:
         raise NotImplementedError
 
 
+def _generation_error_status_code(exc: Exception) -> int | None:
+    """Extracts one HTTP status code from SDK exceptions with varying shapes."""
+
+    status_code = getattr(exc, "status_code", None)
+    if isinstance(status_code, int):
+        return status_code
+
+    response = getattr(exc, "response", None)
+    response_status_code = getattr(response, "status_code", None)
+    if isinstance(response_status_code, int):
+        return response_status_code
+
+    return None
+
+
+def _verbalized_response_count(response_schema: dict[str, Any]) -> int | None:
+    """Returns the verbalized response count encoded in one response schema."""
+
+    responses_schema = response_schema.get("properties", {}).get("responses")
+    if not isinstance(responses_schema, dict):
+        return None
+
+    min_items = responses_schema.get("minItems")
+    max_items = responses_schema.get("maxItems")
+    if isinstance(min_items, int) and min_items == max_items:
+        return min_items
+
+    return None
+
+
 def _build_attempt_usage(
     *,
     prompt: str,
@@ -485,6 +515,9 @@ def build_raw_google_genai_client(project: str | None, location: str) -> Any:
     )
 
 
+DEFAULT_GOOGLE_GENAI_MAX_OUTPUT_TOKENS = 32768
+
+
 class GoogleGenAIClient(BaseGenerationClient):
     def __init__(self, project: str | None, location: str):
         self._client = build_raw_google_genai_client(project=project, location=location)
@@ -500,6 +533,7 @@ class GoogleGenAIClient(BaseGenerationClient):
 
         config = {
             "temperature": temperature,
+            "max_output_tokens": DEFAULT_GOOGLE_GENAI_MAX_OUTPUT_TOKENS,
             "response_mime_type": "application/json",
             "response_schema": response_schema,
         }
@@ -528,6 +562,7 @@ class GoogleGenAIClient(BaseGenerationClient):
             )
         except Exception as exc:
             message = str(exc)
+            status_code = _generation_error_status_code(exc)
             if (
                 "403 PERMISSION_DENIED" in message
                 and "aiplatform.endpoints.predict" in message
@@ -538,6 +573,21 @@ class GoogleGenAIClient(BaseGenerationClient):
                     "`aiplatform.endpoints.predict` on project "
                     f"`{os.environ.get('GOOGLE_CLOUD_PROJECT', '<unknown-project>')}` "
                     "such as Vertex AI User, then retry."
+                ) from exc
+            if status_code == 400 and "INVALID_ARGUMENT" in message:
+                verbalized_response_count = _verbalized_response_count(response_schema)
+                verbalized_hint = ""
+                if verbalized_response_count is not None:
+                    verbalized_hint = (
+                        " This request uses verbalized structured output, and the "
+                        f"requested response count ({verbalized_response_count}) may exceed "
+                        "Vertex AI request limits. Retry with a smaller "
+                        "`--verbalized-k`, such as 4 or lower."
+                    )
+                raise TrajectoryGenerationError(
+                    "Vertex AI rejected the generation request with "
+                    "`400 INVALID_ARGUMENT`."
+                    f"{verbalized_hint} Original error: {message}"
                 ) from exc
             raise
         # Usage metadata is optional and field names vary a bit across SDK releases.

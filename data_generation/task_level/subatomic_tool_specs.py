@@ -38,7 +38,7 @@ SUBATOMIC_ALLOWED_TOOL_SPECS = _build_subatomic_allowed_tool_specs()
 TASK_LEVEL_ALLOWED_TOOL_SPECS = {
     "communicate": {
         "description": "Send a short coordination message to the other agent.",
-        "tool_args": ["to_agent_id", "message"],
+        "tool_args": ["to", "message"],
     },
     **SUBATOMIC_ALLOWED_TOOL_SPECS,
 }

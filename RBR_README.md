@@ -57,15 +57,33 @@ Test the client wiring before you generate trajectories:
 python test_google_cloud.py
 ```
 
-Generate `N` strictly validated symbolic two-agent trajectories for `PrepareCoffee`:
+Generate validated symbolic two-agent trajectories for `PrepareCoffee` with base sampling:
 
 ```bash
 python -m data_generation.task_level.trajectory_generation \
   --task PrepareCoffee \
-  --num-trajectories 2 \
+  --num-runs 2 \
+  --sampling base \
   --model gemini-3.1-flash-lite-preview \
   --location global \
-  --thinking-level minimal \
+  --thinking-level low \
+  --max-workers 4 \
+  --max-retries 5 \
+  --enable-validation
+```
+
+Generate verbalized samples, where each run asks the model for multiple full
+trajectories plus a probability label for each one:
+
+```bash
+python -m data_generation.task_level.trajectory_generation \
+  --task PrepareCoffee \
+  --num-runs 2 \
+  --sampling verbalized \
+  --verbalized-k 3 \
+  --model gemini-3.1-flash-lite-preview \
+  --location global \
+  --thinking-level low \
   --max-workers 4 \
   --max-retries 5 \
   --enable-validation
@@ -86,6 +104,12 @@ The generator also writes sibling sidecar directories next to the dataset summar
 - `trajectories/`: validated saved trajectory JSON
 - `prompts/`: the exact prompt used for each saved trajectory
 - `outputs/`: the raw successful model output text for each saved trajectory
+
+Sampling notes:
+- `--num-runs` is the number of model calls, not always the number of saved trajectories.
+- `--sampling base` saves one trajectory per successful run.
+- `--sampling verbalized` saves `--verbalized-k` flattened trajectories per successful run.
+- Verbalized trajectories include `sampling_metadata` with the parsed probability.
 
 ## Batch trajectory generation
 
@@ -110,8 +134,9 @@ Use `--batch-processing` when launching trajectory generation.
 ```bash
 PYTHONPATH=. uv run python -m data_generation.task_level.trajectory_generation \
   --task PrepareCoffee \
-  --num-trajectories 100 \
+  --num-runs 100 \
   --model gemini-2.5-flash \
+  --sampling base \
   --batch-processing \
   --batch-gcs-prefix gs://YOUR_BUCKET/robocasa-batch
 ```
@@ -119,6 +144,9 @@ PYTHONPATH=. uv run python -m data_generation.task_level.trajectory_generation \
 Notes:
 
 - V1 only supports `PrepareCoffee`.
+- Batch mode supports both `--sampling base` and `--sampling verbalized`.
+- With `--sampling verbalized`, each successful batch row can save multiple
+  flattened trajectories from one model response.
 - Validation is now disabled by default. Without `--enable-validation`, the generator
   keeps invalid trajectories, records the validation error in the output, and omits
   retry-attempt metadata from the saved JSON.
@@ -128,13 +156,16 @@ Notes:
   plus short explicit reasoning text per step.
 - The main output path stores a compact trajectory summary plus `cost_summary`. A
   sibling sidecar file is written to `cost_summary.json` by default and includes
-  per-trajectory `generation_usage`, observed rollup costs, and model pricing
-  (`input_usd_per_million_tokens` / `output_usd_per_million_tokens`).
+  per-trajectory `generation_usage`, retry-inclusive rollup costs, average trajectory
+  cost, and model pricing (`input_usd_per_million_tokens` /
+  `output_usd_per_million_tokens`).
 - A sibling `summary_errors.json` sidecar records every observed error in the run,
   including retry failures and saved invalid trajectories, plus per-error counts.
-- The generator prints a projected cost before execution starts. With validation
-  disabled this is a single projected total; with `--enable-validation` it is shown
-  as a best-case / worst-case range based on the retry budget.
+- The generator prints an initial projected cost before execution starts. While
+  the CLI runs, the overall progress bar shows both the accumulated observed cost
+  so far and a single projected total computed from the remaining trajectories
+  and the current average cost per saved trajectory. Until at least one trajectory
+  finishes, that live projected value is shown as `NaN`.
 - The generator now uses a single supported client path:
   `genai.Client(http_options=HttpOptions(api_version="v1"))`.
 - `GOOGLE_API_KEY` and `GOOGLE_GENAI_USE_VERTEXAI` are not required for the generator.

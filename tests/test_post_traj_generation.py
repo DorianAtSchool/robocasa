@@ -32,7 +32,7 @@ def make_sample_trajectory():
                 "agent": "agent_0",
                 "tool": "communicate",
                 "args": {
-                    "to_agent_id": "agent_1",
+                    "to": "agent_1",
                     "message": "I will start the task.",
                 },
                 "reasoning": "We should coordinate before acting.",
@@ -42,7 +42,7 @@ def make_sample_trajectory():
                 "agent": "agent_1",
                 "tool": "communicate",
                 "args": {
-                    "to_agent_id": "agent_0",
+                    "to": "agent_0",
                     "message": "I will stay ready for handoff.",
                 },
                 "reasoning": "I should confirm the plan.",

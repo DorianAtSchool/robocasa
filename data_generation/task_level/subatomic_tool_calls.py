@@ -105,6 +105,12 @@ SUBATOMIC_TOOL_SPECS: tuple[SubatomicToolSpec, ...] = (
         "receptacle_id",
     ),
     _build_tool_spec(
+        "place_next_to",
+        "Place an object adjacent to another object on the same surface.",
+        "object_id",
+        "reference_object_id",
+    ),
+    _build_tool_spec(
         "place_on_object",
         "Place an object on top of another movable support object.",
         "object_id",
@@ -121,6 +127,15 @@ SUBATOMIC_TOOL_SPECS: tuple[SubatomicToolSpec, ...] = (
         "Place an object under a machine dispenser target.",
         "object_id",
         "dispenser_id",
+    ),
+    _build_tool_spec(
+        "place_under",
+        "Place an object directly beneath a reference fixture. For dispensers "
+        "(e.g. coffee machine nozzle, sink faucet) the object is positioned at "
+        "the dispenser output site; for other fixtures (e.g. wall cabinet) the "
+        "object is placed on the nearest surface below.",
+        "object_id",
+        "reference_fixture_id",
     ),
     _build_tool_spec(
         "press_button",
