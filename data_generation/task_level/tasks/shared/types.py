@@ -11,6 +11,8 @@ class TaskValidator(Protocol):
 
     def validate(self, candidate: dict[str, Any]) -> dict[str, Any]:
         """Validates one candidate trajectory and returns normalized metadata."""
+
+
 class TaskPromptBuilder(Protocol):
     """Protocol implemented by task prompt builders used by generation runtime."""
 

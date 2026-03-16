@@ -99,7 +99,9 @@ def generate_single_run(
         and runtime_config.verbalized_k > 1
     )
     run_completed = False
-    accumulated_valid_results: list[tuple[Any, dict[str, Any], dict[str, Any], str]] = []
+    accumulated_valid_results: list[
+        tuple[Any, dict[str, Any], dict[str, Any], str]
+    ] = []
     accumulated_generation_usages: list[dict[str, Any]] = []
     reserved_run_signatures: set[str] = set()
     previous_invalid_summary: str | None = None
@@ -167,10 +169,13 @@ def generate_single_run(
             if len(sampled_candidates) == 1:
                 # Reuse the single invalid candidate as a tiny negative example on retries.
                 retry_feedback_candidate = sampled_candidates[0].candidate
-            tool_call_count = sum(
-                _runtime_support._tool_call_count(sampled_candidate.candidate) or 0
-                for sampled_candidate in sampled_candidates
-            ) or None
+            tool_call_count = (
+                sum(
+                    _runtime_support._tool_call_count(sampled_candidate.candidate) or 0
+                    for sampled_candidate in sampled_candidates
+                )
+                or None
+            )
             shared_generation_usage = _runtime_support._build_shared_generation_usage(
                 runtime_config=runtime_config,
                 sampled_candidates=sampled_candidates,
@@ -196,10 +201,15 @@ def generate_single_run(
                 valid_results_this_attempt: list[
                     tuple[Any, dict[str, Any], dict[str, Any], str]
                 ] = []
-                needed_count = runtime_config.verbalized_k - len(accumulated_valid_results)
+                needed_count = runtime_config.verbalized_k - len(
+                    accumulated_valid_results
+                )
 
                 for sampled_candidate in sampled_candidates:
-                    validation, normalized_candidate = _runtime_support._validate_candidate(
+                    (
+                        validation,
+                        normalized_candidate,
+                    ) = _runtime_support._validate_candidate(
                         sampled_candidate.candidate,
                         validator,
                         enforce_validation=False,
@@ -249,7 +259,8 @@ def generate_single_run(
                             trajectory_index=run_index,
                             attempt_number=attempt_index + 1,
                             retryable=(
-                                len(accumulated_valid_results) + len(valid_results_this_attempt)
+                                len(accumulated_valid_results)
+                                + len(valid_results_this_attempt)
                                 < runtime_config.verbalized_k
                                 and attempt_index + 1 < runtime_config.max_retries
                             ),
@@ -262,10 +273,12 @@ def generate_single_run(
                     accumulated_valid_results.extend(valid_results_this_attempt)
 
                 if len(accumulated_valid_results) < runtime_config.verbalized_k:
-                    last_error = _runtime_support._build_verbalized_insufficient_results_error(
-                        required_count=runtime_config.verbalized_k,
-                        collected_count=len(accumulated_valid_results),
-                        invalid_validations=invalid_validations,
+                    last_error = (
+                        _runtime_support._build_verbalized_insufficient_results_error(
+                            required_count=runtime_config.verbalized_k,
+                            collected_count=len(accumulated_valid_results),
+                            invalid_validations=invalid_validations,
+                        )
                     )
                     if trajectory_progress is not None:
                         invalid_summary = (
@@ -284,9 +297,11 @@ def generate_single_run(
                         )
                     if invalid_validations:
                         first_invalid = invalid_validations[0]
-                        retry_feedback = _runtime_support._build_retry_feedback_text_from_validation(
-                            first_invalid,
-                            candidate=retry_feedback_candidate,
+                        retry_feedback = (
+                            _runtime_support._build_retry_feedback_text_from_validation(
+                                first_invalid,
+                                candidate=retry_feedback_candidate,
+                            )
                         )
                     continue
 
@@ -312,8 +327,12 @@ def generate_single_run(
                 aggregate_generation_usage["total_tokens"] = (
                     total_prompt_tokens + total_output_tokens + total_reasoning_tokens
                 )
-                aggregate_generation_usage["observed_cost_usd"] = total_observed_cost_usd
-                aggregate_generation_usage["successful_attempt_number"] = attempt_index + 1
+                aggregate_generation_usage[
+                    "observed_cost_usd"
+                ] = total_observed_cost_usd
+                aggregate_generation_usage["successful_attempt_number"] = (
+                    attempt_index + 1
+                )
                 aggregate_generation_usage["retry_costs_included"] = (
                     attempt_index + 1 > 1
                 )
@@ -332,9 +351,7 @@ def generate_single_run(
                         candidate_prompt,
                     ),
                     generation_usage,
-                ) in enumerate(
-                    zip(accumulated_valid_results, split_generation_usages)
-                ):
+                ) in enumerate(zip(accumulated_valid_results, split_generation_usages)):
                     trajectory_id = _runtime_support.format_trajectory_id(
                         _runtime_support._global_trajectory_index(
                             runtime_config,
@@ -360,19 +377,21 @@ def generate_single_run(
                     trajectory_record["raw_output"] = sampled_candidate.raw_output
                     trajectory_records.append(trajectory_record)
             else:
-                trajectory_records = _runtime_support._build_trajectory_records_from_sampled_candidates(
-                    run_index=run_index,
-                    runtime_config=runtime_config,
-                    task_definition=task_definition,
-                    task_instance=task_instance,
-                    sampled_candidates=sampled_candidates,
-                    prompt=prompt,
-                    raw_response=response_payload,
-                    usage=usage,
-                    validator=validator,
-                    seen_signatures=seen_signatures,
-                    seen_signatures_lock=seen_signatures_lock,
-                    attempt_number=attempt_index + 1,
+                trajectory_records = (
+                    _runtime_support._build_trajectory_records_from_sampled_candidates(
+                        run_index=run_index,
+                        runtime_config=runtime_config,
+                        task_definition=task_definition,
+                        task_instance=task_instance,
+                        sampled_candidates=sampled_candidates,
+                        prompt=prompt,
+                        raw_response=response_payload,
+                        usage=usage,
+                        validator=validator,
+                        seen_signatures=seen_signatures,
+                        seen_signatures_lock=seen_signatures_lock,
+                        attempt_number=attempt_index + 1,
+                    )
                 )
             for trajectory_record in trajectory_records:
                 validation = trajectory_record["validation"]
@@ -442,9 +461,8 @@ def generate_single_run(
             return trajectory_records
         except Exception as exc:
             last_error = exc
-            if (
-                not runtime_config.disable_validation
-                and isinstance(exc, TrajectoryValidationError)
+            if not runtime_config.disable_validation and isinstance(
+                exc, TrajectoryValidationError
             ):
                 retry_feedback = _runtime_support._build_retry_feedback_text(
                     exc,

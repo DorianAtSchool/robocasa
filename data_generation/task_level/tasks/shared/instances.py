@@ -10,6 +10,7 @@ from data_generation.utils import stable_json_sha256
 
 from .types import TaskInstance
 
+
 def resolve_initial_position_fixture_ids(
     *,
     initial_state: dict[str, Any],
@@ -21,7 +22,9 @@ def resolve_initial_position_fixture_ids(
     allowed_fixture_ids = navigate_spec.get("allowed_fixture_ids")
     if isinstance(allowed_fixture_ids, list) and allowed_fixture_ids:
         if not all(isinstance(fixture_id, str) for fixture_id in allowed_fixture_ids):
-            raise ValueError("navigate_to_fixture.allowed_fixture_ids must be a list of strings.")
+            raise ValueError(
+                "navigate_to_fixture.allowed_fixture_ids must be a list of strings."
+            )
         return tuple(allowed_fixture_ids)
 
     fixture_state = initial_state.get("fixtures", {})
@@ -31,7 +34,11 @@ def resolve_initial_position_fixture_ids(
             raise ValueError("initial_state.fixtures keys must be strings.")
         return fixture_ids
 
-    raise ValueError("Tasks must define at least one fixture position for initial agent placement.")
+    raise ValueError(
+        "Tasks must define at least one fixture position for initial agent placement."
+    )
+
+
 def build_randomized_fixture_task_instance(
     *,
     composite_task: str,
@@ -58,11 +65,15 @@ def build_randomized_fixture_task_instance(
     rng = random.Random(seed_material)
 
     for agent_id in agent_ids:
-        agent_state = sampled_initial_state.setdefault("agents", {}).setdefault(agent_id, {})
+        agent_state = sampled_initial_state.setdefault("agents", {}).setdefault(
+            agent_id, {}
+        )
         agent_state["location"] = rng.choice(fixture_ids)
         agent_state.setdefault("held_object", None)
 
     return TaskInstance(initial_state=sampled_initial_state)
+
+
 def build_canonical_agents(agent_ids: Sequence[str]) -> list[dict[str, str]]:
     """Builds the shared persisted agent roster for trajectories."""
 

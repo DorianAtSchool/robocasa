@@ -86,7 +86,12 @@ HOT_DOG_SETUP_ALLOWED_TOOL_SPECS = build_allowed_tool_specs(
     ),
     overrides={
         "navigate_to_fixture": {
-            "allowed_fixture_ids": ["cabinet_1", "counter_1", "fridge_1", "dining_table_1"],
+            "allowed_fixture_ids": [
+                "cabinet_1",
+                "counter_1",
+                "fridge_1",
+                "dining_table_1",
+            ],
         },
         "pick_up_object": {
             "allowed_object_ids": ["hotdog_bun_1", "sausage_1", "condiment_1"],
@@ -165,11 +170,21 @@ class HotDogSetupValidator(FiniteStateTaskValidator):
             ),
             max_reasoning_chars=MAX_REASONING_CHARS,
             initial_public_state={
-                "bun_location": effective_initial_state["objects"]["hotdog_bun_1"]["location"],
-                "sausage_location": effective_initial_state["objects"]["sausage_1"]["location"],
-                "condiment_location": effective_initial_state["objects"]["condiment_1"]["location"],
-                "plate_location": effective_initial_state["objects"]["plate_1"]["location"],
-                "condiment_placed_next_to_plate": effective_initial_state["machine_state"]["hot_dog_setup"]["condiment_placed_next_to_plate"],
+                "bun_location": effective_initial_state["objects"]["hotdog_bun_1"][
+                    "location"
+                ],
+                "sausage_location": effective_initial_state["objects"]["sausage_1"][
+                    "location"
+                ],
+                "condiment_location": effective_initial_state["objects"]["condiment_1"][
+                    "location"
+                ],
+                "plate_location": effective_initial_state["objects"]["plate_1"][
+                    "location"
+                ],
+                "condiment_placed_next_to_plate": effective_initial_state[
+                    "machine_state"
+                ]["hot_dog_setup"]["condiment_placed_next_to_plate"],
             },
         )
 
@@ -196,9 +211,15 @@ class HotDogSetupValidator(FiniteStateTaskValidator):
 
         bun_on_plate = runtime_state.objects["hotdog_bun_1"]["location"] == "plate_1"
         sausage_on_plate = runtime_state.objects["sausage_1"]["location"] == "plate_1"
-        plate_on_table = runtime_state.objects["plate_1"]["location"] == "dining_table_1"
-        condiment_on_table = runtime_state.objects["condiment_1"]["location"] == "dining_table_1"
-        condiment_next_to_plate = runtime_state.machine_state["hot_dog_setup"]["condiment_placed_next_to_plate"]
+        plate_on_table = (
+            runtime_state.objects["plate_1"]["location"] == "dining_table_1"
+        )
+        condiment_on_table = (
+            runtime_state.objects["condiment_1"]["location"] == "dining_table_1"
+        )
+        condiment_next_to_plate = runtime_state.machine_state["hot_dog_setup"][
+            "condiment_placed_next_to_plate"
+        ]
         return (
             bun_on_plate
             and sausage_on_plate
@@ -219,13 +240,27 @@ class HotDogSetupValidator(FiniteStateTaskValidator):
             and step["args"]["object_id"] == "condiment_1"
             and step["args"]["reference_object_id"] == "plate_1"
         ):
-            runtime_state.machine_state["hot_dog_setup"]["condiment_placed_next_to_plate"] = True
+            runtime_state.machine_state["hot_dog_setup"][
+                "condiment_placed_next_to_plate"
+            ] = True
 
-        runtime_state.public_state["bun_location"] = runtime_state.objects["hotdog_bun_1"]["location"]
-        runtime_state.public_state["sausage_location"] = runtime_state.objects["sausage_1"]["location"]
-        runtime_state.public_state["condiment_location"] = runtime_state.objects["condiment_1"]["location"]
-        runtime_state.public_state["plate_location"] = runtime_state.objects["plate_1"]["location"]
-        runtime_state.public_state["condiment_placed_next_to_plate"] = runtime_state.machine_state["hot_dog_setup"]["condiment_placed_next_to_plate"]
+        runtime_state.public_state["bun_location"] = runtime_state.objects[
+            "hotdog_bun_1"
+        ]["location"]
+        runtime_state.public_state["sausage_location"] = runtime_state.objects[
+            "sausage_1"
+        ]["location"]
+        runtime_state.public_state["condiment_location"] = runtime_state.objects[
+            "condiment_1"
+        ]["location"]
+        runtime_state.public_state["plate_location"] = runtime_state.objects["plate_1"][
+            "location"
+        ]
+        runtime_state.public_state[
+            "condiment_placed_next_to_plate"
+        ] = runtime_state.machine_state["hot_dog_setup"][
+            "condiment_placed_next_to_plate"
+        ]
 
 
 def build_hot_dog_setup_trajectory_record(

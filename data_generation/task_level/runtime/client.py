@@ -56,7 +56,7 @@ MODEL_TEXT_PRICING_USD_PER_MILLION = {
             "input": 0.25,
             "output": 1.50,
         },
-    }
+    },
 }
 # google-genai reads Vertex routing from environment variables.
 GOOGLE_GENAI_VERTEX_ENV_VAR = "GOOGLE_GENAI_USE_VERTEXAI"
@@ -591,7 +591,9 @@ class GoogleGenAIClient(BaseGenerationClient):
                 ) from exc
             raise
         # Usage metadata is optional and field names vary a bit across SDK releases.
-        usage = build_generation_usage_metadata(getattr(response, "usage_metadata", None))
+        usage = build_generation_usage_metadata(
+            getattr(response, "usage_metadata", None)
+        )
         return GenerationResult(
             payload=getattr(response, "text", None) or str(response),
             usage=usage,

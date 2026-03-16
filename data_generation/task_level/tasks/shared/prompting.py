@@ -17,6 +17,7 @@ from .constants import (
 )
 from .types import TaskInstance, TaskPromptBuilder
 
+
 def _format_agent_id_list(agent_ids: Sequence[str]) -> str:
     """Formats agent IDs into a short prompt-facing list."""
 
@@ -27,6 +28,8 @@ def _format_agent_id_list(agent_ids: Sequence[str]) -> str:
     if len(agent_ids) == 2:
         return f"{agent_ids[0]} and {agent_ids[1]}"
     return f"{', '.join(agent_ids[:-1])}, and {agent_ids[-1]}"
+
+
 def _format_initial_agent_positions(
     initial_state: dict[str, Any],
     agent_ids: Sequence[str],
@@ -37,9 +40,13 @@ def _format_initial_agent_positions(
     for agent_id in agent_ids:
         agent_state = initial_state.get("agents", {}).get(agent_id, {})
         location = agent_state.get("location")
-        location_label = location if isinstance(location, str) and location else "unknown"
+        location_label = (
+            location if isinstance(location, str) and location else "unknown"
+        )
         position_lines.append(f"- {agent_id}: {location_label}")
     return "\n".join(position_lines)
+
+
 def _build_fsm_prompt_rules(
     allowed_tool_specs: dict[str, dict[str, Any]],
     *,
@@ -94,6 +101,8 @@ def _build_fsm_prompt_rules(
         if normalized_rule:
             prompt_rules.append(normalized_rule)
     return prompt_rules
+
+
 def make_task_prompt_builder(
     *,
     composite_task: str,

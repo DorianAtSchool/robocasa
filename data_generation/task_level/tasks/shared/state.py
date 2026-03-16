@@ -20,7 +20,13 @@ class TaskRuntimeState:
 
     agents: dict[str, AgentRuntimeState]  # Current symbolic state for each agent.
     objects: dict[str, dict[str, Any]]  # Mutable symbolic state for movable objects.
-    fixtures: dict[str, dict[str, Any]]  # Mutable symbolic state for fixtures and parts.
+    fixtures: dict[
+        str, dict[str, Any]
+    ]  # Mutable symbolic state for fixtures and parts.
     machine_state: dict[str, dict[str, Any]]  # Task-local machine or appliance flags.
-    communicated_agents: set[str] = field(default_factory=set)  # Agents that have coordinated so far.
-    public_state: dict[str, Any] = field(default_factory=dict)  # Extra task-specific summary fields for output.
+    communicated_agents: set[str] = field(
+        default_factory=set
+    )  # Agents that have coordinated so far.
+    public_state: dict[str, Any] = field(
+        default_factory=dict
+    )  # Extra task-specific summary fields for output.

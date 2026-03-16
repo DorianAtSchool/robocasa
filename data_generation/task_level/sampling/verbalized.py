@@ -31,7 +31,9 @@ class VerbalizedTrajectorySequenceValidator:
 
     expected_count: int
 
-    def validate(self, response_payload: dict[str, Any]) -> list[SampledTrajectoryCandidate]:
+    def validate(
+        self, response_payload: dict[str, Any]
+    ) -> list[SampledTrajectoryCandidate]:
         """Parses one verbalized response object into distinct candidate trajectories."""
 
         responses = response_payload.get("responses")
@@ -53,7 +55,9 @@ class VerbalizedTrajectorySequenceValidator:
                 )
 
             probability = response_entry.get("probability")
-            if not isinstance(probability, (int, float)) or isinstance(probability, bool):
+            if not isinstance(probability, (int, float)) or isinstance(
+                probability, bool
+            ):
                 raise VerbalizedSamplingValidationError(
                     f"responses[{index}].probability must be a number."
                 )

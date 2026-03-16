@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+
 class TrajectoryValidationError(ValueError):
     """Base class for task-level validation failures."""
 
@@ -41,55 +42,101 @@ class TrajectoryValidationError(ValueError):
         if self.step is not None or step is None:
             return self
         return type(self)(str(self), step=step, details=self.details)
+
+
 class ResponseFormatValidationError(TrajectoryValidationError):
     """Raised when the model output does not match the JSON contract."""
+
+
 class DuplicateTrajectoryValidationError(TrajectoryValidationError):
     """Raised when a candidate duplicates an existing saved trajectory."""
+
+
 class InsufficientValidUniqueTrajectoriesValidationError(TrajectoryValidationError):
     """Raised when a verbalized run yields too few distinct valid trajectories."""
+
+
 class InsufficientValidUniqueTrajectoriesInvalidError(
     InsufficientValidUniqueTrajectoriesValidationError
 ):
     """Raised when too many verbalized candidates fail validation checks."""
+
+
 class InsufficientValidUniqueTrajectoriesDuplicateError(
     InsufficientValidUniqueTrajectoriesValidationError
 ):
     """Raised when too many verbalized candidates duplicate existing trajectories."""
+
+
 class InsufficientValidUniqueTrajectoriesMixedError(
     InsufficientValidUniqueTrajectoriesValidationError
 ):
     """Raised when verbalized candidates fail from both invalid and duplicate causes."""
+
+
 class TrajectoryStructureValidationError(TrajectoryValidationError):
     """Raised when a candidate fails structural schema-like checks."""
+
+
 class TaskSemanticValidationError(TrajectoryValidationError):
     """Raised when a candidate violates task semantics or FSM transitions."""
+
+
 class UnexpectedStepIndexSemanticValidationError(TaskSemanticValidationError):
     """Raised when step numbering diverges from the replay order."""
+
+
 class PostGoalActionSemanticValidationError(TaskSemanticValidationError):
     """Raised when a non-observation action appears after the goal is reached."""
+
+
 class MissingInitialCommunicationSemanticValidationError(TaskSemanticValidationError):
     """Raised when agents skip required coordination before acting."""
+
+
 class UnsupportedToolSemanticValidationError(TaskSemanticValidationError):
     """Raised when a trajectory uses a tool outside the task tool registry."""
+
+
 class MissingTaskActionSemanticValidationError(TaskSemanticValidationError):
     """Raised when a trajectory never performs a real task action."""
+
+
 class UnsatisfiedGoalSemanticValidationError(TaskSemanticValidationError):
     """Raised when replay ends before the task goal is satisfied."""
+
+
 class CommunicationStepSemanticValidationError(TaskSemanticValidationError):
     """Raised when a communicate step uses invalid symbolic arguments."""
+
+
 class ObservationSequenceSemanticValidationError(TaskSemanticValidationError):
     """Raised when required observation bracketing is missing."""
+
+
 class ObjectStateSemanticValidationError(TaskSemanticValidationError):
     """Raised when an object's symbolic state conflicts with the action."""
+
+
 class HeldObjectSemanticValidationError(TaskSemanticValidationError):
     """Raised when held-object constraints are violated."""
+
+
 class NavigationSemanticValidationError(TaskSemanticValidationError):
     """Raised when an agent acts at the wrong symbolic location."""
+
+
 class ToolArgumentSemanticValidationError(TaskSemanticValidationError):
     """Raised when a tool argument is missing, malformed, or disallowed."""
+
+
 class WaitDurationSemanticValidationError(ToolArgumentSemanticValidationError):
     """Raised when wait.seconds is not a positive integer."""
+
+
 class PlacementDestinationSemanticValidationError(TaskSemanticValidationError):
     """Raised when a placement tool omits its symbolic destination."""
+
+
 class TaskPreconditionSemanticValidationError(TaskSemanticValidationError):
     """Raised when task-local symbolic preconditions are not met."""

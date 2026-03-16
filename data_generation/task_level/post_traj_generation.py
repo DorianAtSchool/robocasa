@@ -103,7 +103,9 @@ def rebuild_steps_with_get_image(
 
         agent_id = copied_step.get("agent")
         if not isinstance(agent_id, str) or not agent_id:
-            raise ValueError("Every non-communicate step must contain a non-empty agent.")
+            raise ValueError(
+                "Every non-communicate step must contain a non-empty agent."
+            )
 
         rebuilt_steps.append(
             _build_get_image_step(agent_id, camera_view=BASE_CAMERA_VIEW)
@@ -158,7 +160,11 @@ def _resolve_canonical_agents(trajectory: dict[str, Any]) -> list[dict[str, str]
         normalized_agent_ids: list[str] = []
         for agent in existing_agents:
             agent_id = agent.get("agent") if isinstance(agent, dict) else None
-            if isinstance(agent_id, str) and agent_id and agent_id not in normalized_agent_ids:
+            if (
+                isinstance(agent_id, str)
+                and agent_id
+                and agent_id not in normalized_agent_ids
+            ):
                 normalized_agent_ids.append(agent_id)
         if normalized_agent_ids:
             return build_canonical_agents(tuple(normalized_agent_ids))
@@ -227,7 +233,9 @@ def _load_json_file(path: Path) -> dict[str, Any]:
     return payload
 
 
-def _resolve_summary_trajectory_paths(dataset_path: Path, payload: dict[str, Any]) -> list[Path]:
+def _resolve_summary_trajectory_paths(
+    dataset_path: Path, payload: dict[str, Any]
+) -> list[Path]:
     """Resolves trajectory sidecar paths referenced by a summary dataset JSON."""
 
     trajectory_files = payload.get("trajectory_files")

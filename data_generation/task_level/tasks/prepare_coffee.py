@@ -171,7 +171,9 @@ class PrepareCoffeeValidator(FiniteStateTaskValidator):
             max_reasoning_chars=MAX_REASONING_CHARS,
             initial_public_state={
                 "mug_location": effective_initial_state["objects"]["mug_1"]["location"],
-                "coffee_machine_started": effective_initial_state["machine_state"]["coffee_machine_1"]["started"],
+                "coffee_machine_started": effective_initial_state["machine_state"][
+                    "coffee_machine_1"
+                ]["started"],
             },
         )
 
@@ -205,7 +207,9 @@ class PrepareCoffeeValidator(FiniteStateTaskValidator):
                     "fixture_id": "cabinet_1",
                     "part_id": "door",
                     "required_state": "open",
-                    "actual_state": runtime_state.fixtures["cabinet_1"]["parts"]["door"]["state"],
+                    "actual_state": runtime_state.fixtures["cabinet_1"]["parts"][
+                        "door"
+                    ]["state"],
                 },
             )
 
@@ -229,7 +233,9 @@ class PrepareCoffeeValidator(FiniteStateTaskValidator):
         mug_under_dispenser = (
             runtime_state.objects["mug_1"]["location"] == "coffee_machine_dispenser"
         )
-        coffee_machine_started = runtime_state.machine_state["coffee_machine_1"]["started"]
+        coffee_machine_started = runtime_state.machine_state["coffee_machine_1"][
+            "started"
+        ]
         return mug_under_dispenser and coffee_machine_started
 
     def apply_task_effects(
@@ -242,8 +248,12 @@ class PrepareCoffeeValidator(FiniteStateTaskValidator):
         if step["tool"] == "press_button":
             runtime_state.machine_state["coffee_machine_1"]["started"] = True
 
-        runtime_state.public_state["mug_location"] = runtime_state.objects["mug_1"]["location"]
-        runtime_state.public_state["coffee_machine_started"] = runtime_state.machine_state["coffee_machine_1"]["started"]
+        runtime_state.public_state["mug_location"] = runtime_state.objects["mug_1"][
+            "location"
+        ]
+        runtime_state.public_state[
+            "coffee_machine_started"
+        ] = runtime_state.machine_state["coffee_machine_1"]["started"]
 
 
 def build_prepare_coffee_trajectory_record(

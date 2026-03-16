@@ -11,6 +11,7 @@ from data_generation.task_level.generation.runtime_support import (
 )
 from data_generation.task_level.tasks import TrajectoryValidationError
 
+
 def _build_error_event(
     *,
     error_type: str,
@@ -48,6 +49,8 @@ def _build_error_event(
     if retryable is not None:
         event["retryable"] = retryable
     return event
+
+
 def _validation_error_event_from_payload(
     validation: dict[str, Any],
     *,
@@ -72,6 +75,8 @@ def _validation_error_event_from_payload(
         attempt_number=attempt_number,
         retryable=retryable,
     )
+
+
 def _exception_error_event(
     exc: Exception,
     *,
@@ -105,6 +110,8 @@ def _exception_error_event(
         attempt_number=attempt_number,
         retryable=retryable,
     )
+
+
 def _validation_error_event(
     validation: dict[str, Any],
     *,
@@ -131,6 +138,8 @@ def _validation_error_event(
         retryable=False,
         saved_in_output=True,
     )
+
+
 def _append_error_event(
     error_events: list[dict[str, Any]] | None,
     error_event: dict[str, Any] | None,
@@ -146,6 +155,8 @@ def _append_error_event(
         return
     with error_events_lock:
         error_events.append(error_event)
+
+
 def _error_event_key(error_event: dict[str, Any]) -> tuple[Any, ...]:
     """Normalizes one error event for stable deduplication and sorting."""
 
@@ -160,6 +171,8 @@ def _error_event_key(error_event: dict[str, Any]) -> tuple[Any, ...]:
         error_event.get("message", ""),
         error_event.get("saved_in_output", False),
     )
+
+
 def _collect_payload_error_events(payload: dict[str, Any]) -> list[dict[str, Any]]:
     """Collects and deduplicates all observed errors represented in one payload."""
 
@@ -187,7 +200,4 @@ def _collect_payload_error_events(payload: dict[str, Any]) -> list[dict[str, Any
             if error_event is not None:
                 deduped_events[_error_event_key(error_event)] = error_event
 
-    return [
-        deduped_events[key]
-        for key in sorted(deduped_events)
-    ]
+    return [deduped_events[key] for key in sorted(deduped_events)]

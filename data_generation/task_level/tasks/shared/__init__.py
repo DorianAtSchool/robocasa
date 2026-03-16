@@ -20,7 +20,10 @@ from data_generation.task_level.tasks.shared.instances import (
 )
 from data_generation.task_level.tasks.shared.prompting import make_task_prompt_builder
 from data_generation.task_level.tasks.shared.schema import build_task_response_schema
-from data_generation.task_level.tasks.shared.state import AgentRuntimeState, TaskRuntimeState
+from data_generation.task_level.tasks.shared.state import (
+    AgentRuntimeState,
+    TaskRuntimeState,
+)
 from data_generation.task_level.tasks.shared.types import (
     PreflightTokenEstimate,
     TaskDefinition,

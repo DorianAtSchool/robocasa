@@ -27,9 +27,9 @@ def _build_subatomic_allowed_tool_specs() -> dict[str, dict[str, Any]]:
             "tool_args": list(argument_names),
         }
         if tool_arg_types:
-            subatomic_allowed_tool_specs[tool_spec.name]["tool_arg_types"] = (
-                tool_arg_types
-            )
+            subatomic_allowed_tool_specs[tool_spec.name][
+                "tool_arg_types"
+            ] = tool_arg_types
     return subatomic_allowed_tool_specs
 
 

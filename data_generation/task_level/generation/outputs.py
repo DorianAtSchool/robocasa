@@ -22,12 +22,18 @@ from data_generation.task_level.generation.costs import (
     _append_sampling_cost_note,
     _build_cost_summary_from_generation_usages,
 )
-from data_generation.task_level.generation.errors import _collect_payload_error_events, _error_event_key
+from data_generation.task_level.generation.errors import (
+    _collect_payload_error_events,
+    _error_event_key,
+)
 from data_generation.task_level.generation.runtime_support import (
     _global_trajectory_index,
     format_trajectory_id,
 )
-from data_generation.task_level.runtime.client import COST_DECIMAL_PLACES, TrajectoryGenerationError
+from data_generation.task_level.runtime.client import (
+    COST_DECIMAL_PLACES,
+    TrajectoryGenerationError,
+)
 from data_generation.utils import camel_to_snake_case, round_cost, write_json_output
 
 
@@ -40,6 +46,7 @@ class OutputPaths:
     cost_path: Path
     error_summary_path: Path
 
+
 def resolve_cost_output_path(
     summary_path: Path,
     cost_output_path: Path | None = None,
@@ -47,10 +54,14 @@ def resolve_cost_output_path(
     if cost_output_path is not None:
         return cost_output_path
     return summary_path.with_name(COST_SUMMARY_OUTPUT_FILENAME)
+
+
 def resolve_error_output_path(summary_path: Path) -> Path:
     """Resolves the default error-summary sidecar path for one run."""
 
     return summary_path.with_name(ERROR_SUMMARY_OUTPUT_FILENAME)
+
+
 def resolve_dataset_output_path(
     composite_task: str,
     *,
@@ -66,6 +77,8 @@ def resolve_dataset_output_path(
         / timestamp.strftime(DATASET_RUN_TIMESTAMP_FORMAT)
         / SUMMARY_OUTPUT_FILENAME
     )
+
+
 def resolve_request_output_path(
     *,
     generated_at: datetime | None = None,
@@ -79,6 +92,8 @@ def resolve_request_output_path(
         / timestamp.strftime(DATASET_RUN_TIMESTAMP_FORMAT)
         / SUMMARY_OUTPUT_FILENAME
     )
+
+
 def resolve_request_task_output_path(
     request_summary_path: Path,
     composite_task: str,
@@ -90,28 +105,42 @@ def resolve_request_task_output_path(
         / camel_to_snake_case(composite_task)
         / SUMMARY_OUTPUT_FILENAME
     )
+
+
 def _resolve_summary_path(runtime_config: RuntimeConfig) -> Path:
     """Returns one stable summary path for the current generation run."""
 
     if runtime_config.summary_path is not None:
         return runtime_config.summary_path
     return resolve_dataset_output_path(runtime_config.composite_task)
+
+
 def resolve_trajectory_output_dir(output_path: Path) -> Path:
     return output_path.parent / TRAJECTORY_DIRECTORY_NAME
+
+
 def resolve_prompt_output_dir(output_path: Path) -> Path:
     """Resolves the sibling prompt output directory for one dataset summary."""
 
     return output_path.parent / "prompts"
+
+
 def resolve_raw_output_dir(output_path: Path) -> Path:
     """Resolves the sibling raw-output directory for one dataset summary."""
 
     return output_path.parent / "outputs"
+
+
 def _trajectory_output_filename(trajectory_id: str) -> str:
     return f"{trajectory_id}.json"
+
+
 def _prompt_output_filename(trajectory_id: str) -> str:
     """Formats one prompt sidecar filename to match its trajectory basename."""
 
     return f"{trajectory_id}.md"
+
+
 def _attempt_prompt_output_filename(
     run_id: str,
     attempt_number: int,
@@ -119,6 +148,8 @@ def _attempt_prompt_output_filename(
     """Formats one per-attempt prompt sidecar filename."""
 
     return f"{run_id}_{attempt_number}.md"
+
+
 def format_attempt_prompt_owner_id(
     runtime_config: RuntimeConfig,
     *,
@@ -133,10 +164,14 @@ def format_attempt_prompt_owner_id(
             candidate_index=0,
         )
     )
+
+
 def _raw_output_filename(trajectory_id: str) -> str:
     """Formats one raw-output sidecar filename using the trajectory basename."""
 
     return f"{trajectory_id}.txt"
+
+
 def _payload_run_metadata(payload: dict[str, Any]) -> dict[str, Any]:
     run_metadata = {
         "composite_task": payload["composite_task"],
@@ -149,6 +184,8 @@ def _payload_run_metadata(payload: dict[str, Any]) -> dict[str, Any]:
     if "model_config" in payload:
         run_metadata["model_config"] = payload["model_config"]
     return run_metadata
+
+
 def _build_model_config_payload(runtime_config: RuntimeConfig) -> dict[str, Any]:
     """Serializes request-time model settings for dataset metadata."""
 
@@ -165,6 +202,8 @@ def _build_model_config_payload(runtime_config: RuntimeConfig) -> dict[str, Any]
         },
         "sampling": sampling_payload,
     }
+
+
 def _summary_trajectory_entry(trajectory: dict[str, Any]) -> dict[str, str]:
     trajectory_id = trajectory["trajectory_id"]
     return {
@@ -173,6 +212,8 @@ def _summary_trajectory_entry(trajectory: dict[str, Any]) -> dict[str, str]:
             Path(TRAJECTORY_DIRECTORY_NAME) / _trajectory_output_filename(trajectory_id)
         ).as_posix(),
     }
+
+
 def _summary_trajectory_stats(
     trajectories: list[dict[str, Any]],
 ) -> dict[str, int | float]:
@@ -207,11 +248,15 @@ def _summary_trajectory_stats(
         "invalid_trajectories": invalid_trajectories,
         "successful_trajectory_fraction": successful_trajectory_fraction,
     }
+
+
 def _trajectory_cost_entry(trajectory: dict[str, Any]) -> dict[str, Any]:
     return {
         "trajectory_id": trajectory["trajectory_id"],
         "generation_usage": trajectory["generation_usage"],
     }
+
+
 def build_summary_output_payload(payload: dict[str, Any]) -> dict[str, Any]:
     summary_payload = _payload_run_metadata(payload)
     if "cost_summary" in payload:
@@ -219,10 +264,11 @@ def build_summary_output_payload(payload: dict[str, Any]) -> dict[str, Any]:
     summary_payload.update(_summary_trajectory_stats(payload["trajectories"]))
     summary_payload["trajectory_directory"] = TRAJECTORY_DIRECTORY_NAME
     summary_payload["trajectory_files"] = [
-        _summary_trajectory_entry(trajectory)
-        for trajectory in payload["trajectories"]
+        _summary_trajectory_entry(trajectory) for trajectory in payload["trajectories"]
     ]
     return summary_payload
+
+
 def write_trajectory_output_payloads(
     trajectories: list[dict[str, Any]],
     output_dir: Path,
@@ -242,6 +288,8 @@ def write_trajectory_output_payloads(
         )
         written_paths.append(output_path)
     return written_paths
+
+
 def write_prompt_output_payloads(
     trajectory_prompts: list[dict[str, str]],
     output_dir: Path,
@@ -257,6 +305,8 @@ def write_prompt_output_payloads(
         output_path.write_text(prompt_entry["prompt"], encoding="utf-8")
         written_paths.append(output_path)
     return written_paths
+
+
 def write_attempt_prompt_output_payloads(
     attempt_prompts: list[dict[str, Any]],
     output_dir: Path,
@@ -275,12 +325,16 @@ def write_attempt_prompt_output_payloads(
         output_path.write_text(prompt_entry["prompt"], encoding="utf-8")
         written_paths.append(output_path)
     return written_paths
+
+
 def _raw_output_text(raw_output: Any) -> str:
     """Serializes the stored raw model output into a text sidecar."""
 
     if isinstance(raw_output, str):
         return raw_output
     return json.dumps(raw_output, indent=2, sort_keys=True)
+
+
 def write_raw_output_payloads(
     trajectory_outputs: list[dict[str, Any]],
     output_dir: Path,
@@ -297,6 +351,8 @@ def write_raw_output_payloads(
         )
         written_paths.append(output_path)
     return written_paths
+
+
 def build_cost_output_payload(
     payload: dict[str, Any],
     *,
@@ -314,13 +370,14 @@ def build_cost_output_payload(
             else None
         ),
         "trajectory_costs": [
-            _trajectory_cost_entry(trajectory)
-            for trajectory in payload["trajectories"]
+            _trajectory_cost_entry(trajectory) for trajectory in payload["trajectories"]
         ],
     }
     if "cost_summary" in payload:
         cost_payload["cost_summary"] = payload["cost_summary"]
     return cost_payload
+
+
 def build_error_summary_output_payload(
     payload: dict[str, Any],
     *,
@@ -365,9 +422,7 @@ def build_error_summary_output_payload(
                 "error_type": error_type,
                 "message": error_message,
                 "summary": (
-                    f"{error_type}: {error_message}"
-                    if error_message
-                    else error_type
+                    f"{error_type}: {error_message}" if error_message else error_type
                 ),
                 "count": distinct_error_counts[(error_type, error_message)],
             }
@@ -376,10 +431,14 @@ def build_error_summary_output_payload(
         "error_events": error_events,
     }
     return error_payload
+
+
 def _relative_output_path(path: Path, *, root: Path) -> str:
     """Formats one output path relative to the shared request root."""
 
     return path.relative_to(root).as_posix()
+
+
 def _aggregate_task_cost_summaries(
     task_payloads: list[dict[str, Any]],
 ) -> dict[str, Any]:
@@ -388,8 +447,7 @@ def _aggregate_task_cost_summaries(
     combined_notes: list[str] = []
     pricing_payloads: list[dict[str, Any]] = []
     total_trajectories = sum(
-        int(task_payload.get("num_trajectories", 0))
-        for task_payload in task_payloads
+        int(task_payload.get("num_trajectories", 0)) for task_payload in task_payloads
     )
     aggregated_cost_summary = {
         "prompt_tokens": 0,
@@ -409,10 +467,18 @@ def _aggregate_task_cost_summaries(
         if not isinstance(task_cost_summary, dict):
             missing_cost_data = True
             continue
-        aggregated_cost_summary["prompt_tokens"] += int(task_cost_summary.get("prompt_tokens", 0))
-        aggregated_cost_summary["output_tokens"] += int(task_cost_summary.get("output_tokens", 0))
-        aggregated_cost_summary["reasoning_tokens"] += int(task_cost_summary.get("reasoning_tokens", 0))
-        aggregated_cost_summary["total_tokens"] += int(task_cost_summary.get("total_tokens", 0))
+        aggregated_cost_summary["prompt_tokens"] += int(
+            task_cost_summary.get("prompt_tokens", 0)
+        )
+        aggregated_cost_summary["output_tokens"] += int(
+            task_cost_summary.get("output_tokens", 0)
+        )
+        aggregated_cost_summary["reasoning_tokens"] += int(
+            task_cost_summary.get("reasoning_tokens", 0)
+        )
+        aggregated_cost_summary["total_tokens"] += int(
+            task_cost_summary.get("total_tokens", 0)
+        )
 
         for cost_key in ("input_cost_usd", "output_cost_usd", "total_cost_usd"):
             task_cost_value = task_cost_summary.get(cost_key)
@@ -449,7 +515,8 @@ def _aggregate_task_cost_summaries(
         )
         aggregated_cost_summary["average_trajectory_cost_usd"] = round_cost(
             aggregated_cost_summary["total_cost_usd"] / total_trajectories
-            if total_trajectories > 0 and aggregated_cost_summary["total_cost_usd"] is not None
+            if total_trajectories > 0
+            and aggregated_cost_summary["total_cost_usd"] is not None
             else None,
             decimal_places=COST_DECIMAL_PLACES,
         )
@@ -462,6 +529,8 @@ def _aggregate_task_cost_summaries(
         aggregated_cost_summary["pricing"] = pricing_payloads[0]
 
     return aggregated_cost_summary
+
+
 def build_request_summary_output_payload(
     runtime_config: RuntimeConfig,
     task_run_entries: list[dict[str, Any]],
@@ -472,7 +541,9 @@ def build_request_summary_output_payload(
 
     task_payloads = [task_run_entry["payload"] for task_run_entry in task_run_entries]
     summary_payload = {
-        "composite_tasks": [task_run_entry["composite_task"] for task_run_entry in task_run_entries],
+        "composite_tasks": [
+            task_run_entry["composite_task"] for task_run_entry in task_run_entries
+        ],
         "sdk": runtime_config.sdk,
         "model": runtime_config.model,
         "model_config": _build_model_config_payload(runtime_config),
@@ -494,12 +565,24 @@ def build_request_summary_output_payload(
         output_paths = task_run_entry["output_paths"]
         task_summary_entry = {
             "composite_task": task_run_entry["composite_task"],
-            "summary_path": _relative_output_path(output_paths.summary_path, root=request_root),
-            "cost_summary_path": _relative_output_path(output_paths.cost_path, root=request_root),
-            "error_summary_path": _relative_output_path(output_paths.error_summary_path, root=request_root),
-            "trajectory_directory": _relative_output_path(output_paths.trajectory_dir, root=request_root),
-            "prompt_directory": _relative_output_path(output_paths.prompt_dir, root=request_root),
-            "raw_output_directory": _relative_output_path(output_paths.output_dir, root=request_root),
+            "summary_path": _relative_output_path(
+                output_paths.summary_path, root=request_root
+            ),
+            "cost_summary_path": _relative_output_path(
+                output_paths.cost_path, root=request_root
+            ),
+            "error_summary_path": _relative_output_path(
+                output_paths.error_summary_path, root=request_root
+            ),
+            "trajectory_directory": _relative_output_path(
+                output_paths.trajectory_dir, root=request_root
+            ),
+            "prompt_directory": _relative_output_path(
+                output_paths.prompt_dir, root=request_root
+            ),
+            "raw_output_directory": _relative_output_path(
+                output_paths.output_dir, root=request_root
+            ),
             "num_runs": task_payload.get("num_runs"),
             "num_trajectories": task_payload.get("num_trajectories"),
             "generated_at": task_payload.get("generated_at"),
@@ -509,6 +592,8 @@ def build_request_summary_output_payload(
         summary_payload["task_summaries"].append(task_summary_entry)
 
     return summary_payload
+
+
 def build_request_cost_output_payload(
     request_summary_payload: dict[str, Any],
     *,
@@ -538,6 +623,8 @@ def build_request_cost_output_payload(
             for task_summary in request_summary_payload["task_summaries"]
         ],
     }
+
+
 def build_request_error_output_payload(
     request_summary_payload: dict[str, Any],
     task_run_entries: list[dict[str, Any]],
@@ -557,7 +644,9 @@ def build_request_error_output_payload(
             }
             error_events.append(error_event_with_task)
             error_type = error_event_with_task["error_type"]
-            error_counts_by_type[error_type] = error_counts_by_type.get(error_type, 0) + 1
+            error_counts_by_type[error_type] = (
+                error_counts_by_type.get(error_type, 0) + 1
+            )
 
     return {
         "composite_tasks": list(request_summary_payload["composite_tasks"]),
@@ -587,6 +676,8 @@ def build_request_error_output_payload(
         ],
         "error_events": error_events,
     }
+
+
 def _sanitize_generation_usage_for_output(
     generation_usage: dict[str, Any],
     *,
@@ -599,6 +690,8 @@ def _sanitize_generation_usage_for_output(
         for key, value in generation_usage.items()
         if key != "successful_attempt_number"
     }
+
+
 def _sanitize_trajectory_for_output(
     trajectory: dict[str, Any],
     *,
@@ -618,6 +711,8 @@ def _sanitize_trajectory_for_output(
             disable_validation=disable_validation,
         ),
     }
+
+
 def _build_generation_payload(
     runtime_config: RuntimeConfig,
     ordered_trajectories: list[dict[str, Any]],
@@ -651,9 +746,7 @@ def _build_generation_payload(
         for trajectory in ordered_trajectories
         if "raw_output" in trajectory
     ]
-    cost_summary = _build_cost_summary_from_generation_usages(
-        generation_usages
-    )
+    cost_summary = _build_cost_summary_from_generation_usages(generation_usages)
     cost_summary = _append_sampling_cost_note(cost_summary, runtime_config)
     return {
         "composite_task": runtime_config.composite_task,
@@ -665,18 +758,22 @@ def _build_generation_payload(
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "cost_summary": cost_summary,
         "error_events": (
-            [dict(error_event) for error_event in sorted(error_events, key=_error_event_key)]
+            [
+                dict(error_event)
+                for error_event in sorted(error_events, key=_error_event_key)
+            ]
             if error_events is not None
             else []
         ),
         "attempt_prompts": [
-            dict(prompt_entry)
-            for prompt_entry in (attempt_prompts or [])
+            dict(prompt_entry) for prompt_entry in (attempt_prompts or [])
         ],
         "trajectory_prompts": trajectory_prompts,
         "trajectory_outputs": trajectory_outputs,
         "trajectories": output_trajectories,
     }
+
+
 def _resolve_output_paths(runtime_config: RuntimeConfig) -> OutputPaths:
     summary_path = _resolve_summary_path(runtime_config)
     cost_path = resolve_cost_output_path(
@@ -696,6 +793,8 @@ def _resolve_output_paths(runtime_config: RuntimeConfig) -> OutputPaths:
         cost_path=cost_path,
         error_summary_path=resolve_error_output_path(summary_path),
     )
+
+
 def _write_generation_outputs(
     payload: dict[str, Any],
     *,
@@ -732,6 +831,8 @@ def _write_generation_outputs(
     write_json_output(cost_payload, output_paths.cost_path)
     write_json_output(error_summary_payload, output_paths.error_summary_path)
     return written_trajectory_paths, written_prompt_paths, written_output_paths
+
+
 def _write_request_outputs(
     runtime_config: RuntimeConfig,
     task_run_entries: list[dict[str, Any]],
@@ -769,6 +870,8 @@ def _write_request_outputs(
         request_error_payload,
         resolve_error_output_path(request_summary_path),
     )
+
+
 def _print_written_output_summary(
     output_paths: OutputPaths,
     *,

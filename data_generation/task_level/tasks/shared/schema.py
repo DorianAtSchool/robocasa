@@ -6,6 +6,7 @@ from typing import Any, Sequence
 
 from .errors import TrajectoryStructureValidationError
 
+
 def _normalize_text(value: Any, field_name: str) -> str:
     """Normalizes and validates a required string field."""
 
@@ -15,12 +16,16 @@ def _normalize_text(value: Any, field_name: str) -> str:
     if not normalized:
         raise TrajectoryStructureValidationError(f"{field_name} must be non-empty.")
     return normalized
+
+
 def _normalize_mapping(value: Any, field_name: str) -> dict[str, Any]:
     """Normalizes and validates a required object field."""
 
     if not isinstance(value, dict):
         raise TrajectoryStructureValidationError(f"{field_name} must be an object.")
     return dict(value)
+
+
 def _append_unique_field_names(
     destination: list[str],
     field_names: Sequence[str],
@@ -30,6 +35,8 @@ def _append_unique_field_names(
     for field_name in field_names:
         if field_name not in destination:
             destination.append(field_name)
+
+
 def _build_symbolic_field_schema(
     field_name: str,
     agent_ids: Sequence[str],
@@ -43,12 +50,16 @@ def _build_symbolic_field_schema(
             "enum": list(agent_ids),
         }
     return {"type": schema_type}
+
+
 def _allowed_ids_key_for_arg_name(arg_name: str) -> str | None:
     """Maps a symbolic tool argument like fixture_id to its allowed_* override key."""
 
     if not arg_name.endswith("_id"):
         return None
     return f"allowed_{arg_name[:-3]}_ids"
+
+
 def _resolve_tool_arg_schema_type(
     field_name: str,
     tool_spec: dict[str, Any],
@@ -62,6 +73,8 @@ def _resolve_tool_arg_schema_type(
     if schema_type not in {"STRING", "INTEGER"}:
         raise ValueError(f"Unsupported schema type {schema_type!r} for {field_name}.")
     return schema_type
+
+
 def build_task_response_schema(
     *,
     agent_ids: Sequence[str],

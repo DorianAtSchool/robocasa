@@ -133,4 +133,6 @@ class BaseSamplingStrategy:
         )
 
         candidate = extract_json_candidate(raw_response)
-        return [SampledTrajectoryCandidate(candidate=candidate, raw_output=raw_response)]
+        return [
+            SampledTrajectoryCandidate(candidate=candidate, raw_output=raw_response)
+        ]

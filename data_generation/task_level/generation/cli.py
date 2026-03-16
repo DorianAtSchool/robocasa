@@ -29,7 +29,10 @@ from data_generation.task_level.generation.outputs import (
     resolve_request_output_path,
     resolve_request_task_output_path,
 )
-from data_generation.task_level.generation.runtime_support import _exception_summary, _resolve_task_definitions_or_raise
+from data_generation.task_level.generation.runtime_support import (
+    _exception_summary,
+    _resolve_task_definitions_or_raise,
+)
 from data_generation.task_level.runtime.client import (
     DEFAULT_LOCATION,
     DEFAULT_MODEL,
@@ -38,6 +41,7 @@ from data_generation.task_level.runtime.client import (
     load_dotenv_file,
 )
 from data_generation.task_level.tasks import supported_task_names
+
 
 def run_cli(argv: list[str] | None = None) -> int:
     """Runs the CLI and converts expected runtime failures into exit codes."""
@@ -50,6 +54,7 @@ def run_cli(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt as exc:
         print(str(exc) or INTERRUPTED_MESSAGE, file=sys.stderr, flush=True)
         os._exit(INTERRUPTED_EXIT_CODE)
+
 
 def parse_args(argv: list[str] | None = None) -> RuntimeConfig:
     """Parses CLI arguments into one normalized runtime configuration."""
@@ -216,9 +221,7 @@ def parse_args(argv: list[str] | None = None) -> RuntimeConfig:
     args = parser.parse_args(argv)
     parsed_tasks = tuple(args.composite_tasks)
     default_summary_path = (
-        resolve_dataset_output_path(parsed_tasks[0])
-        if len(parsed_tasks) == 1
-        else None
+        resolve_dataset_output_path(parsed_tasks[0]) if len(parsed_tasks) == 1 else None
     )
 
     return RuntimeConfig(
@@ -242,6 +245,7 @@ def parse_args(argv: list[str] | None = None) -> RuntimeConfig:
         composite_tasks=parsed_tasks,
     )
 
+
 def main(argv: list[str] | None = None) -> int:
     """Executes task-level generation for one or many requested tasks."""
 
@@ -252,7 +256,11 @@ def main(argv: list[str] | None = None) -> int:
     if len(runtime_config.composite_tasks) == 1:
         output_paths = _resolve_output_paths(runtime_config)
         payload = generate_trajectories(runtime_config)
-        written_trajectory_paths, written_prompt_paths, written_output_paths = _write_generation_outputs(
+        (
+            written_trajectory_paths,
+            written_prompt_paths,
+            written_output_paths,
+        ) = _write_generation_outputs(
             payload,
             output_paths=output_paths,
         )
@@ -278,7 +286,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         output_paths = _resolve_output_paths(task_runtime_config)
         payload = generate_trajectories(task_runtime_config)
-        written_trajectory_paths, written_prompt_paths, written_output_paths = _write_generation_outputs(
+        (
+            written_trajectory_paths,
+            written_prompt_paths,
+            written_output_paths,
+        ) = _write_generation_outputs(
             payload,
             output_paths=output_paths,
         )

@@ -106,6 +106,7 @@ class RuntimeConfig:
             cost_output_path=cost_output_path,
         )
 
+
 def _validate_runtime_config(runtime_config: RuntimeConfig) -> None:
     if not runtime_config.composite_tasks:
         raise TrajectoryGenerationError("At least one task must be selected.")

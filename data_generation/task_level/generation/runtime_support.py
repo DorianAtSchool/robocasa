@@ -21,7 +21,10 @@ from data_generation.task_level.runtime.client import (
     _generation_error_status_code,
     build_generation_usage,
 )
-from data_generation.task_level.sampling import SampledTrajectoryCandidate, get_sampling_strategy
+from data_generation.task_level.sampling import (
+    SampledTrajectoryCandidate,
+    get_sampling_strategy,
+)
 from data_generation.task_level.tasks import (
     DuplicateTrajectoryValidationError,
     InsufficientValidUniqueTrajectoriesDuplicateError,
@@ -37,10 +40,13 @@ from data_generation.task_level.tasks import (
 )
 from data_generation.utils import round_cost, stable_json_sha256
 
+
 def format_trajectory_id(trajectory_index: int) -> str:
     """Formats one persisted trajectory ID with enough padding for large runs."""
 
     return f"traj_{trajectory_index:0{TRAJECTORY_ID_DIGITS}d}"
+
+
 def format_trajectory_variation_key(
     trajectory_index: int,
     attempt_index: int,
@@ -50,10 +56,16 @@ def format_trajectory_variation_key(
     return (
         f"traj-{trajectory_index:0{TRAJECTORY_ID_DIGITS}d}-attempt-{attempt_index:02d}"
     )
+
+
 def format_trajectory_progress_label(trajectory_index: int) -> str:
     """Formats the short progress-bar label for one generation run."""
 
-    return format_trajectory_id(trajectory_index).replace("traj", "run").replace("_", " ")
+    return (
+        format_trajectory_id(trajectory_index).replace("traj", "run").replace("_", " ")
+    )
+
+
 def _retry_feedback_step_lines(
     candidate: dict[str, Any] | None,
     *,
@@ -84,6 +96,8 @@ def _retry_feedback_step_lines(
             f"- step {failing_step_payload['step']}: {json.dumps(failing_step_payload, sort_keys=True)}"
         )
     return lines
+
+
 def _build_retry_feedback_text(
     exc: TrajectoryValidationError,
     *,
@@ -118,6 +132,8 @@ def _build_retry_feedback_text(
         ]
     )
     return "\n".join(lines)
+
+
 def _build_retry_feedback_text_from_validation(
     validation: dict[str, Any],
     *,
@@ -143,7 +159,9 @@ def _build_retry_feedback_text_from_validation(
     if isinstance(error_details, dict) and error_details:
         lines.append(f"- details: {json.dumps(error_details, sort_keys=True)}")
 
-    step_lines = _retry_feedback_step_lines(candidate, failing_step=step if isinstance(step, int) else None)
+    step_lines = _retry_feedback_step_lines(
+        candidate, failing_step=step if isinstance(step, int) else None
+    )
     if step_lines:
         lines.extend(["", "Local bad example:", *step_lines])
 
@@ -157,6 +175,8 @@ def _build_retry_feedback_text_from_validation(
         ]
     )
     return "\n".join(lines)
+
+
 def _is_non_retryable_generation_error(exc: Exception) -> bool:
     if isinstance(exc, TrajectoryGenerationError):
         return True
@@ -178,6 +198,8 @@ def _is_non_retryable_generation_error(exc: Exception) -> bool:
         "SERVICE_DISABLED",
     )
     return any(marker in text for marker in non_retryable_markers)
+
+
 def _resolve_task_definition_or_raise(composite_task: str) -> TaskDefinition:
     # Keep CLI parsing and generation on the same task registry lookup path.
     task_definition = get_task_definition(composite_task)
@@ -188,6 +210,8 @@ def _resolve_task_definition_or_raise(composite_task: str) -> TaskDefinition:
             f"Available tasks: {supported_tasks}."
         )
     return task_definition
+
+
 def _resolve_task_definitions_or_raise(
     composite_tasks: tuple[str, ...],
 ) -> tuple[TaskDefinition, ...]:
@@ -197,26 +221,38 @@ def _resolve_task_definitions_or_raise(
         _resolve_task_definition_or_raise(composite_task)
         for composite_task in composite_tasks
     )
+
+
 def _candidate_signature(candidate: dict[str, Any]) -> str:
     return stable_json_sha256(candidate, default=str)
+
+
 def _default_traffic_type_for_runtime(runtime_config: RuntimeConfig) -> str:
     if runtime_config.batch_processing:
         return BATCH_TRAFFIC_TYPE
     return "ON_DEMAND"
+
+
 def _sampling_strategy_for_runtime(runtime_config: RuntimeConfig):
     """Returns the configured sampling strategy for the current runtime."""
 
     return get_sampling_strategy(getattr(runtime_config, "sampling", "base"))
+
+
 def _trajectories_per_run(runtime_config: RuntimeConfig) -> int:
     """Returns how many saved trajectories one successful run should emit."""
 
     return _sampling_strategy_for_runtime(runtime_config).trajectories_per_run(
         runtime_config
     )
+
+
 def _expected_saved_trajectory_count(runtime_config: RuntimeConfig) -> int:
     """Returns the expected saved trajectory count for one successful job."""
 
     return runtime_config.num_runs * _trajectories_per_run(runtime_config)
+
+
 def _global_trajectory_index(
     runtime_config: RuntimeConfig,
     *,
@@ -226,6 +262,8 @@ def _global_trajectory_index(
     """Builds the flattened saved-trajectory index for one run candidate."""
 
     return (run_index * _trajectories_per_run(runtime_config)) + candidate_index
+
+
 def _build_trajectory_record_from_candidate(
     *,
     trajectory_index: int,
@@ -259,16 +297,22 @@ def _build_trajectory_record_from_candidate(
         attempt_number=attempt_number,
     )
     return trajectory_records[0]
+
+
 def _exception_summary(exc: Exception) -> str:
     message = str(exc).strip()
     if message:
         return f"{type(exc).__name__}: {message}"
     return type(exc).__name__
+
+
 def _validation_error_type(validation: dict[str, Any]) -> str | None:
     error_type = validation.get("error_type")
     if isinstance(error_type, str) and error_type:
         return error_type
     return None
+
+
 def _validation_error_base_type(validation: dict[str, Any]) -> str | None:
     """Returns the top-level validation family when one is available."""
 
@@ -276,6 +320,8 @@ def _validation_error_base_type(validation: dict[str, Any]) -> str | None:
     if isinstance(error_base_type, str) and error_base_type:
         return error_base_type
     return None
+
+
 def _validation_error_summary(validation: dict[str, Any]) -> str | None:
     error_type = _validation_error_type(validation)
     error_message = validation.get("error")
@@ -284,6 +330,8 @@ def _validation_error_summary(validation: dict[str, Any]) -> str | None:
             return f"{error_type}: {error_message}"
         return error_message
     return error_type
+
+
 def _validation_error_progress_summary(validation: dict[str, Any]) -> str | None:
     """Builds a compact validation summary for progress bars."""
 
@@ -298,6 +346,8 @@ def _validation_error_progress_summary(validation: dict[str, Any]) -> str | None
     if isinstance(error_message, str) and error_message:
         return error_message.split(":", 1)[0]
     return None
+
+
 def _truncate_progress_text(text: str, *, max_length: int) -> str:
     """Collapses whitespace and truncates long progress-bar text with an ellipsis."""
 
@@ -305,6 +355,8 @@ def _truncate_progress_text(text: str, *, max_length: int) -> str:
     if len(normalized_text) <= max_length:
         return normalized_text
     return f"{normalized_text[: max_length - 3].rstrip()}..."
+
+
 def _validation_error_retry_summary(validation: dict[str, Any]) -> str | None:
     """Builds a retry status summary that includes the failing validation message."""
 
@@ -319,6 +371,8 @@ def _validation_error_retry_summary(validation: dict[str, Any]) -> str | None:
             return f"{progress_summary}: {truncated_message}"
         return truncated_message
     return progress_summary
+
+
 def _validation_errors_retry_summary(validations: list[dict[str, Any]]) -> str | None:
     """Aggregates one attempt's invalid validations into a compact retry suffix."""
 
@@ -338,12 +392,16 @@ def _validation_errors_retry_summary(validations: list[dict[str, Any]]) -> str |
     if len(distinct_summaries) > 2:
         return f"{displayed_summaries}; +{len(distinct_summaries) - 2} more"
     return displayed_summaries
+
+
 def _unwrap_generation_response(
     raw_response: Any,
 ) -> tuple[Any, GenerationUsage | None]:
     if isinstance(raw_response, GenerationResult):
         return raw_response.payload, raw_response.usage
     return raw_response, None
+
+
 def _validate_candidate(
     candidate: dict[str, Any],
     validator: TaskValidator,
@@ -373,6 +431,8 @@ def _validate_candidate(
             },
             candidate,
         )
+
+
 def _validation_error_payload(
     exc: TrajectoryValidationError,
     *,
@@ -393,6 +453,8 @@ def _validation_error_payload(
     if candidate is not None:
         payload["signature"] = _candidate_signature(candidate)
     return payload
+
+
 def _build_verbalized_insufficient_results_error(
     *,
     required_count: int,
@@ -441,14 +503,15 @@ def _build_verbalized_insufficient_results_error(
         "Verbalized run did not produce enough valid unique trajectories.",
         details=details,
     )
+
+
 def _split_integer_total(total: int, parts: int) -> list[int]:
     """Splits one integer total across parts while preserving the sum."""
 
     base_value, remainder = divmod(total, parts)
-    return [
-        base_value + (1 if index < remainder else 0)
-        for index in range(parts)
-    ]
+    return [base_value + (1 if index < remainder else 0) for index in range(parts)]
+
+
 def _split_float_total(total: float | None, parts: int) -> list[float | None]:
     """Splits one rounded float total across parts while preserving the sum."""
 
@@ -466,10 +529,13 @@ def _split_float_total(total: float | None, parts: int) -> list[float | None]:
                 round_cost(remaining, decimal_places=COST_DECIMAL_PLACES) or 0.0
             )
             continue
-        split_value = round_cost(
-            total / parts,
-            decimal_places=COST_DECIMAL_PLACES,
-        ) or 0.0
+        split_value = (
+            round_cost(
+                total / parts,
+                decimal_places=COST_DECIMAL_PLACES,
+            )
+            or 0.0
+        )
         split_values.append(split_value)
         remaining -= split_value
     return split_values
@@ -494,8 +560,12 @@ def _split_generation_usage_across_candidates(
     if candidate_count == 1:
         return [dict(generation_usage)]
 
-    prompt_splits = _split_integer_total(generation_usage["prompt_tokens"], candidate_count)
-    output_splits = _split_integer_total(generation_usage["output_tokens"], candidate_count)
+    prompt_splits = _split_integer_total(
+        generation_usage["prompt_tokens"], candidate_count
+    )
+    output_splits = _split_integer_total(
+        generation_usage["output_tokens"], candidate_count
+    )
     reasoning_splits = _split_integer_total(
         _reasoning_token_count(generation_usage),
         candidate_count,
@@ -519,6 +589,8 @@ def _split_generation_usage_across_candidates(
         split_usage["observed_cost_usd"] = cost_splits[index]
         split_usages.append(split_usage)
     return split_usages
+
+
 def _reserve_signature_batch(
     validations: list[dict[str, Any]],
     *,
@@ -539,6 +611,8 @@ def _reserve_signature_batch(
         if any(signature in seen_signatures for signature in signatures):
             raise DuplicateTrajectoryValidationError("Duplicate trajectory signature.")
         seen_signatures.update(signatures)
+
+
 def _build_trajectory_records_from_sampled_candidates(
     *,
     run_index: int,
@@ -626,6 +700,8 @@ def _build_trajectory_records_from_sampled_candidates(
         trajectory_record["raw_output"] = sampled_candidate.raw_output
         trajectory_records.append(trajectory_record)
     return trajectory_records
+
+
 def _build_shared_generation_usage(
     *,
     runtime_config: RuntimeConfig,
@@ -644,7 +720,9 @@ def _build_shared_generation_usage(
         usage_candidate = raw_response
     else:
         usage_candidate = {
-            "responses": [sampled_candidate.raw_output for sampled_candidate in sampled_candidates]
+            "responses": [
+                sampled_candidate.raw_output for sampled_candidate in sampled_candidates
+            ]
         }
     return build_generation_usage(
         model=runtime_config.model,
@@ -654,6 +732,8 @@ def _build_shared_generation_usage(
         attempt_number=attempt_number,
         default_traffic_type=_default_traffic_type_for_runtime(runtime_config),
     )
+
+
 def _tool_call_count(payload: Any) -> int | None:
     if not isinstance(payload, dict):
         return None
@@ -661,6 +741,8 @@ def _tool_call_count(payload: Any) -> int | None:
     if not isinstance(steps, list):
         return None
     return len(steps)
+
+
 def _maybe_reserve_signature(
     validation: dict[str, Any],
     *,
@@ -675,10 +757,10 @@ def _maybe_reserve_signature(
     # Enforce uniqueness only for validated trajectories we intend to keep.
     with seen_signatures_lock:
         if signature in seen_signatures:
-            raise DuplicateTrajectoryValidationError(
-                "Duplicate trajectory signature."
-            )
+            raise DuplicateTrajectoryValidationError("Duplicate trajectory signature.")
         seen_signatures.add(signature)
+
+
 def extract_json_candidate(raw_response: Any) -> dict[str, Any]:
     if isinstance(raw_response, dict):
         return raw_response

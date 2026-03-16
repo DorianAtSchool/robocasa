@@ -47,6 +47,7 @@ from .schema import (
 )
 from .state import AgentRuntimeState, TaskRuntimeState
 
+
 class FiniteStateTaskValidator:
     """Applies a legality-and-goal FSM over task-level tool calls."""
 
@@ -81,8 +82,7 @@ class FiniteStateTaskValidator:
         # Some tasks ask the model to emit observation steps directly, while
         # others synthesize them later during post-processing.
         self._requires_observation_steps = any(
-            tool_name in OBSERVATION_TOOL_NAMES
-            for tool_name in self.allowed_tool_specs
+            tool_name in OBSERVATION_TOOL_NAMES for tool_name in self.allowed_tool_specs
         )
         self.max_reasoning_chars = max_reasoning_chars
         self._all_checks = list(
@@ -140,7 +140,9 @@ class FiniteStateTaskValidator:
                         details={
                             "agent": step["agent"],
                             "tool": step["tool"],
-                            "communicated_agents": sorted(runtime_state.communicated_agents),
+                            "communicated_agents": sorted(
+                                runtime_state.communicated_agents
+                            ),
                             "required_agents": sorted(self._agent_id_set),
                         },
                     )
@@ -241,7 +243,9 @@ class FiniteStateTaskValidator:
 
         if agents_value is None:
             return build_canonical_agents(self.agent_ids)
-        if not isinstance(agents_value, list) or len(agents_value) != len(self.agent_ids):
+        if not isinstance(agents_value, list) or len(agents_value) != len(
+            self.agent_ids
+        ):
             raise TrajectoryStructureValidationError(
                 f"agents must be a list containing exactly {len(self.agent_ids)} agents."
             )
@@ -259,9 +263,7 @@ class FiniteStateTaskValidator:
                     f"Unsupported agent {agent_id}."
                 )
             if agent_id in seen_agent_ids:
-                raise TrajectoryStructureValidationError(
-                    f"Duplicate agent {agent_id}."
-                )
+                raise TrajectoryStructureValidationError(f"Duplicate agent {agent_id}.")
             seen_agent_ids.add(agent_id)
             normalized_agents.append({"agent": agent_id})
 
@@ -283,9 +285,7 @@ class FiniteStateTaskValidator:
             if not isinstance(raw_step, dict):
                 raise TrajectoryStructureValidationError("Each step must be an object.")
             if not isinstance(raw_step.get("step"), int):
-                raise TrajectoryStructureValidationError(
-                    "step must be an integer."
-                )
+                raise TrajectoryStructureValidationError("step must be an integer.")
 
             step_index = raw_step["step"]
             try:
@@ -376,15 +376,29 @@ class FiniteStateTaskValidator:
         if step["tool"] == "communicate" or step["tool"] in OBSERVATION_TOOL_NAMES:
             return
 
-        if step_index == 0 or steps[step_index - 1]["tool"] not in OBSERVATION_TOOL_NAMES:
+        if (
+            step_index == 0
+            or steps[step_index - 1]["tool"] not in OBSERVATION_TOOL_NAMES
+        ):
             raise ObservationSequenceSemanticValidationError(
                 f"{step['tool']} at step {step['step']} must be immediately preceded by get_image.",
-                details={"tool": step["tool"], "step": step["step"], "position": "before"},
+                details={
+                    "tool": step["tool"],
+                    "step": step["step"],
+                    "position": "before",
+                },
             )
-        if step_index + 1 >= len(steps) or steps[step_index + 1]["tool"] not in OBSERVATION_TOOL_NAMES:
+        if (
+            step_index + 1 >= len(steps)
+            or steps[step_index + 1]["tool"] not in OBSERVATION_TOOL_NAMES
+        ):
             raise ObservationSequenceSemanticValidationError(
                 f"{step['tool']} at step {step['step']} must be immediately followed by get_image.",
-                details={"tool": step["tool"], "step": step["step"], "position": "after"},
+                details={
+                    "tool": step["tool"],
+                    "step": step["step"],
+                    "position": "after",
+                },
             )
 
     def _validate_generic_transition(
@@ -496,7 +510,9 @@ class FiniteStateTaskValidator:
             arg_value = tool_args.get(arg_name)
             arg_schema_type = _resolve_tool_arg_schema_type(arg_name, tool_spec)
             if arg_schema_type == "STRING":
-                if not isinstance(arg_value, str) or not " ".join(arg_value.strip().split()):
+                if not isinstance(arg_value, str) or not " ".join(
+                    arg_value.strip().split()
+                ):
                     raise ToolArgumentSemanticValidationError(
                         f"{step['tool']} requires {arg_name} to be a non-empty string.",
                         details={
@@ -519,7 +535,11 @@ class FiniteStateTaskValidator:
                 if step["tool"] == "wait" and arg_name == "seconds" and arg_value < 1:
                     raise WaitDurationSemanticValidationError(
                         "wait requires seconds to be a positive integer.",
-                        details={"tool": step["tool"], "arg_name": arg_name, "arg_value": arg_value},
+                        details={
+                            "tool": step["tool"],
+                            "arg_name": arg_name,
+                            "arg_value": arg_value,
+                        },
                     )
             allowed_ids_key = _allowed_ids_key_for_arg_name(arg_name)
             if allowed_ids_key is None or allowed_ids_key not in tool_spec:
@@ -591,17 +611,17 @@ class FiniteStateTaskValidator:
         if tool_name in ACQUIRE_TOOL_NAMES:
             object_id = tool_args["object_id"]
             agent_state.held_object = object_id
-            runtime_state.objects.setdefault(object_id, {})["location"] = (
-                f"held_by_{step['agent']}"
-            )
+            runtime_state.objects.setdefault(object_id, {})[
+                "location"
+            ] = f"held_by_{step['agent']}"
             return
 
         if tool_name in RELEASE_TOOL_NAMES:
             object_id = tool_args["object_id"]
             agent_state.held_object = None
-            runtime_state.objects.setdefault(object_id, {})["location"] = (
-                self._resolve_release_location(step, runtime_state)
-            )
+            runtime_state.objects.setdefault(object_id, {})[
+                "location"
+            ] = self._resolve_release_location(step, runtime_state)
 
     def _resolve_release_location(
         self,
@@ -635,7 +655,9 @@ class FiniteStateTaskValidator:
         reference_fixture_id = tool_args.get("reference_fixture_id")
         if isinstance(reference_fixture_id, str):
             # Prefer a fixture's symbolic dispenser output when the task state exposes one.
-            fixture_machine_state = runtime_state.machine_state.get(reference_fixture_id, {})
+            fixture_machine_state = runtime_state.machine_state.get(
+                reference_fixture_id, {}
+            )
             if isinstance(fixture_machine_state, dict):
                 dispenser_id = fixture_machine_state.get("dispenser_id")
                 if isinstance(dispenser_id, str):

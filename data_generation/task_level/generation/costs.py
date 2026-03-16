@@ -23,17 +23,22 @@ from data_generation.task_level.runtime.client import (
 from data_generation.task_level.tasks import TaskDefinition
 from data_generation.utils import camel_to_snake_case, coerce_int, round_cost
 
+
 def _successful_attempt_count(generation_usage: dict[str, Any]) -> int:
     successful_attempt_number = generation_usage.get("successful_attempt_number", 1)
     if not isinstance(successful_attempt_number, int) or successful_attempt_number < 1:
         return 1
     return successful_attempt_number
+
+
 def _projected_attempt_count(runtime_config: RuntimeConfig) -> int:
     """Choose the attempt multiplier used for the single preflight projection."""
 
     if runtime_config.disable_validation:
         return 1
     return max(runtime_config.max_retries, 1)
+
+
 def _attempt_counts_for_saved_trajectories(
     generation_usages: list[dict[str, Any]],
 ) -> list[int]:
@@ -47,12 +52,18 @@ def _attempt_counts_for_saved_trajectories(
         )
         for generation_usage in generation_usages
     ]
+
+
 def _reasoning_token_count(generation_usage: dict[str, Any]) -> int:
     """Read reasoning tokens from persisted usage, defaulting old payloads to zero."""
     return coerce_int(generation_usage.get("reasoning_tokens")) or 0
+
+
 def _billable_output_token_count(generation_usage: dict[str, Any]) -> int:
     """Reasoning tokens share the standard output-token billing tier."""
     return generation_usage["output_tokens"] + _reasoning_token_count(generation_usage)
+
+
 def _scaled_token_totals(
     generation_usages: list[dict[str, Any]],
     attempt_counts: list[int],
@@ -60,21 +71,31 @@ def _scaled_token_totals(
     return {
         "prompt": sum(
             generation_usage["prompt_tokens"] * attempt_count
-            for generation_usage, attempt_count in zip(generation_usages, attempt_counts)
+            for generation_usage, attempt_count in zip(
+                generation_usages, attempt_counts
+            )
         ),
         "output": sum(
             generation_usage["output_tokens"] * attempt_count
-            for generation_usage, attempt_count in zip(generation_usages, attempt_counts)
+            for generation_usage, attempt_count in zip(
+                generation_usages, attempt_counts
+            )
         ),
         "reasoning": sum(
             _reasoning_token_count(generation_usage) * attempt_count
-            for generation_usage, attempt_count in zip(generation_usages, attempt_counts)
+            for generation_usage, attempt_count in zip(
+                generation_usages, attempt_counts
+            )
         ),
         "total": sum(
             generation_usage["total_tokens"] * attempt_count
-            for generation_usage, attempt_count in zip(generation_usages, attempt_counts)
+            for generation_usage, attempt_count in zip(
+                generation_usages, attempt_counts
+            )
         ),
     }
+
+
 def _scaled_total_cost(
     generation_usages: list[dict[str, Any]],
     attempt_counts: list[int],
@@ -86,6 +107,8 @@ def _scaled_total_cost(
             return None
         scaled_costs.append(observed_cost_usd * attempt_count)
     return sum(scaled_costs)
+
+
 def _observed_cost_total(generation_usages: list[dict[str, Any]]) -> float | None:
     """Sums observed costs only when every usage payload includes one."""
 
@@ -96,6 +119,8 @@ def _observed_cost_total(generation_usages: list[dict[str, Any]]) -> float | Non
     if any(observed_cost is None for observed_cost in observed_costs):
         return None
     return sum(observed_costs)
+
+
 def _shared_pricing(
     generation_usages: list[dict[str, Any]],
     *,
@@ -128,6 +153,8 @@ def _shared_pricing(
         return None
 
     return dict(first_pricing)
+
+
 def _best_case_cost_estimate_note(attempt_counts: list[int]) -> str:
     if any(attempt_count > 1 for attempt_count in attempt_counts):
         return (
@@ -136,6 +163,8 @@ def _best_case_cost_estimate_note(attempt_counts: list[int]) -> str:
             "same token profile as the successful attempt."
         )
     return "Best case assumes each trajectory succeeds on the first attempt."
+
+
 def _append_sampling_cost_note(
     summary: dict[str, Any],
     runtime_config: RuntimeConfig,
@@ -152,6 +181,8 @@ def _append_sampling_cost_note(
     if verbalized_note not in summary["notes"]:
         summary["notes"].append(verbalized_note)
     return summary
+
+
 def _load_json_payload(path: Path) -> dict[str, Any] | None:
     """Loads one JSON payload from disk when the file exists and is valid."""
 
@@ -162,6 +193,8 @@ def _load_json_payload(path: Path) -> dict[str, Any] | None:
     if not isinstance(payload, dict):
         return None
     return payload
+
+
 def _matches_historical_preflight_config(
     payload: dict[str, Any],
     runtime_config: RuntimeConfig,
@@ -194,6 +227,8 @@ def _matches_historical_preflight_config(
     if not isinstance(reasoning_payload, dict):
         return runtime_config.thinking_level is None
     return reasoning_payload.get("thinking_level") == runtime_config.thinking_level
+
+
 def _combine_split_generation_usages(
     usage_entries: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
@@ -227,6 +262,8 @@ def _combine_split_generation_usages(
     )
     combined_usage["observed_cost_usd"] = _observed_cost_total(usage_entries)
     return combined_usage
+
+
 def _historical_preflight_generation_usages(
     runtime_config: RuntimeConfig,
     task_definition: TaskDefinition,
@@ -269,7 +306,7 @@ def _historical_preflight_generation_usages(
             continue
 
         for index in range(0, len(trajectory_costs), trajectories_per_run):
-            trajectory_group = trajectory_costs[index:index + trajectories_per_run]
+            trajectory_group = trajectory_costs[index : index + trajectories_per_run]
             if len(trajectory_group) != trajectories_per_run:
                 continue
             usage_entries = [
@@ -292,6 +329,8 @@ def _historical_preflight_generation_usages(
                 )
 
     return matched_generation_usages
+
+
 def _projected_generation_usages_from_history(
     observed_generation_usages: list[dict[str, Any]],
     *,
@@ -303,17 +342,15 @@ def _projected_generation_usages_from_history(
         dict(observed_generation_usages[index % len(observed_generation_usages)])
         for index in range(num_runs)
     ]
+
+
 def _build_cost_estimate_summary_from_generation_usages(
     generation_usages: list[dict[str, Any]],
     runtime_config: RuntimeConfig,
 ) -> dict[str, Any]:
     # Post-run estimates should honor how many attempts each saved trajectory took.
-    best_case_attempt_counts = _attempt_counts_for_saved_trajectories(
-        generation_usages
-    )
-    worst_case_attempt_counts = [
-        runtime_config.max_retries for _ in generation_usages
-    ]
+    best_case_attempt_counts = _attempt_counts_for_saved_trajectories(generation_usages)
+    worst_case_attempt_counts = [runtime_config.max_retries for _ in generation_usages]
 
     best_case_tokens = _scaled_token_totals(
         generation_usages,
@@ -369,6 +406,8 @@ def _build_cost_estimate_summary_from_generation_usages(
     if shared_pricing is not None:
         summary["pricing"] = shared_pricing
     return _append_sampling_cost_note(summary, runtime_config)
+
+
 def _build_cost_summary_from_generation_usages(
     generation_usages: list[dict[str, Any]],
 ) -> dict[str, Any]:
@@ -435,6 +474,8 @@ def _build_cost_summary_from_generation_usages(
     if shared_pricing is not None:
         summary["pricing"] = shared_pricing
     return summary
+
+
 def _build_preflight_cost_estimate_summary(
     runtime_config: RuntimeConfig,
     task_definition: TaskDefinition,

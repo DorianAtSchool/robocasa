@@ -152,7 +152,9 @@ def _join_gcs_uri(prefix: str, *parts: str) -> str:
     return "/".join([normalized_prefix, *normalized_parts])
 
 
-def _build_batch_service_from_runtime(runtime_config: RuntimeConfig) -> BatchGenerationService:
+def _build_batch_service_from_runtime(
+    runtime_config: RuntimeConfig,
+) -> BatchGenerationService:
     return BatchGenerationService(runtime_config)
 
 
@@ -275,7 +277,7 @@ def _write_batch_input_jsonl(
                     prompt=batch_request.prompt,
                     runtime_config=runtime_config,
                     task_definition=task_definition,
-                )
+                ),
             },
             sort_keys=True,
         )
@@ -352,7 +354,9 @@ def _load_batch_output_rows(
     gcs_output_prefix: str,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for blob_uri, blob_text in storage_client.download_texts(gcs_prefix=gcs_output_prefix):
+    for blob_uri, blob_text in storage_client.download_texts(
+        gcs_prefix=gcs_output_prefix
+    ):
         for line_number, line in enumerate(blob_text.splitlines(), start=1):
             stripped_line = line.strip()
             if not stripped_line:
@@ -406,7 +410,11 @@ def _create_batch_progress_handles(
     disable_progress: bool,
 ) -> _progress.ProgressHandles:
     # Batch mode only needs an overall completion bar, so keep the Rich layout compact.
-    if not disable_progress and _progress.RichProgress is not None and _progress.Console is not None:
+    if (
+        not disable_progress
+        and _progress.RichProgress is not None
+        and _progress.Console is not None
+    ):
         progress_display = RichBatchProgressDisplay(runtime_config)
         return _progress.ProgressHandles(
             display=progress_display,
@@ -653,7 +661,9 @@ def generate_trajectories_batch(
             )
             batch_job_name = getattr(batch_job, "name", None)
             if not isinstance(batch_job_name, str) or not batch_job_name:
-                raise TrajectoryGenerationError("Batch job creation did not return a job name.")
+                raise TrajectoryGenerationError(
+                    "Batch job creation did not return a job name."
+                )
             active_job_names.add(batch_job_name)
             _set_batch_progress_status(
                 progress_handles,
@@ -673,7 +683,11 @@ def generate_trajectories_batch(
             )
             active_job_names.discard(batch_job_name)
             batch_job_state = _batch_job_state_name(batch_job)
-            if batch_job_state in {"JOB_STATE_FAILED", "JOB_STATE_CANCELLED", "JOB_STATE_EXPIRED"}:
+            if batch_job_state in {
+                "JOB_STATE_FAILED",
+                "JOB_STATE_CANCELLED",
+                "JOB_STATE_EXPIRED",
+            }:
                 raise TrajectoryGenerationError(_batch_job_failure_message(batch_job))
             _set_batch_progress_status(
                 progress_handles,
@@ -726,13 +740,15 @@ def generate_trajectories_batch(
                                 else None,
                                 default_traffic_type=BATCH_TRAFFIC_TYPE,
                             )
-                            shared_generation_usage = _runtime_support._build_shared_generation_usage(
-                                runtime_config=runtime_config,
-                                sampled_candidates=sampled_candidates,
-                                prompt=batch_request.prompt,
-                                raw_response=response_payload,
-                                usage=usage,
-                                attempt_number=batch_request.attempt_number,
+                            shared_generation_usage = (
+                                _runtime_support._build_shared_generation_usage(
+                                    runtime_config=runtime_config,
+                                    sampled_candidates=sampled_candidates,
+                                    prompt=batch_request.prompt,
+                                    raw_response=response_payload,
+                                    usage=usage,
+                                    attempt_number=batch_request.attempt_number,
+                                )
                             )
                             accumulated_cost_text = (
                                 accumulated_cost_tracker.add_observed_cost(
@@ -770,7 +786,9 @@ def generate_trajectories_batch(
                                     _errors._validation_error_event(
                                         trajectory_record["validation"],
                                         source="batch",
-                                        trajectory_id=trajectory_record["trajectory_id"],
+                                        trajectory_id=trajectory_record[
+                                            "trajectory_id"
+                                        ],
                                         trajectory_index=batch_request.trajectory_index,
                                         attempt_number=batch_request.attempt_number,
                                     ),
@@ -789,8 +807,12 @@ def generate_trajectories_batch(
                                 _progress._log_runtime_message(
                                     _progress._trajectory_completion_log_message(
                                         runtime_config,
-                                        trajectory_id=trajectory_record["trajectory_id"],
-                                        generation_usage=trajectory_record["generation_usage"],
+                                        trajectory_id=trajectory_record[
+                                            "trajectory_id"
+                                        ],
+                                        generation_usage=trajectory_record[
+                                            "generation_usage"
+                                        ],
                                         validation=trajectory_record["validation"],
                                     ),
                                     enabled=show_progress,
@@ -810,7 +832,8 @@ def generate_trajectories_batch(
                         ),
                         trajectory_index=batch_request.trajectory_index,
                         attempt_number=batch_request.attempt_number,
-                        retryable=batch_request.attempt_number < runtime_config.max_retries,
+                        retryable=batch_request.attempt_number
+                        < runtime_config.max_retries,
                     ),
                     error_events_lock=error_events_lock,
                 )

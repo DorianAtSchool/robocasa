@@ -59,6 +59,7 @@ class ProgressHandles:
     trajectory_progress_bars: list[Any]
     log_writer: Callable[[str], None] | None
 
+
 class AccumulatedCostTracker:
     """Tracks accumulated and projected cost text for CLI progress updates."""
 
@@ -141,7 +142,8 @@ class AccumulatedCostTracker:
             0,
         )
         return round_cost(
-            self._total_cost_usd + (remaining_trajectories * average_trajectory_cost_usd),
+            self._total_cost_usd
+            + (remaining_trajectories * average_trajectory_cost_usd),
             decimal_places=COST_DECIMAL_PLACES,
         )
 
@@ -149,6 +151,7 @@ class AccumulatedCostTracker:
         if self._completed_trajectories > 0:
             return self._total_cost_usd / self._completed_trajectories
         return None
+
 
 def _progress_run_count(runtime_config: Any) -> int:
     """Returns the progress-bar item count for runtime-like configs."""
@@ -160,6 +163,8 @@ def _progress_run_count(runtime_config: Any) -> int:
     if isinstance(trajectory_count, int):
         return trajectory_count
     raise AttributeError("runtime config must define num_runs or num_trajectories")
+
+
 def _log_runtime_message(
     message: str,
     *,
@@ -172,6 +177,8 @@ def _log_runtime_message(
         writer(message)
         return
     tqdm.write(message)
+
+
 def _progress_status_with_accumulated_cost(
     status: str,
     *,
@@ -184,6 +191,8 @@ def _progress_status_with_accumulated_cost(
     if not status:
         return accumulated_cost_text
     return f"{status} {accumulated_cost_text}"
+
+
 def _update_overall_progress_status(
     overall_progress: Any | None,
     *,
@@ -205,8 +214,12 @@ def _update_overall_progress_status(
         return
     overall_progress.set_postfix_str(status_text)
     overall_progress.refresh()
+
+
 def _trajectory_progress_color(index: int) -> str:
     return TRAJECTORY_PROGRESS_COLORS[index % len(TRAJECTORY_PROGRESS_COLORS)]
+
+
 class StaticQueuedTimeElapsedColumn(ProgressColumn):
     """Shows a fixed zero timer for queued tasks and real elapsed time once started."""
 
@@ -224,6 +237,8 @@ class StaticQueuedTimeElapsedColumn(ProgressColumn):
         if getattr(task, "fields", {}).get("queued", False):
             return Text("0:00:00")
         return self._delegate.render(task)
+
+
 class RichTaskProgressAdapter:
     """Adapts one Rich progress task to the shared progress-bar interface."""
 
@@ -299,6 +314,8 @@ class RichTaskProgressAdapter:
 
     def close(self) -> None:
         return
+
+
 class TqdmTaskProgressAdapter:
     """Adapts one tqdm progress bar to the shared progress-bar interface."""
 
@@ -350,6 +367,8 @@ class TqdmTaskProgressAdapter:
 
     def close(self) -> None:
         self._progress_bar.close()
+
+
 class RichProgressDisplay:
     """Owns the interactive Rich progress layout used by the CLI."""
 
@@ -401,6 +420,8 @@ class RichProgressDisplay:
 
     def close(self) -> None:
         self._progress.stop()
+
+
 def _create_progress_handles(
     runtime_config: RuntimeConfig,
     *,
@@ -450,6 +471,8 @@ def _create_progress_handles(
         trajectory_progress_bars=trajectory_progress_bars,
         log_writer=None,
     )
+
+
 def _close_progress_handles(progress_handles: ProgressHandles) -> None:
     if progress_handles.display is not None:
         progress_handles.display.close()
@@ -457,6 +480,8 @@ def _close_progress_handles(progress_handles: ProgressHandles) -> None:
     progress_handles.overall_progress.close()
     for progress_bar in progress_handles.trajectory_progress_bars:
         progress_bar.close()
+
+
 def _log_cost_summary(
     *,
     label: str,
@@ -477,6 +502,8 @@ def _log_cost_summary(
         enabled=enabled,
         writer=writer,
     )
+
+
 def _cost_summary_message(
     *,
     label: str,
@@ -490,6 +517,8 @@ def _cost_summary_message(
         f"{label}: "
         f"{format_cost_usd(best_case_cost, decimal_places=COST_DECIMAL_PLACES)}"
     )
+
+
 def _update_completed_trajectory_progress(
     trajectory_progress: Any | None,
     *,
@@ -517,10 +546,7 @@ def _update_completed_trajectory_progress(
             f"{cost_text} avg="
             f"{format_cost_usd(average_observed_cost_usd, decimal_places=COST_DECIMAL_PLACES)}"
         )
-    if (
-        successful_trajectory_count is not None
-        and trajectory_count > 1
-    ):
+    if successful_trajectory_count is not None and trajectory_count > 1:
         cost_text = (
             f"{cost_text} success={successful_trajectory_count}/{trajectory_count}"
         )
@@ -542,6 +568,8 @@ def _update_completed_trajectory_progress(
             if validation_summary is not None:
                 cost_text = f"{cost_text} {validation_summary}"
     trajectory_progress.set_postfix_str(cost_text)
+
+
 def _trajectory_generation_status(
     runtime_config: RuntimeConfig,
     *,
@@ -551,10 +579,14 @@ def _trajectory_generation_status(
     if runtime_config.disable_validation:
         status_text = "generating"
     else:
-        status_text = f"attempt {attempt_number}/{runtime_config.max_retries} generating"
+        status_text = (
+            f"attempt {attempt_number}/{runtime_config.max_retries} generating"
+        )
     if previous_invalid_summary:
         return f"{status_text} after invalid {previous_invalid_summary}"
     return status_text
+
+
 def _trajectory_retry_status(
     runtime_config: RuntimeConfig,
     *,
@@ -573,6 +605,8 @@ def _trajectory_retry_status(
     if invalid_summary:
         return f"{status_text} invalid {invalid_summary}"
     return status_text
+
+
 def _trajectory_completion_log_message(
     runtime_config: RuntimeConfig,
     *,
