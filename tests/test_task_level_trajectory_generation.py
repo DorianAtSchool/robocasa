@@ -11,7 +11,7 @@ from pathlib import Path
 import tempfile
 import types
 
-import data_generation.task_level.raw_generation.cli as trajectory_generation_module
+import data_generation.task_level.generation.raw.cli as trajectory_generation_module
 from data_generation.task_level.runtime.client import (
     GenerationResult,
     GenerationUsage,
@@ -70,12 +70,12 @@ from data_generation.task_level.runtime.batch_generation import (
     _batch_request_payload,
     _create_batch_progress_handles,
 )
-from data_generation.task_level.raw_generation.cli import (
+from data_generation.task_level.generation.raw.cli import (
     main,
     parse_args,
     run_cli,
 )
-from data_generation.task_level.raw_generation.config import (
+from data_generation.task_level.generation.raw.config import (
     BATCH_INTERRUPTED_MESSAGE,
     DEFAULT_OUTPUT_DIR,
     INTERRUPTED_EXIT_CODE,
@@ -83,15 +83,15 @@ from data_generation.task_level.raw_generation.config import (
     REQUEST_DIRECTORY_NAME,
     RuntimeConfig,
 )
-from data_generation.task_level.raw_generation.costs import (
+from data_generation.task_level.generation.raw.costs import (
     _build_cost_summary_from_generation_usages,
     _build_preflight_cost_estimate_summary,
 )
-from data_generation.task_level.raw_generation.orchestrator import (
+from data_generation.task_level.generation.raw.orchestrator import (
     generate_single_trajectory,
     generate_trajectories,
 )
-from data_generation.task_level.raw_generation.outputs import (
+from data_generation.task_level.generation.raw.outputs import (
     build_cost_output_payload,
     build_error_summary_output_payload,
     build_summary_output_payload,
@@ -103,7 +103,7 @@ from data_generation.task_level.raw_generation.outputs import (
     resolve_request_output_path,
     resolve_trajectory_output_dir,
 )
-from data_generation.task_level.raw_generation.progress import (
+from data_generation.task_level.generation.raw.progress import (
     PROGRESS_BAR_WIDTH,
     ProgressHandles,
     RichProgressDisplay,
@@ -112,7 +112,7 @@ from data_generation.task_level.raw_generation.progress import (
     _progress_status_with_accumulated_cost,
     _validation_error_progress_summary,
 )
-from data_generation.task_level.raw_generation.runtime_support import (
+from data_generation.task_level.generation.raw.runtime_support import (
     _build_retry_feedback_text,
     _is_non_retryable_generation_error,
     _maybe_reserve_signature,
@@ -1215,13 +1215,22 @@ class DotenvLoadingTests(unittest.TestCase):
             / "summary.json",
         )
 
+    def test_default_output_dir_points_to_repo_task_level_data_directory(self):
+        self.assertEqual(
+            DEFAULT_OUTPUT_DIR,
+            Path(__file__).resolve().parents[1]
+            / "data_generation"
+            / "task_level"
+            / "data",
+        )
+
     def test_resolve_dataset_output_path_uses_patched_default_output_dir(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             output_root = Path(temp_dir)
             resolved = None
 
             with mock.patch(
-                "data_generation.task_level.raw_generation.outputs.DEFAULT_OUTPUT_DIR",
+                "data_generation.task_level.generation.raw.outputs.DEFAULT_OUTPUT_DIR",
                 output_root,
             ):
                 resolved = resolve_dataset_output_path(
@@ -1243,7 +1252,7 @@ class DotenvLoadingTests(unittest.TestCase):
             resolved = None
 
             with mock.patch(
-                "data_generation.task_level.raw_generation.outputs.DEFAULT_OUTPUT_DIR",
+                "data_generation.task_level.generation.raw.outputs.DEFAULT_OUTPUT_DIR",
                 output_root,
             ):
                 resolved = resolve_request_output_path(
@@ -2498,11 +2507,11 @@ class GenerationTests(unittest.TestCase):
         fake_executor = FakeExecutor()
 
         with mock.patch(
-            "data_generation.task_level.raw_generation.costs._build_preflight_cost_estimate_summary",
+            "data_generation.task_level.generation.raw.costs._build_preflight_cost_estimate_summary",
             return_value={"best_case_total_usd": None, "worst_case_total_usd": None},
         ):
             with mock.patch(
-                "data_generation.task_level.raw_generation.progress._create_progress_handles",
+                "data_generation.task_level.generation.raw.progress._create_progress_handles",
                 return_value=ProgressHandles(
                     display=None,
                     overall_progress=None,
@@ -2511,7 +2520,7 @@ class GenerationTests(unittest.TestCase):
                 ),
             ):
                 with mock.patch(
-                    "data_generation.task_level.raw_generation.progress._close_progress_handles"
+                    "data_generation.task_level.generation.raw.progress._close_progress_handles"
                 ) as close_progress_handles:
                     with mock.patch(
                         "data_generation.task_level.runtime.on_demand_generation.ThreadPoolExecutor",
@@ -3068,7 +3077,7 @@ class GenerationTests(unittest.TestCase):
             all("image_path" not in step for step in payload["trajectories"][0]["steps"])
         )
 
-    def test_generated_payload_includes_prompt_sidecars(self):
+    def test_generated_payload_includes_prompt_files(self):
         runtime_config = RuntimeConfig(
             composite_task="PrepareCoffee",
             num_runs=1,
@@ -3329,7 +3338,7 @@ class GenerationTests(unittest.TestCase):
             )
         )
 
-    def test_generated_payload_includes_raw_output_sidecars(self):
+    def test_generated_payload_includes_raw_output_files(self):
         runtime_config = RuntimeConfig(
             composite_task="PrepareCoffee",
             num_runs=1,
@@ -3713,7 +3722,7 @@ class GenerationTests(unittest.TestCase):
             )
 
             with mock.patch(
-                "data_generation.task_level.raw_generation.costs.DEFAULT_OUTPUT_DIR",
+                "data_generation.task_level.generation.raw.costs.DEFAULT_OUTPUT_DIR",
                 output_root,
             ):
                 summary = _build_preflight_cost_estimate_summary(
@@ -3909,7 +3918,7 @@ class GenerationTests(unittest.TestCase):
         )
 
         with mock.patch(
-            "data_generation.task_level.raw_generation.progress._log_runtime_message"
+            "data_generation.task_level.generation.raw.progress._log_runtime_message"
         ) as log_runtime_message:
             generate_trajectories(
                 runtime_config,
@@ -4007,7 +4016,7 @@ class GenerationTests(unittest.TestCase):
         ]
 
         with mock.patch(
-            "data_generation.task_level.raw_generation.progress._create_progress_handles",
+            "data_generation.task_level.generation.raw.progress._create_progress_handles",
             return_value=progress_handles,
         ):
             payload = generate_trajectories(
@@ -4680,34 +4689,34 @@ class GenerationTests(unittest.TestCase):
         fake_progress.add_task.side_effect = [101, 102, 103]
 
         with mock.patch(
-            "data_generation.task_level.raw_generation.progress.Console",
+            "data_generation.task_level.generation.raw.progress.Console",
             return_value=mock.sentinel.console,
         ) as console_cls:
             with mock.patch(
-                "data_generation.task_level.raw_generation.progress.TextColumn",
+                "data_generation.task_level.generation.raw.progress.TextColumn",
                 side_effect=[
                     mock.sentinel.description_column,
                     mock.sentinel.status_column,
                 ],
             ):
                 with mock.patch(
-                    "data_generation.task_level.raw_generation.progress.BarColumn",
+                    "data_generation.task_level.generation.raw.progress.BarColumn",
                     return_value=mock.sentinel.bar_column,
                 ):
                     with mock.patch(
-                        "data_generation.task_level.raw_generation.progress.TaskProgressColumn",
+                        "data_generation.task_level.generation.raw.progress.TaskProgressColumn",
                         return_value=mock.sentinel.task_progress_column,
                     ):
                         with mock.patch(
-                            "data_generation.task_level.raw_generation.progress.MofNCompleteColumn",
+                            "data_generation.task_level.generation.raw.progress.MofNCompleteColumn",
                             return_value=mock.sentinel.mofn_column,
                         ):
                             with mock.patch(
-                                "data_generation.task_level.raw_generation.progress.StaticQueuedTimeElapsedColumn",
+                                "data_generation.task_level.generation.raw.progress.StaticQueuedTimeElapsedColumn",
                                 return_value=mock.sentinel.elapsed_column,
                             ):
                                 with mock.patch(
-                                    "data_generation.task_level.raw_generation.progress.RichProgress",
+                                    "data_generation.task_level.generation.raw.progress.RichProgress",
                                     return_value=fake_progress,
                                 ) as rich_progress:
                                     display = RichProgressDisplay(runtime_config)
@@ -4746,7 +4755,7 @@ class GenerationTests(unittest.TestCase):
         buffer = StringIO()
 
         with mock.patch(
-            "data_generation.task_level.raw_generation.progress.Console",
+            "data_generation.task_level.generation.raw.progress.Console",
             return_value=RichConsole(file=buffer, force_terminal=False, width=120),
         ):
             display = RichProgressDisplay(runtime_config)
@@ -4798,7 +4807,7 @@ class GenerationTests(unittest.TestCase):
         buffer = StringIO()
 
         with mock.patch(
-            "data_generation.task_level.raw_generation.progress.Console",
+            "data_generation.task_level.generation.raw.progress.Console",
             return_value=RichConsole(file=buffer, force_terminal=False, width=120),
         ):
             display = RichProgressDisplay(runtime_config)
@@ -4827,34 +4836,34 @@ class GenerationTests(unittest.TestCase):
         fake_progress.add_task.return_value = 201
 
         with mock.patch(
-            "data_generation.task_level.raw_generation.progress.Console",
+            "data_generation.task_level.generation.raw.progress.Console",
             return_value=mock.sentinel.console,
         ) as console_cls:
             with mock.patch(
-                "data_generation.task_level.raw_generation.progress.TextColumn",
+                "data_generation.task_level.generation.raw.progress.TextColumn",
                 side_effect=[
                     mock.sentinel.description_column,
                     mock.sentinel.status_column,
                 ],
             ):
                 with mock.patch(
-                    "data_generation.task_level.raw_generation.progress.BarColumn",
+                    "data_generation.task_level.generation.raw.progress.BarColumn",
                     return_value=mock.sentinel.bar_column,
                 ):
                     with mock.patch(
-                        "data_generation.task_level.raw_generation.progress.TaskProgressColumn",
+                        "data_generation.task_level.generation.raw.progress.TaskProgressColumn",
                         return_value=mock.sentinel.task_progress_column,
                     ):
                         with mock.patch(
-                            "data_generation.task_level.raw_generation.progress.MofNCompleteColumn",
+                            "data_generation.task_level.generation.raw.progress.MofNCompleteColumn",
                             return_value=mock.sentinel.mofn_column,
                         ):
                             with mock.patch(
-                                "data_generation.task_level.raw_generation.progress.StaticQueuedTimeElapsedColumn",
+                                "data_generation.task_level.generation.raw.progress.StaticQueuedTimeElapsedColumn",
                                 return_value=mock.sentinel.elapsed_column,
                             ):
                                 with mock.patch(
-                                    "data_generation.task_level.raw_generation.progress.RichProgress",
+                                    "data_generation.task_level.generation.raw.progress.RichProgress",
                                     return_value=fake_progress,
                                 ) as rich_progress:
                                     display = RichBatchProgressDisplay(runtime_config)
@@ -5238,7 +5247,7 @@ class GenerationTests(unittest.TestCase):
         )
 
         with mock.patch(
-            "data_generation.task_level.raw_generation.progress._log_runtime_message"
+            "data_generation.task_level.generation.raw.progress._log_runtime_message"
         ) as log_runtime_message:
             generate_trajectories(
                 runtime_config,
@@ -5602,11 +5611,11 @@ class GenerationTests(unittest.TestCase):
             error_output_path = Path(tmpdir) / "summary_errors.json"
 
             with mock.patch(
-                "data_generation.task_level.raw_generation.cli.generate_trajectories",
+                "data_generation.task_level.generation.raw.cli.generate_trajectories",
                 return_value=fixed_payload,
             ):
                 with mock.patch(
-                    "data_generation.task_level.raw_generation.cli.resolve_dataset_output_path",
+                    "data_generation.task_level.generation.raw.cli.resolve_dataset_output_path",
                     return_value=summary_path,
                 ):
                     with mock.patch("builtins.print") as mocked_print:
@@ -5849,11 +5858,11 @@ class GenerationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             request_summary_path = Path(tmpdir) / "requests" / "summary.json"
             with mock.patch(
-                "data_generation.task_level.raw_generation.cli.generate_trajectories",
+                "data_generation.task_level.generation.raw.cli.generate_trajectories",
                 side_effect=[prepare_coffee_payload, hot_dog_payload],
             ):
                 with mock.patch(
-                    "data_generation.task_level.raw_generation.cli.resolve_request_output_path",
+                    "data_generation.task_level.generation.raw.cli.resolve_request_output_path",
                     return_value=request_summary_path,
                 ):
                     exit_code = main(
@@ -5894,11 +5903,11 @@ class GenerationTests(unittest.TestCase):
 
     def test_run_cli_exits_immediately_on_keyboard_interrupt(self):
         with mock.patch(
-            "data_generation.task_level.raw_generation.cli.main",
+            "data_generation.task_level.generation.raw.cli.main",
             side_effect=KeyboardInterrupt,
         ):
             with mock.patch(
-                "data_generation.task_level.raw_generation.cli.os._exit",
+                "data_generation.task_level.generation.raw.cli.os._exit",
                 side_effect=SystemExit(INTERRUPTED_EXIT_CODE),
             ) as mocked_exit:
                 with mock.patch("builtins.print") as mocked_print:
@@ -5913,11 +5922,11 @@ class GenerationTests(unittest.TestCase):
 
     def test_run_cli_uses_custom_keyboard_interrupt_message(self):
         with mock.patch(
-            "data_generation.task_level.raw_generation.cli.main",
+            "data_generation.task_level.generation.raw.cli.main",
             side_effect=KeyboardInterrupt(BATCH_INTERRUPTED_MESSAGE),
         ):
             with mock.patch(
-                "data_generation.task_level.raw_generation.cli.os._exit",
+                "data_generation.task_level.generation.raw.cli.os._exit",
                 side_effect=SystemExit(INTERRUPTED_EXIT_CODE),
             ):
                 with mock.patch("builtins.print") as mocked_print:
@@ -5929,11 +5938,11 @@ class GenerationTests(unittest.TestCase):
 
     def test_main_does_not_write_outputs_when_generation_is_interrupted(self):
         with mock.patch(
-            "data_generation.task_level.raw_generation.cli.generate_trajectories",
+            "data_generation.task_level.generation.raw.cli.generate_trajectories",
             side_effect=KeyboardInterrupt(BATCH_INTERRUPTED_MESSAGE),
         ):
             with mock.patch(
-                "data_generation.task_level.raw_generation.cli._write_generation_outputs"
+                "data_generation.task_level.generation.raw.cli._write_generation_outputs"
             ) as write_outputs:
                 with self.assertRaises(KeyboardInterrupt):
                     main(
@@ -5948,7 +5957,7 @@ class GenerationTests(unittest.TestCase):
 
     def test_run_cli_prints_single_line_for_generation_errors(self):
         with mock.patch(
-            "data_generation.task_level.raw_generation.cli.main",
+            "data_generation.task_level.generation.raw.cli.main",
             side_effect=TrajectoryGenerationError(
                 "TaskSemanticValidationError: invalid trajectory"
             ),
@@ -5969,7 +5978,7 @@ class GenerationTests(unittest.TestCase):
         with mock.patch.object(
             sys,
             "argv",
-            ["data_generation.task_level.raw_generation.cli", "--help"],
+            ["data_generation.task_level.generation.raw.cli", "--help"],
         ):
             with self.assertRaises(SystemExit) as raised:
                 runpy.run_path(

@@ -9,7 +9,9 @@ from pathlib import Path
 from data_generation.task_level.runtime.client import TrajectoryGenerationError
 from data_generation.task_level.tasks import supported_task_names
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+# This module lives under data_generation/task_level/generation/raw, so the
+# repository root is four parents above this file.
+REPO_ROOT = Path(__file__).resolve().parents[4]
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "data_generation" / "task_level" / "data"
 DEFAULT_COMPOSITE_TASK = supported_task_names()[0]
 DATASET_RUN_TIMESTAMP_FORMAT = "%Y%m%dT%H%M%SZ"

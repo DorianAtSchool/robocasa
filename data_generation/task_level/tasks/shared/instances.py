@@ -54,6 +54,8 @@ def build_randomized_fixture_task_instance(
         allowed_tool_specs=allowed_tool_specs,
     )
     sampled_initial_state = deepcopy(initial_state)
+    # Seed from task identity plus run index so reruns stay reproducible while
+    # still spreading agents across valid starting fixtures.
     seed_material = stable_json_sha256(
         {
             "composite_task": composite_task,

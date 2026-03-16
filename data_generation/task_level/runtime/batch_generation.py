@@ -13,12 +13,14 @@ from typing import Any, Callable
 
 from tqdm import tqdm
 
-from data_generation.task_level.raw_generation import costs as _costs
-from data_generation.task_level.raw_generation import errors as _errors
-from data_generation.task_level.raw_generation import outputs as _outputs
-from data_generation.task_level.raw_generation import progress as _progress
-from data_generation.task_level.raw_generation import runtime_support as _runtime_support
-from data_generation.task_level.raw_generation.config import (
+from data_generation.task_level.generation.raw import costs as _costs
+from data_generation.task_level.generation.raw import errors as _errors
+from data_generation.task_level.generation.raw import outputs as _outputs
+from data_generation.task_level.generation.raw import progress as _progress
+from data_generation.task_level.generation.raw import (
+    runtime_support as _runtime_support,
+)
+from data_generation.task_level.generation.raw.config import (
     BATCH_DIRECTORY_NAME,
     BATCH_INTERRUPTED_MESSAGE,
     BATCH_POLL_INTERVAL_SECONDS,
@@ -165,6 +167,8 @@ def _build_batch_storage_from_runtime(runtime_config: RuntimeConfig) -> GCSBatch
 def _build_batch_run_context(runtime_config: RuntimeConfig) -> BatchRunContext:
     run_id = datetime.now(timezone.utc).strftime(DATASET_RUN_TIMESTAMP_FORMAT)
     local_output_path = _outputs._resolve_summary_path(runtime_config)
+    # Keep one run-scoped staging prefix so retries for the same request stay
+    # grouped together locally and in GCS.
     local_staging_dir = local_output_path.parent / BATCH_DIRECTORY_NAME / run_id
     gcs_run_prefix = _join_gcs_uri(
         runtime_config.batch_gcs_prefix or "",
@@ -353,6 +357,8 @@ def _load_batch_output_rows(
     *,
     gcs_output_prefix: str,
 ) -> list[dict[str, Any]]:
+    # Vertex may shard results across multiple JSONL files, so flatten them
+    # here before matching rows back to requests.
     rows: list[dict[str, Any]] = []
     for blob_uri, blob_text in storage_client.download_texts(
         gcs_prefix=gcs_output_prefix
@@ -605,6 +611,8 @@ def generate_trajectories_batch(
     )
 
     try:
+        # Batch mode advances in rounds so failed runs can be resubmitted
+        # without rebuilding successful trajectories.
         for round_number in range(1, runtime_config.max_retries + 1):
             if not pending_indices:
                 break
@@ -712,6 +720,8 @@ def generate_trajectories_batch(
             retryable_count = 0
             failed_count = 0
 
+            # Match every returned row back to the request variation key so
+            # retries remain stable even if Vertex reorders output files.
             for batch_request in batch_requests:
                 row = rows_by_variation_key.get(batch_request.variation_key)
                 if row is None:
@@ -735,9 +745,11 @@ def generate_trajectories_batch(
                                 runtime_config=runtime_config,
                             )
                             usage = build_generation_usage_metadata(
-                                row.get("response", {}).get("usageMetadata")
-                                if isinstance(row.get("response"), dict)
-                                else None,
+                                (
+                                    row.get("response", {}).get("usageMetadata")
+                                    if isinstance(row.get("response"), dict)
+                                    else None
+                                ),
                                 default_traffic_type=BATCH_TRAFFIC_TYPE,
                             )
                             shared_generation_usage = (

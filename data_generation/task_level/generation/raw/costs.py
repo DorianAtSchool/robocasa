@@ -6,12 +6,12 @@ import json
 from pathlib import Path
 from typing import Any
 
-from data_generation.task_level.raw_generation.config import (
+from data_generation.task_level.generation.raw.config import (
     COST_SUMMARY_OUTPUT_FILENAME,
     DEFAULT_OUTPUT_DIR,
     RuntimeConfig,
 )
-from data_generation.task_level.raw_generation.runtime_support import (
+from data_generation.task_level.generation.raw.runtime_support import (
     _default_traffic_type_for_runtime,
     _sampling_strategy_for_runtime,
 )

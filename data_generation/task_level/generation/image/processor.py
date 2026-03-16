@@ -2,20 +2,17 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 from dataclasses import dataclass
-from pathlib import Path
 import shutil
-import sys
+from pathlib import Path
 from typing import Any
 
-from data_generation.task_level.raw_generation.progress import (
+from data_generation.task_level.generation.raw.progress import (
     _close_progress_handles,
     _create_progress_handles,
 )
 from data_generation.utils import stable_json_sha256, write_json_output
-
 
 GET_IMAGE_TOOL_NAME = "get_image"
 COMMUNICATE_TOOL_NAME = "communicate"
@@ -113,6 +110,8 @@ def rebuild_steps_with_get_image(
 ) -> list[dict[str, Any]]:
     """Rebuilds one step list so every non-communicate action is bracketed by get_image."""
 
+    # Seed each rewritten trajectory with one shared scene snapshot before any
+    # agent starts acting.
     rebuilt_steps: list[dict[str, Any]] = [
         _build_get_image_step(
             initial_image_agent_id,
@@ -154,6 +153,8 @@ def rebuild_steps_with_get_image(
             )
         )
 
+    # Renumber after insertion so saved step indices and image filenames stay
+    # deterministic regardless of the input shape.
     for step_index, step in enumerate(rebuilt_steps):
         step["step"] = step_index
         if step["tool"] == GET_IMAGE_TOOL_NAME:
@@ -263,10 +264,16 @@ def resolve_output_dataset_path(dataset_path: Path) -> Path:
     return Path(*parts[: data_index + 1]) / "w_images" / Path(*relative_parts)
 
 
+def _resolve_output_image_dir(output_dataset_path: Path) -> Path:
+    """Resolves the sibling image directory referenced by inserted get_image steps."""
+
+    return output_dataset_path.parent / "images"
+
+
 def _resolve_summary_trajectory_paths(
     dataset_path: Path, payload: dict[str, Any]
 ) -> list[Path]:
-    """Resolves trajectory sidecar paths referenced by a summary dataset JSON."""
+    """Resolves trajectory file paths referenced by a summary dataset JSON."""
 
     trajectory_files = payload.get("trajectory_files")
     if not isinstance(trajectory_files, list):
@@ -292,6 +299,8 @@ def _post_process_summary_dataset(
     """Writes a copied summary dataset tree and post-processes its trajectories."""
 
     if output_dataset_path.resolve() != dataset_path.resolve():
+        # Copy the whole dataset tree first so relative artifact paths remain
+        # valid after trajectory files are rewritten in place.
         shutil.copytree(
             dataset_path.parent,
             output_dataset_path.parent,
@@ -299,6 +308,9 @@ def _post_process_summary_dataset(
         )
         payload = _load_json_file(output_dataset_path)
 
+    # Post-processing only inserts deterministic image references, but later
+    # rendering stages expect the sibling image root to exist up front.
+    _resolve_output_image_dir(output_dataset_path).mkdir(parents=True, exist_ok=True)
     trajectory_paths = _resolve_summary_trajectory_paths(output_dataset_path, payload)
     progress_handles = _create_progress_handles(
         PostProcessRuntimeConfig(num_trajectories=len(trajectory_paths)),
@@ -342,6 +354,9 @@ def _post_process_payload_dataset(
         disable_progress=disable_progress,
     )
     try:
+        # Keep inline-dataset outputs aligned with the summary-dataset layout so
+        # downstream image rendering can use the same sibling image directory.
+        _resolve_output_image_dir(output_dataset_path).mkdir(parents=True, exist_ok=True)
         updated_trajectories: list[dict[str, Any]] = []
         for index, trajectory in enumerate(trajectories):
             trajectory_progress = progress_handles.trajectory_progress_bars[index]
@@ -385,65 +400,3 @@ def post_process_dataset(
         output_dataset_path=output_dataset_path,
         disable_progress=disable_progress,
     )
-
-
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    """Parses the CLI arguments for the post-processing entrypoint."""
-
-    parser = argparse.ArgumentParser(
-        description=(
-            "Insert get_image steps into trajectories referenced by a dataset JSON "
-            "and write the results to a copied output tree."
-        )
-    )
-    parser.add_argument(
-        "--dataset",
-        required=True,
-        type=Path,
-        help=(
-            "Path to the source dataset summary JSON or inline dataset JSON to "
-            "copy and post-process."
-        ),
-    )
-    parser.add_argument(
-        "--disable-progress",
-        action="store_true",
-        help="Disable the trajectory progress bars.",
-    )
-    parser.add_argument(
-        "--output-dataset",
-        type=Path,
-        help=(
-            "Optional destination dataset JSON. Defaults to a mirrored copy under "
-            "data/w_images/."
-        ),
-    )
-    return parser.parse_args(argv)
-
-
-def main(argv: list[str] | None = None) -> int:
-    """Runs the CLI entrypoint and returns a process exit code."""
-
-    args = parse_args(argv)
-    output_dataset_path = args.output_dataset or resolve_output_dataset_path(
-        args.dataset
-    )
-    try:
-        processed_count = post_process_dataset(
-            args.dataset,
-            output_dataset_path=output_dataset_path,
-            disable_progress=args.disable_progress,
-        )
-    except Exception as exc:
-        print(f"Failed to post-process trajectories: {exc}", file=sys.stderr)
-        return POST_PROCESS_ERROR_EXIT_CODE
-
-    print(
-        f"Post-processed {processed_count} trajectories from {args.dataset} "
-        f"to {output_dataset_path}."
-    )
-    return 0
-
-
-if __name__ == "__main__":  # pragma: no cover
-    raise SystemExit(main())

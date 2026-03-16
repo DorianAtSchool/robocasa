@@ -34,8 +34,8 @@ except ImportError:  # pragma: no cover
     Text = None
     TimeElapsedColumn = None
 
-from data_generation.task_level.raw_generation.config import RuntimeConfig
-from data_generation.task_level.raw_generation.runtime_support import (
+from data_generation.task_level.generation.raw.config import RuntimeConfig
+from data_generation.task_level.generation.raw.runtime_support import (
     _expected_saved_trajectory_count,
     _trajectories_per_run,
     _validation_error_progress_summary,
@@ -109,6 +109,8 @@ class AccumulatedCostTracker:
         )
         if not self._cost_available:
             return f"accumulated={unavailable_text} projected={unavailable_text}"
+        # Show the observed total immediately, then add a projection once enough
+        # completed work exists to estimate the remaining cost.
         rounded_total_cost = round_cost(
             self._total_cost_usd,
             decimal_places=COST_DECIMAL_PLACES,
@@ -447,6 +449,8 @@ def _create_progress_handles(
         dynamic_ncols=True,
         colour=OVERALL_PROGRESS_COLOR,
     )
+    # Mirror the Rich layout closely so status text reads the same in non-rich
+    # environments and in test captures.
     trajectory_progress_bars = [
         TqdmTaskProgressAdapter(
             tqdm(

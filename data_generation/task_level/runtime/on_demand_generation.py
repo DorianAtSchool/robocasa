@@ -7,12 +7,14 @@ import os
 import threading
 from typing import Any
 
-from data_generation.task_level.raw_generation import costs as _costs
-from data_generation.task_level.raw_generation import errors as _errors
-from data_generation.task_level.raw_generation import outputs as _outputs
-from data_generation.task_level.raw_generation import progress as _progress
-from data_generation.task_level.raw_generation import runtime_support as _runtime_support
-from data_generation.task_level.raw_generation.config import RuntimeConfig
+from data_generation.task_level.generation.raw import costs as _costs
+from data_generation.task_level.generation.raw import errors as _errors
+from data_generation.task_level.generation.raw import outputs as _outputs
+from data_generation.task_level.generation.raw import progress as _progress
+from data_generation.task_level.generation.raw import (
+    runtime_support as _runtime_support,
+)
+from data_generation.task_level.generation.raw.config import RuntimeConfig
 from data_generation.task_level.runtime.client import (
     TrajectoryGenerationError,
     build_generation_client,
@@ -99,13 +101,15 @@ def generate_single_run(
         and runtime_config.verbalized_k > 1
     )
     run_completed = False
-    accumulated_valid_results: list[
-        tuple[Any, dict[str, Any], dict[str, Any], str]
-    ] = []
+    accumulated_valid_results: list[tuple[Any, dict[str, Any], dict[str, Any], str]] = (
+        []
+    )
     accumulated_generation_usages: list[dict[str, Any]] = []
     reserved_run_signatures: set[str] = set()
     previous_invalid_summary: str | None = None
 
+    # Each attempt rebuilds the full prompt so retries can incorporate repair
+    # feedback without mutating saved outputs from prior attempts.
     for attempt_index in range(runtime_config.max_retries):
         # Variation keys give retries a stable way to ask for distinct traces.
         variation_key = _runtime_support.format_trajectory_variation_key(
@@ -197,6 +201,8 @@ def generate_single_run(
                 accumulated_cost_text=accumulated_cost_text,
             )
             if greedy_verbalized_validation:
+                # Greedily keep valid verbalized candidates from each attempt so
+                # retries only need to fill the remaining quota.
                 invalid_validations: list[dict[str, Any]] = []
                 valid_results_this_attempt: list[
                     tuple[Any, dict[str, Any], dict[str, Any], str]
@@ -327,9 +333,9 @@ def generate_single_run(
                 aggregate_generation_usage["total_tokens"] = (
                     total_prompt_tokens + total_output_tokens + total_reasoning_tokens
                 )
-                aggregate_generation_usage[
-                    "observed_cost_usd"
-                ] = total_observed_cost_usd
+                aggregate_generation_usage["observed_cost_usd"] = (
+                    total_observed_cost_usd
+                )
                 aggregate_generation_usage["successful_attempt_number"] = (
                     attempt_index + 1
                 )
@@ -343,6 +349,8 @@ def generate_single_run(
                     )
                 )
                 trajectory_records: list[dict[str, Any]] = []
+                # Materialize saved records only after the run has enough valid
+                # unique candidates to satisfy the requested K.
                 for candidate_index, (
                     (
                         sampled_candidate,
@@ -592,6 +600,8 @@ def generate_trajectories_on_demand(
             for index in range(runtime_config.num_runs)
         }
 
+        # Drain futures in completion order, then re-sort below before writing
+        # so concurrency never changes dataset ordering.
         for future in as_completed(futures):
             run_index = futures[future]
             trajectory_records = future.result()

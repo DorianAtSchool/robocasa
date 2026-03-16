@@ -54,6 +54,8 @@ def _build_fsm_prompt_rules(
 ) -> list[str]:
     """Builds concise prompt rules that mirror the FSM validator."""
 
+    # Keep the prompt rules derived from the same tool set the validator uses so
+    # the model sees the key legality constraints up front.
     allowed_tool_names = set(allowed_tool_specs)
     prompt_rules: list[str] = []
 
@@ -151,6 +153,8 @@ def make_task_prompt_builder(
     ) -> str:
         """Renders the shared task-level prompt with task-specific content."""
 
+        # Copy the initial state per run so prompt rendering can reflect sampled
+        # task instances without mutating the task definition defaults.
         prompt_initial_state = (
             deepcopy(task_instance.initial_state)
             if task_instance is not None

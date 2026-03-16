@@ -20,9 +20,12 @@ This writes a rollout video to `test.mp4` at the repo root.
 
 ## Vertex AI trajectory generation
 
-The multi-agent task-level generator lives under `data_generation/task_level` and is
-isolated from the core RoboCasa task definitions. The CLI entrypoint is
-`data_generation.task_level.generation.cli`.
+The task-level generation code lives under `data_generation/task_level/generation`
+and is isolated from the core RoboCasa task definitions:
+- `data_generation.task_level.generation.raw`: raw trajectory generation
+- `data_generation.task_level.generation.image`: post-processing that inserts canonical `get_image` steps
+
+The raw-generation CLI entrypoint is `data_generation.task_level.generation.raw.cli`.
 
 Install the required Google SDK into your active environment:
 
@@ -67,7 +70,7 @@ python test_google_cloud.py
 Generate validated symbolic two-agent trajectories for `PrepareCoffee` with base sampling:
 
 ```bash
-python -m data_generation.task_level.generation.cli \
+python -m data_generation.task_level.generation.raw.cli \
   --tasks PrepareCoffee \
   --num-runs 2 \
   --sampling base \
@@ -83,7 +86,7 @@ Generate verbalized samples, where each run asks the model for multiple full
 trajectories plus a probability label for each one:
 
 ```bash
-python -m data_generation.task_level.generation.cli \
+python -m data_generation.task_level.generation.raw.cli \
   --tasks PrepareCoffee \
   --num-runs 2 \
   --sampling verbalized \
@@ -100,7 +103,7 @@ Generate both supported tasks with shared runtime settings. `--num-runs` applies
 to each task, so the example below runs 10 model calls total:
 
 ```bash
-python -m data_generation.task_level.generation.cli \
+python -m data_generation.task_level.generation.raw.cli \
   --tasks PrepareCoffee HotDogSetup \
   --num-runs 5 \
   --sampling base \
@@ -115,36 +118,84 @@ python -m data_generation.task_level.generation.cli \
 For Gemini 3 models, you can optionally tune reasoning depth with
 `--thinking-level minimal|low|medium|high`.
 
-Then run post-processing to add canonical `get_image` steps and deterministic
-`image_path` fields in a copied dataset tree under `data/w_images/`. The source
-dataset stays unchanged:
+When you pass multiple tasks with `--tasks`, the generator writes:
+
+```text
+data/raw/requests/{timestamp}/
+├── summary.json
+├── cost_summary.json
+├── summary_errors.json
+├── {task_a}/
+│   ├── summary.json
+│   ├── cost_summary.json
+│   ├── summary_errors.json
+│   ├── trajectories/
+│   ├── prompts/
+│   └── outputs/
+├── {task_b}/
+│   ├── summary.json
+│   ├── cost_summary.json
+│   ├── summary_errors.json
+│   ├── trajectories/
+│   ├── prompts/
+│   └── outputs/
+└── ...
+    ├── summary.json
+    ├── cost_summary.json
+    ├── summary_errors.json
+    ├── trajectories/
+    ├── prompts/
+    └── outputs/
+```
+### Batch trajectory generation
+
+Trajectory generation supports a Vertex AI batch mode for large offline sweeps. It will be 50% cheaper, but significantly slower--as much as 10x slower estimated from past runs.
+
+Use `--batch-processing` when launching the task-level generator CLI.
 
 ```bash
-python -m data_generation.task_level.post_traj_generation \
-  --dataset /tmp/summary.json
+PYTHONPATH=. uv run python -m data_generation.task_level.generation.raw.cli \
+  --tasks PrepareCoffee \
+  --num-runs 100 \
+  --model gemini-3.1-flash-lite-preview \
+  --sampling base \
+  --batch-processing \
+  --batch-gcs-prefix gs://YOUR_BUCKET/robocasa-batch
 ```
 
-You can override the copied output path with `--output-dataset /path/to/summary.json`.
 
+### Adding Images via Post-Processing of Raw Data
+
+After the raw data is generated via LLM, run post-processing to add `get_image` steps and deterministic
+`image_path` fields in a copied dataset tree under `data/w_images/`. The output path mirrors the
+source tree after `data/raw/`, so
+`data/raw/requests/{timestamp}/{task}/summary.json` becomes
+`data/w_images/requests/{timestamp}/{task}/summary.json`. The source dataset stays unchanged:
+
+```bash
+python -m data_generation.task_level.generation.image.cli \
+  --dataset data_generation/task_level/data/raw/requests/{timestamp}/{task}/summary.json
+```
 To post-process every task summary inside one request directory, run directly in CLI:
 
 ```bash
-for summary in data_generation/task_level/data/raw/requests/20260316T022801Z/*/summary.json; do
-  python -m data_generation.task_level.post_traj_generation --dataset "$summary"
+for summary in data_generation/task_level/data/raw/requests/{timestamp}/*/summary.json; do
+  python -m data_generation.task_level.generation.image.cli --dataset "$summary"
 done
 ```
 
-The generator also writes sibling sidecar directories next to the dataset summary:
+The raw generator writes artifacts next to the dataset summary:
 - `trajectories/`: validated saved trajectory JSON
 - `prompts/`: the exact prompt used for each saved trajectory
 - `outputs/`: the raw successful model output text for each saved trajectory
+- `summary_errors.json`: aggregated error events for that task or request
+- `summary_costs.json`: costs of generation per trajectory
 
-When you pass multiple tasks with `--tasks`, the generator writes:
-- one normal output tree per task
-- one combined request-level summary, cost summary, and error summary that aggregate all selected tasks
+Post-processing keeps those copied artifacts and also prepares:
+- `images/`: sibling image root referenced by inserted `get_image` steps via `image_path`
 
 Sampling notes:
-- `--num-runs` is the number of model calls, not always the number of saved trajectories.
+- `--num-runs` is the number of runs, not always the number of saved trajectories.
 - With multiple tasks, `--num-runs` applies to each task. For example,
   `--tasks PrepareCoffee HotDogSetup --num-runs 5` launches 10 runs total.
 - `--sampling base` saves one trajectory per successful run.
@@ -153,32 +204,6 @@ Sampling notes:
 - The task files may define a template agent location such as `staging_area`, but
   actual per-run agent start positions are sampled from the task's allowed fixture
   locations before prompt generation and validation.
-
-## Batch trajectory generation
-
-Trajectory generation supports a Vertex AI batch mode for large offline sweeps. It will be 50% cheaper, but significantly slower--as much as 10x from past runs.
-
-The generated local outputs are the same as the normal path:
-- trajectory JSON
-- summary JSON
-- error JSON
-- cost JSON
-- prompt sidecars in `prompts/`
-- raw model output sidecars in `outputs/`
-
-### Enabling batch mode
-
-Use `--batch-processing` when launching the task-level generator CLI.
-
-```bash
-PYTHONPATH=. uv run python -m data_generation.task_level.generation.cli \
-  --tasks PrepareCoffee \
-  --num-runs 100 \
-  --model gemini-3.1-flash-lite-preview \
-  --sampling base \
-  --batch-processing \
-  --batch-gcs-prefix gs://YOUR_BUCKET/robocasa-batch
-```
 
 Notes:
 
@@ -194,11 +219,11 @@ Notes:
 - The output `.json` stores interleaved tool-call steps for `agent_0` and `agent_1`,
   plus short explicit reasoning text per step.
 - The main output path stores a compact trajectory summary plus `cost_summary`. A
-  sibling sidecar file is written to `cost_summary.json` by default and includes
+  sibling cost summary file is written to `cost_summary.json` by default and includes
   per-trajectory `generation_usage`, retry-inclusive rollup costs, average trajectory
   cost, and model pricing (`input_usd_per_million_tokens` /
   `output_usd_per_million_tokens`).
-- A sibling `summary_errors.json` sidecar records every observed error in the run,
+- A sibling `summary_errors.json` file records every observed error in the run,
   including retry failures and saved invalid trajectories, plus per-error counts.
 - The generator prints an initial projected cost before execution starts. While
   the CLI runs, the overall progress bar shows both the accumulated observed cost

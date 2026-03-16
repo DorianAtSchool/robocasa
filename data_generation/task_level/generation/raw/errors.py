@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from data_generation.task_level.raw_generation.runtime_support import (
+from data_generation.task_level.generation.raw.runtime_support import (
     _validation_error_base_type,
     _validation_error_type,
     format_trajectory_id,
@@ -25,7 +25,7 @@ def _build_error_event(
     retryable: bool | None = None,
     saved_in_output: bool = False,
 ) -> dict[str, Any]:
-    """Serializes one observed generation error into a stable sidecar schema."""
+    """Serializes one observed generation error into a stable output schema."""
 
     event: dict[str, Any] = {
         "error_type": error_type,

@@ -9,7 +9,7 @@ from data_generation.task_level.tasks import TaskDefinition
 from data_generation.task_level.tasks.base import PreflightTokenEstimate
 
 if TYPE_CHECKING:
-    from data_generation.task_level.raw_generation.config import RuntimeConfig
+    from data_generation.task_level.generation.raw.config import RuntimeConfig
     from data_generation.task_level.tasks.base import TaskInstance
 
 
@@ -128,7 +128,9 @@ class BaseSamplingStrategy:
 
         del task_definition
         del runtime_config
-        from data_generation.task_level.raw_generation.runtime_support import (
+        # Reuse the shared JSON extraction helper so base sampling inherits the
+        # same fence-stripping behavior as the runtime validation path.
+        from data_generation.task_level.generation.raw.runtime_support import (
             extract_json_candidate,
         )
 

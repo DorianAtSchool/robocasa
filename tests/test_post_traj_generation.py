@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from data_generation.task_level.post_traj_generation import (
+from data_generation.task_level.generation.image import (
     POST_PROCESS_VALIDATION_ERROR,
     POST_PROCESS_VALIDATION_ERROR_TYPE,
     post_process_dataset,
@@ -204,6 +204,18 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
             Path("/tmp/data/w_images/prepare_coffee/summary.json"),
         )
 
+    def test_resolve_output_dataset_path_preserves_request_layout(self):
+        dataset_path = Path(
+            "/tmp/data/raw/requests/20260316T022801Z/prepare_coffee/summary.json"
+        )
+
+        self.assertEqual(
+            resolve_output_dataset_path(dataset_path),
+            Path(
+                "/tmp/data/w_images/requests/20260316T022801Z/prepare_coffee/summary.json"
+            ),
+        )
+
     def test_post_process_dataset_writes_summary_copy_without_mutating_source(self):
         summary_payload = {
             "composite_task": "PrepareCoffee",
@@ -226,6 +238,7 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
             )
             trajectory_path = dataset_path.parent / "trajectories" / "traj_000000.json"
             prompt_path = dataset_path.parent / "prompts" / "traj_000000.md"
+            error_summary_path = dataset_path.parent / "summary_errors.json"
             output_dataset_path = resolve_output_dataset_path(dataset_path)
             output_trajectory_path = (
                 output_dataset_path.parent / "trajectories" / "traj_000000.json"
@@ -233,6 +246,8 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
             output_prompt_path = (
                 output_dataset_path.parent / "prompts" / "traj_000000.md"
             )
+            output_error_summary_path = output_dataset_path.parent / "summary_errors.json"
+            output_images_dir = output_dataset_path.parent / "images"
             dataset_path.parent.mkdir(parents=True, exist_ok=True)
             dataset_path.write_text(
                 json.dumps(summary_payload, indent=2), encoding="utf-8"
@@ -244,6 +259,10 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
                 encoding="utf-8",
             )
             prompt_path.write_text("prompt copy me", encoding="utf-8")
+            error_summary_path.write_text(
+                json.dumps({"total_errors": 1}, indent=2),
+                encoding="utf-8",
+            )
 
             processed_count = post_process_dataset(dataset_path, disable_progress=True)
 
@@ -273,6 +292,11 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
             self.assertEqual(
                 output_prompt_path.read_text(encoding="utf-8"), "prompt copy me"
             )
+            self.assertEqual(
+                json.loads(output_error_summary_path.read_text(encoding="utf-8")),
+                {"total_errors": 1},
+            )
+            self.assertTrue(output_images_dir.is_dir())
 
 
 if __name__ == "__main__":

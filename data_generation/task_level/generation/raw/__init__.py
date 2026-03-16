@@ -16,11 +16,11 @@ def __getattr__(name: str):
     """Loads public generation exports lazily to avoid preloading the CLI module."""
 
     if name == "RuntimeConfig":
-        from data_generation.task_level.raw_generation.config import RuntimeConfig
+        from data_generation.task_level.generation.raw.config import RuntimeConfig
 
         return RuntimeConfig
     if name in {"generate_single_trajectory", "generate_trajectories"}:
-        from data_generation.task_level.raw_generation.orchestrator import (
+        from data_generation.task_level.generation.raw.orchestrator import (
             generate_single_trajectory,
             generate_trajectories,
         )
@@ -31,7 +31,7 @@ def __getattr__(name: str):
         }
         return exports[name]
     if name in {"main", "parse_args", "run_cli"}:
-        from data_generation.task_level.raw_generation.cli import main, parse_args, run_cli
+        from data_generation.task_level.generation.raw.cli import main, parse_args, run_cli
 
         exports = {
             "main": main,

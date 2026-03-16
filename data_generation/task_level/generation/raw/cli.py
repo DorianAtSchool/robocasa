@@ -7,7 +7,7 @@ import os
 import sys
 from pathlib import Path
 
-from data_generation.task_level.raw_generation.config import (
+from data_generation.task_level.generation.raw.config import (
     DEFAULT_COMPOSITE_TASK,
     GENERATION_ERROR_EXIT_CODE,
     GOOGLE_CLOUD_BATCH_GCS_PREFIX_ENV_VAR,
@@ -17,8 +17,8 @@ from data_generation.task_level.raw_generation.config import (
     THINKING_LEVEL_CHOICES,
     _validate_runtime_config,
 )
-from data_generation.task_level.raw_generation.orchestrator import generate_trajectories
-from data_generation.task_level.raw_generation.outputs import (
+from data_generation.task_level.generation.raw.orchestrator import generate_trajectories
+from data_generation.task_level.generation.raw.outputs import (
     _print_written_output_summary,
     _resolve_output_paths,
     _write_generation_outputs,
@@ -29,7 +29,7 @@ from data_generation.task_level.raw_generation.outputs import (
     resolve_request_output_path,
     resolve_request_task_output_path,
 )
-from data_generation.task_level.raw_generation.runtime_support import (
+from data_generation.task_level.generation.raw.runtime_support import (
     _exception_summary,
     _resolve_task_definitions_or_raise,
 )
@@ -94,7 +94,7 @@ def parse_args(argv: list[str] | None = None) -> RuntimeConfig:
         type=Path,
         default=None,
         help=(
-            "Optional JSON path for the cost summary sidecar. Defaults to "
+            "Optional JSON path for the cost summary file. Defaults to "
             "`cost_summary.json` alongside the summary output."
         ),
     )
@@ -220,6 +220,8 @@ def parse_args(argv: list[str] | None = None) -> RuntimeConfig:
     )
     args = parser.parse_args(argv)
     parsed_tasks = tuple(args.composite_tasks)
+    # Resolve the default single-task summary path here so downstream runtime
+    # code only deals with explicit output locations.
     default_summary_path = (
         resolve_dataset_output_path(parsed_tasks[0]) if len(parsed_tasks) == 1 else None
     )
@@ -250,10 +252,13 @@ def main(argv: list[str] | None = None) -> int:
     """Executes task-level generation for one or many requested tasks."""
 
     runtime_config = parse_args(argv)
+    # Validate once up front so both execution paths below share the same
+    # normalized configuration contract.
     _validate_runtime_config(runtime_config)
     _resolve_task_definitions_or_raise(runtime_config.composite_tasks)
 
     if len(runtime_config.composite_tasks) == 1:
+        # The single-task path writes one standalone dataset tree directly.
         output_paths = _resolve_output_paths(runtime_config)
         payload = generate_trajectories(runtime_config)
         (
@@ -274,6 +279,8 @@ def main(argv: list[str] | None = None) -> int:
 
     request_summary_path = resolve_request_output_path()
     task_run_entries: list[dict[str, Any]] = []
+    # The multi-task path runs each task independently, then writes request-
+    # level summaries that point back to those per-task outputs.
     for composite_task in runtime_config.composite_tasks:
         task_summary_path = resolve_request_task_output_path(
             request_summary_path,

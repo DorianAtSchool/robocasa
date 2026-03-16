@@ -17,7 +17,7 @@ from data_generation.utils import stable_json_sha256
 
 if TYPE_CHECKING:
     from data_generation.task_level.tasks import TaskDefinition
-    from data_generation.task_level.raw_generation.config import RuntimeConfig
+    from data_generation.task_level.generation.raw.config import RuntimeConfig
     from data_generation.task_level.tasks.base import TaskInstance
 
 
@@ -36,6 +36,8 @@ class VerbalizedTrajectorySequenceValidator:
     ) -> list[SampledTrajectoryCandidate]:
         """Parses one verbalized response object into distinct candidate trajectories."""
 
+        # Validate the outer sequence here before task-level validation starts so
+        # runtime retries can distinguish structural issues from task failures.
         responses = response_payload.get("responses")
         if not isinstance(responses, list):
             raise VerbalizedSamplingValidationError(
@@ -115,6 +117,8 @@ class VerbalizedSamplingStrategy:
     ) -> str:
         """Wraps the task prompt with verbalized multi-trajectory response instructions."""
 
+        # Start from the task's normal prompt, then layer only the extra output
+        # contract needed to request multiple candidates at once.
         base_prompt = task_definition.build_prompt(
             variation_key,
             task_instance=task_instance,
@@ -206,6 +210,8 @@ def _extract_json_object(raw_response: Any) -> dict[str, Any]:
             f"Unsupported model response type: {type(raw_response).__name__}"
         )
 
+    # Accept the same fenced-or-embedded JSON patterns seen in direct model
+    # responses before enforcing the verbalized outer schema.
     stripped = raw_response.strip()
     fenced_match = re.search(r"```(?:json)?\s*(\{.*\})\s*```", stripped, re.DOTALL)
     if fenced_match:

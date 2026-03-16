@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from data_generation.task_level.raw_generation.config import (
+from data_generation.task_level.generation.raw.config import (
     RuntimeConfig,
     _validate_runtime_config,
 )
-from data_generation.task_level.raw_generation.runtime_support import (
+from data_generation.task_level.generation.raw.runtime_support import (
     _resolve_task_definition_or_raise,
 )
 
@@ -24,6 +24,8 @@ def generate_single_trajectory(
     seen_signatures: set[str] | None = None,
     seen_signatures_lock: threading.Lock | None = None,
 ) -> dict[str, Any] | list[dict[str, Any]]:
+    # Keep the public entrypoint stable while the implementation lives in the
+    # on-demand runtime module.
     from data_generation.task_level.runtime.on_demand_generation import (
         generate_single_trajectory as generate_single_trajectory_on_demand,
     )
@@ -47,6 +49,8 @@ def generate_trajectories(
     show_progress: bool = True,
 ) -> dict[str, Any]:
     task_definition = _resolve_task_definition_or_raise(runtime_config.composite_task)
+    # Centralize runtime selection here so the CLI and tests share one dispatch
+    # point regardless of execution mode.
     _validate_runtime_config(runtime_config)
     if runtime_config.batch_processing:
         from data_generation.task_level.runtime.batch_generation import (

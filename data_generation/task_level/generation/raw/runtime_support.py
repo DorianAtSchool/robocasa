@@ -7,7 +7,7 @@ import re
 import threading
 from typing import Any
 
-from data_generation.task_level.raw_generation.config import (
+from data_generation.task_level.generation.raw.config import (
     RETRY_PROGRESS_ERROR_MESSAGE_MAX_LENGTH,
     RuntimeConfig,
     TRAJECTORY_ID_DIGITS,
@@ -278,6 +278,8 @@ def _build_trajectory_record_from_candidate(
     seen_signatures_lock: threading.Lock | None,
     attempt_number: int,
 ) -> dict[str, Any]:
+    # Reuse the shared sampled-candidate path so base and verbalized modes keep
+    # one normalization and validation implementation.
     trajectory_records = _build_trajectory_records_from_sampled_candidates(
         run_index=trajectory_index,
         runtime_config=runtime_config,
@@ -397,6 +399,8 @@ def _validation_errors_retry_summary(validations: list[dict[str, Any]]) -> str |
 def _unwrap_generation_response(
     raw_response: Any,
 ) -> tuple[Any, GenerationUsage | None]:
+    # Both SDK wrappers and test doubles feed through here, so normalize the
+    # payload shape before sampling code looks at it.
     if isinstance(raw_response, GenerationResult):
         return raw_response.payload, raw_response.usage
     return raw_response, None
@@ -648,6 +652,8 @@ def _build_trajectory_records_from_sampled_candidates(
         seen_signatures_lock=seen_signatures_lock,
     )
 
+    # Split one attempt-level usage record across the candidates that will be
+    # persisted so downstream outputs stay trajectory-centric.
     shared_usage = _build_shared_generation_usage(
         runtime_config=runtime_config,
         sampled_candidates=sampled_candidates,
@@ -754,6 +760,8 @@ def _maybe_reserve_signature(
         return
 
     signature = validation["signature"]
+    # Reserve signatures before persisting outputs so concurrent workers do not
+    # save the same normalized trajectory twice.
     # Enforce uniqueness only for validated trajectories we intend to keep.
     with seen_signatures_lock:
         if signature in seen_signatures:
