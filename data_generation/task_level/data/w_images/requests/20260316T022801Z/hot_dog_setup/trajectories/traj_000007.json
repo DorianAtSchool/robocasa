@@ -1,0 +1,521 @@
+{
+  "trajectory_id": "traj_000007",
+  "composite_task": "HotDogSetup",
+  "agents": [
+    {
+      "agent": "agent_0"
+    },
+    {
+      "agent": "agent_1"
+    }
+  ],
+  "initial_state": {
+    "agents": {
+      "agent_0": {
+        "location": "dining_table_1",
+        "held_object": null
+      },
+      "agent_1": {
+        "location": "dining_table_1",
+        "held_object": null
+      }
+    },
+    "objects": {
+      "hotdog_bun_1": {
+        "object_type": "hotdog_bun",
+        "location": "counter_1"
+      },
+      "sausage_1": {
+        "object_type": "sausage",
+        "location": "fridge_1"
+      },
+      "condiment_1": {
+        "object_type": "condiment_bottle",
+        "location": "cabinet_1"
+      },
+      "plate_1": {
+        "object_type": "plate",
+        "location": "dining_table_1"
+      }
+    },
+    "fixtures": {
+      "cabinet_1": {
+        "fixture_type": "cabinet",
+        "parts": {
+          "door": {
+            "part_type": "hinged_part",
+            "state": "open"
+          }
+        }
+      },
+      "counter_1": {
+        "fixture_type": "counter"
+      },
+      "fridge_1": {
+        "fixture_type": "fridge"
+      },
+      "dining_table_1": {
+        "fixture_type": "dining_table"
+      }
+    },
+    "machine_state": {
+      "hot_dog_setup": {
+        "condiment_placed_next_to_plate": false
+      }
+    }
+  },
+  "steps": [
+    {
+      "step": 0,
+      "agent": "agent_0",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "top_view"
+      },
+      "reasoning": "I need an initial top-view image before the task begins.",
+      "image_path": "trajectories/images/traj_000007/0_top_view_agent_0.png"
+    },
+    {
+      "step": 1,
+      "agent": "agent_0",
+      "tool": "communicate",
+      "args": {
+        "to": "agent_1",
+        "message": "agent_0 will get the bun from counter_1."
+      },
+      "reasoning": "agent_0 starts coordination."
+    },
+    {
+      "step": 2,
+      "agent": "agent_1",
+      "tool": "communicate",
+      "args": {
+        "to": "agent_0",
+        "message": "agent_1 will get the sausage from fridge_1."
+      },
+      "reasoning": "agent_1 starts coordination."
+    },
+    {
+      "step": 3,
+      "agent": "agent_0",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "base_camera"
+      },
+      "reasoning": "I need a base-camera image to observe the current scene before I execute navigate_to_fixture.",
+      "image_path": "trajectories/images/traj_000007/3_base_camera_agent_0.png"
+    },
+    {
+      "step": 4,
+      "agent": "agent_0",
+      "tool": "navigate_to_fixture",
+      "args": {
+        "fixture_id": "counter_1"
+      },
+      "reasoning": "agent_0 moves to target."
+    },
+    {
+      "step": 5,
+      "agent": "agent_0",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "base_camera"
+      },
+      "reasoning": "I need a base-camera image to observe the current scene after I executed navigate_to_fixture.",
+      "image_path": "trajectories/images/traj_000007/5_base_camera_agent_0.png"
+    },
+    {
+      "step": 6,
+      "agent": "agent_1",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "base_camera"
+      },
+      "reasoning": "I need a base-camera image to observe the current scene before I execute navigate_to_fixture.",
+      "image_path": "trajectories/images/traj_000007/6_base_camera_agent_1.png"
+    },
+    {
+      "step": 7,
+      "agent": "agent_1",
+      "tool": "navigate_to_fixture",
+      "args": {
+        "fixture_id": "fridge_1"
+      },
+      "reasoning": "agent_1 moves to target."
+    },
+    {
+      "step": 8,
+      "agent": "agent_1",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "base_camera"
+      },
+      "reasoning": "I need a base-camera image to observe the current scene after I executed navigate_to_fixture.",
+      "image_path": "trajectories/images/traj_000007/8_base_camera_agent_1.png"
+    },
+    {
+      "step": 9,
+      "agent": "agent_0",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "base_camera"
+      },
+      "reasoning": "I need a base-camera image to observe the current scene before I execute pick_up_object.",
+      "image_path": "trajectories/images/traj_000007/9_base_camera_agent_0.png"
+    },
+    {
+      "step": 10,
+      "agent": "agent_0",
+      "tool": "pick_up_object",
+      "args": {
+        "object_id": "hotdog_bun_1",
+        "source_id": "counter_1"
+      },
+      "reasoning": "agent_0 picks up bun."
+    },
+    {
+      "step": 11,
+      "agent": "agent_0",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "base_camera"
+      },
+      "reasoning": "I need a base-camera image to observe the current scene after I executed pick_up_object.",
+      "image_path": "trajectories/images/traj_000007/11_base_camera_agent_0.png"
+    },
+    {
+      "step": 12,
+      "agent": "agent_1",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "base_camera"
+      },
+      "reasoning": "I need a base-camera image to observe the current scene before I execute pick_up_object.",
+      "image_path": "trajectories/images/traj_000007/12_base_camera_agent_1.png"
+    },
+    {
+      "step": 13,
+      "agent": "agent_1",
+      "tool": "pick_up_object",
+      "args": {
+        "object_id": "sausage_1",
+        "source_id": "fridge_1"
+      },
+      "reasoning": "agent_1 picks up sausage."
+    },
+    {
+      "step": 14,
+      "agent": "agent_1",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "base_camera"
+      },
+      "reasoning": "I need a base-camera image to observe the current scene after I executed pick_up_object.",
+      "image_path": "trajectories/images/traj_000007/14_base_camera_agent_1.png"
+    },
+    {
+      "step": 15,
+      "agent": "agent_0",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "base_camera"
+      },
+      "reasoning": "I need a base-camera image to observe the current scene before I execute navigate_to_fixture.",
+      "image_path": "trajectories/images/traj_000007/15_base_camera_agent_0.png"
+    },
+    {
+      "step": 16,
+      "agent": "agent_0",
+      "tool": "navigate_to_fixture",
+      "args": {
+        "fixture_id": "dining_table_1"
+      },
+      "reasoning": "agent_0 heads to table."
+    },
+    {
+      "step": 17,
+      "agent": "agent_0",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "base_camera"
+      },
+      "reasoning": "I need a base-camera image to observe the current scene after I executed navigate_to_fixture.",
+      "image_path": "trajectories/images/traj_000007/17_base_camera_agent_0.png"
+    },
+    {
+      "step": 18,
+      "agent": "agent_1",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "base_camera"
+      },
+      "reasoning": "I need a base-camera image to observe the current scene before I execute navigate_to_fixture.",
+      "image_path": "trajectories/images/traj_000007/18_base_camera_agent_1.png"
+    },
+    {
+      "step": 19,
+      "agent": "agent_1",
+      "tool": "navigate_to_fixture",
+      "args": {
+        "fixture_id": "dining_table_1"
+      },
+      "reasoning": "agent_1 heads to table."
+    },
+    {
+      "step": 20,
+      "agent": "agent_1",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "base_camera"
+      },
+      "reasoning": "I need a base-camera image to observe the current scene after I executed navigate_to_fixture.",
+      "image_path": "trajectories/images/traj_000007/20_base_camera_agent_1.png"
+    },
+    {
+      "step": 21,
+      "agent": "agent_0",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "base_camera"
+      },
+      "reasoning": "I need a base-camera image to observe the current scene before I execute place_on_object.",
+      "image_path": "trajectories/images/traj_000007/21_base_camera_agent_0.png"
+    },
+    {
+      "step": 22,
+      "agent": "agent_0",
+      "tool": "place_on_object",
+      "args": {
+        "object_id": "hotdog_bun_1",
+        "support_object_id": "plate_1"
+      },
+      "reasoning": "agent_0 places bun."
+    },
+    {
+      "step": 23,
+      "agent": "agent_0",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "base_camera"
+      },
+      "reasoning": "I need a base-camera image to observe the current scene after I executed place_on_object.",
+      "image_path": "trajectories/images/traj_000007/23_base_camera_agent_0.png"
+    },
+    {
+      "step": 24,
+      "agent": "agent_1",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "base_camera"
+      },
+      "reasoning": "I need a base-camera image to observe the current scene before I execute place_on_object.",
+      "image_path": "trajectories/images/traj_000007/24_base_camera_agent_1.png"
+    },
+    {
+      "step": 25,
+      "agent": "agent_1",
+      "tool": "place_on_object",
+      "args": {
+        "object_id": "sausage_1",
+        "support_object_id": "plate_1"
+      },
+      "reasoning": "agent_1 places sausage."
+    },
+    {
+      "step": 26,
+      "agent": "agent_1",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "base_camera"
+      },
+      "reasoning": "I need a base-camera image to observe the current scene after I executed place_on_object.",
+      "image_path": "trajectories/images/traj_000007/26_base_camera_agent_1.png"
+    },
+    {
+      "step": 27,
+      "agent": "agent_1",
+      "tool": "communicate",
+      "args": {
+        "to": "agent_0",
+        "message": "agent_1 will go get the condiment_1 now."
+      },
+      "reasoning": "agent_1 communicates intent."
+    },
+    {
+      "step": 28,
+      "agent": "agent_1",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "base_camera"
+      },
+      "reasoning": "I need a base-camera image to observe the current scene before I execute navigate_to_fixture.",
+      "image_path": "trajectories/images/traj_000007/28_base_camera_agent_1.png"
+    },
+    {
+      "step": 29,
+      "agent": "agent_1",
+      "tool": "navigate_to_fixture",
+      "args": {
+        "fixture_id": "cabinet_1"
+      },
+      "reasoning": "agent_1 moves to cabinet."
+    },
+    {
+      "step": 30,
+      "agent": "agent_1",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "base_camera"
+      },
+      "reasoning": "I need a base-camera image to observe the current scene after I executed navigate_to_fixture.",
+      "image_path": "trajectories/images/traj_000007/30_base_camera_agent_1.png"
+    },
+    {
+      "step": 31,
+      "agent": "agent_1",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "base_camera"
+      },
+      "reasoning": "I need a base-camera image to observe the current scene before I execute pick_up_object.",
+      "image_path": "trajectories/images/traj_000007/31_base_camera_agent_1.png"
+    },
+    {
+      "step": 32,
+      "agent": "agent_1",
+      "tool": "pick_up_object",
+      "args": {
+        "object_id": "condiment_1",
+        "source_id": "cabinet_1"
+      },
+      "reasoning": "agent_1 picks up condiment."
+    },
+    {
+      "step": 33,
+      "agent": "agent_1",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "base_camera"
+      },
+      "reasoning": "I need a base-camera image to observe the current scene after I executed pick_up_object.",
+      "image_path": "trajectories/images/traj_000007/33_base_camera_agent_1.png"
+    },
+    {
+      "step": 34,
+      "agent": "agent_0",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "base_camera"
+      },
+      "reasoning": "I need a base-camera image to observe the current scene before I execute give_space.",
+      "image_path": "trajectories/images/traj_000007/34_base_camera_agent_0.png"
+    },
+    {
+      "step": 35,
+      "agent": "agent_0",
+      "tool": "give_space",
+      "args": {
+        "fixture_id": "dining_table_1"
+      },
+      "reasoning": "agent_0 clears space for agent_1."
+    },
+    {
+      "step": 36,
+      "agent": "agent_0",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "base_camera"
+      },
+      "reasoning": "I need a base-camera image to observe the current scene after I executed give_space.",
+      "image_path": "trajectories/images/traj_000007/36_base_camera_agent_0.png"
+    },
+    {
+      "step": 37,
+      "agent": "agent_1",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "base_camera"
+      },
+      "reasoning": "I need a base-camera image to observe the current scene before I execute navigate_to_fixture.",
+      "image_path": "trajectories/images/traj_000007/37_base_camera_agent_1.png"
+    },
+    {
+      "step": 38,
+      "agent": "agent_1",
+      "tool": "navigate_to_fixture",
+      "args": {
+        "fixture_id": "dining_table_1"
+      },
+      "reasoning": "agent_1 returns to table."
+    },
+    {
+      "step": 39,
+      "agent": "agent_1",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "base_camera"
+      },
+      "reasoning": "I need a base-camera image to observe the current scene after I executed navigate_to_fixture.",
+      "image_path": "trajectories/images/traj_000007/39_base_camera_agent_1.png"
+    },
+    {
+      "step": 40,
+      "agent": "agent_1",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "base_camera"
+      },
+      "reasoning": "I need a base-camera image to observe the current scene before I execute place_next_to.",
+      "image_path": "trajectories/images/traj_000007/40_base_camera_agent_1.png"
+    },
+    {
+      "step": 41,
+      "agent": "agent_1",
+      "tool": "place_next_to",
+      "args": {
+        "object_id": "condiment_1",
+        "reference_object_id": "plate_1"
+      },
+      "reasoning": "agent_1 completes the task."
+    },
+    {
+      "step": 42,
+      "agent": "agent_1",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "base_camera"
+      },
+      "reasoning": "I need a base-camera image to observe the current scene after I executed place_next_to.",
+      "image_path": "trajectories/images/traj_000007/42_base_camera_agent_1.png"
+    }
+  ],
+  "validation": {
+    "is_valid": false,
+    "checks": [],
+    "final_state": null,
+    "error_type": "PostProcessingValidationRequired",
+    "error": "Trajectory was post-processed after validation and must be revalidated.",
+    "step": null,
+    "signature": "1138e2c2ef478785f3b300db07875dccb7149747859d5821b20e4934af0379d9"
+  },
+  "generation_usage": {
+    "prompt_tokens": 891,
+    "output_tokens": 1366,
+    "reasoning_tokens": 366,
+    "total_tokens": 2623,
+    "usage_source": "api_usage_metadata",
+    "traffic_type": "ON_DEMAND",
+    "observed_cost_usd": 0.0028,
+    "pricing": {
+      "model": "gemini-3.1-flash-lite-preview",
+      "input_usd_per_million_tokens": 0.25,
+      "output_usd_per_million_tokens": 1.5
+    }
+  },
+  "sampling_metadata": {
+    "strategy": "verbalized",
+    "probability": 0.85,
+    "candidate_index": 1,
+    "run_index": 2
+  }
+}

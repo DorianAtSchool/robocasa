@@ -8,6 +8,7 @@ from data_generation.task_level.post_traj_generation import (
     POST_PROCESS_VALIDATION_ERROR_TYPE,
     post_process_dataset,
     post_process_trajectory,
+    resolve_output_dataset_path,
 )
 from data_generation.task_level.tasks import (
     PrepareCoffeeValidator,
@@ -97,7 +98,7 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
         )
         self.assertEqual(
             trajectory["steps"][0]["image_path"],
-            "trajectories/images/traj_000000/0_top_view_agent_0.png",
+            "images/traj_000000/0_top_view_agent_0.png",
         )
         self.assertEqual(
             trajectory["steps"][3]["args"],
@@ -105,7 +106,7 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
         )
         self.assertEqual(
             trajectory["steps"][3]["image_path"],
-            "trajectories/images/traj_000000/3_base_camera_agent_0.png",
+            "images/traj_000000/3_base_camera_agent_0.png",
         )
         self.assertEqual(
             trajectory["steps"][0]["reasoning"],
@@ -113,11 +114,35 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
         )
         self.assertEqual(
             trajectory["steps"][3]["reasoning"],
-            "I need a base-camera image to observe the current scene.",
+            (
+                "I need a base-camera image to observe the current scene before "
+                "I execute navigate_to_fixture."
+            ),
         )
         self.assertEqual(
             trajectory["steps"][4]["reasoning"],
             "I need to reach the cabinet.",
+        )
+        self.assertEqual(
+            trajectory["steps"][5]["reasoning"],
+            (
+                "I need a base-camera image to observe the current scene after "
+                "I executed navigate_to_fixture."
+            ),
+        )
+        self.assertEqual(
+            trajectory["steps"][6]["reasoning"],
+            (
+                "I need a base-camera image to observe the current scene before "
+                "I execute pick_up_object."
+            ),
+        )
+        self.assertEqual(
+            trajectory["steps"][8]["reasoning"],
+            (
+                "I need a base-camera image to observe the current scene after "
+                "I executed pick_up_object."
+            ),
         )
         self.assertFalse(trajectory["validation"]["is_valid"])
         self.assertEqual(trajectory["validation"]["checks"], [])
@@ -163,18 +188,23 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
             POST_PROCESS_VALIDATION_ERROR_TYPE,
         )
 
-    def test_post_process_trajectory_inserts_canonical_agents_when_missing(self):
+    def test_post_process_trajectory_does_not_insert_agents_when_missing(self):
         trajectory = make_sample_trajectory()
         trajectory.pop("agents")
 
         processed = post_process_trajectory(trajectory)
 
+        self.assertNotIn("agents", processed)
+
+    def test_resolve_output_dataset_path_targets_w_images_copy(self):
+        dataset_path = Path("/tmp/data/raw/prepare_coffee/summary.json")
+
         self.assertEqual(
-            processed["agents"],
-            [{"agent": "agent_0"}, {"agent": "agent_1"}],
+            resolve_output_dataset_path(dataset_path),
+            Path("/tmp/data/w_images/prepare_coffee/summary.json"),
         )
 
-    def test_post_process_dataset_updates_summary_sidecars_in_place(self):
+    def test_post_process_dataset_writes_summary_copy_without_mutating_source(self):
         summary_payload = {
             "composite_task": "PrepareCoffee",
             "sdk": "google-genai",
@@ -191,27 +221,57 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
         }
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            dataset_path = Path(tmpdir) / "prepare_coffee_trajectories.json"
-            trajectory_path = Path(tmpdir) / "trajectories" / "traj_000000.json"
-            dataset_path.write_text(json.dumps(summary_payload, indent=2), encoding="utf-8")
+            dataset_path = (
+                Path(tmpdir) / "data" / "raw" / "prepare_coffee" / "summary.json"
+            )
+            trajectory_path = dataset_path.parent / "trajectories" / "traj_000000.json"
+            prompt_path = dataset_path.parent / "prompts" / "traj_000000.md"
+            output_dataset_path = resolve_output_dataset_path(dataset_path)
+            output_trajectory_path = (
+                output_dataset_path.parent / "trajectories" / "traj_000000.json"
+            )
+            output_prompt_path = (
+                output_dataset_path.parent / "prompts" / "traj_000000.md"
+            )
+            dataset_path.parent.mkdir(parents=True, exist_ok=True)
+            dataset_path.write_text(
+                json.dumps(summary_payload, indent=2), encoding="utf-8"
+            )
             trajectory_path.parent.mkdir(parents=True, exist_ok=True)
+            prompt_path.parent.mkdir(parents=True, exist_ok=True)
             trajectory_path.write_text(
                 json.dumps(make_sample_trajectory(), indent=2),
                 encoding="utf-8",
             )
+            prompt_path.write_text("prompt copy me", encoding="utf-8")
 
             processed_count = post_process_dataset(dataset_path, disable_progress=True)
 
             self.assertEqual(processed_count, 1)
-            updated_trajectory = json.loads(trajectory_path.read_text(encoding="utf-8"))
+            source_trajectory = json.loads(trajectory_path.read_text(encoding="utf-8"))
+            updated_trajectory = json.loads(
+                output_trajectory_path.read_text(encoding="utf-8")
+            )
+            self.assertEqual(source_trajectory["steps"][0]["tool"], "communicate")
             self.assertEqual(updated_trajectory["steps"][0]["tool"], "get_image")
             self.assertEqual(
                 updated_trajectory["steps"][0]["image_path"],
-                "trajectories/images/traj_000000/0_top_view_agent_0.png",
+                "images/traj_000000/0_top_view_agent_0.png",
             )
             self.assertEqual(
-                json.loads(dataset_path.read_text(encoding="utf-8"))["trajectory_files"],
+                json.loads(output_dataset_path.read_text(encoding="utf-8"))[
+                    "trajectory_files"
+                ],
                 summary_payload["trajectory_files"],
+            )
+            self.assertEqual(
+                json.loads(dataset_path.read_text(encoding="utf-8"))[
+                    "trajectory_files"
+                ],
+                summary_payload["trajectory_files"],
+            )
+            self.assertEqual(
+                output_prompt_path.read_text(encoding="utf-8"), "prompt copy me"
             )
 
 

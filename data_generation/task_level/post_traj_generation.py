@@ -6,15 +6,14 @@ import argparse
 import json
 from dataclasses import dataclass
 from pathlib import Path
+import shutil
 import sys
 from typing import Any
 
-from data_generation.task_level.generation.config import TRAJECTORY_DIRECTORY_NAME
 from data_generation.task_level.generation.progress import (
     _close_progress_handles,
     _create_progress_handles,
 )
-from data_generation.task_level.tasks.base import build_canonical_agents
 from data_generation.utils import stable_json_sha256, write_json_output
 
 
@@ -23,10 +22,18 @@ COMMUNICATE_TOOL_NAME = "communicate"
 BASE_CAMERA_VIEW = "base_camera"
 TOP_VIEW_CAMERA = "top_view"
 POST_PROCESS_ERROR_EXIT_CODE = 1
-DEFAULT_AGENT_IDS = ("agent_0", "agent_1")
-GET_IMAGE_REASONING_BY_CAMERA = {
+INITIAL_GET_IMAGE_REASONING_BY_CAMERA = {
     TOP_VIEW_CAMERA: "I need an initial top-view image before the task begins.",
-    BASE_CAMERA_VIEW: "I need a base-camera image to observe the current scene.",
+}
+BASE_CAMERA_REASONING_TEMPLATES = {
+    "before": (
+        "I need a base-camera image to observe the current scene before I execute "
+        "{tool}."
+    ),
+    "after": (
+        "I need a base-camera image to observe the current scene after I executed "
+        "{tool}."
+    ),
 }
 POST_PROCESS_VALIDATION_ERROR_TYPE = "PostProcessingValidationRequired"
 POST_PROCESS_VALIDATION_ERROR = (
@@ -51,9 +58,7 @@ def build_step_image_path(
     """Builds the deterministic relative image path for one inserted get_image step."""
 
     filename = f"{step_index}_{camera_view}_{agent_id}.png"
-    return (
-        Path(TRAJECTORY_DIRECTORY_NAME) / "images" / trajectory_id / filename
-    ).as_posix()
+    return (Path("images") / trajectory_id / filename).as_posix()
 
 
 def _copy_step_without_generated_fields(step: dict[str, Any]) -> dict[str, Any]:
@@ -64,15 +69,39 @@ def _copy_step_without_generated_fields(step: dict[str, Any]) -> dict[str, Any]:
     return copied_step
 
 
-def _build_get_image_step(agent_id: str, *, camera_view: str) -> dict[str, Any]:
+def _build_base_camera_reasoning(tool_name: str, *, timing: str) -> str:
+    """Builds direction-aware reasoning for base-camera snapshots around actions."""
+
+    template = BASE_CAMERA_REASONING_TEMPLATES.get(timing)
+    if template is None:
+        raise ValueError(f"Unsupported base-camera timing: {timing}")
+    return template.format(tool=tool_name)
+
+
+def _build_get_image_step(
+    agent_id: str,
+    *,
+    camera_view: str,
+    wrapped_tool_name: str | None = None,
+    timing: str | None = None,
+) -> dict[str, Any]:
     """Builds one synthetic get_image step inserted around action tool calls."""
+
+    if camera_view == BASE_CAMERA_VIEW:
+        if not wrapped_tool_name:
+            raise ValueError("Base-camera get_image steps require a wrapped tool.")
+        if timing is None:
+            raise ValueError("Base-camera get_image steps require a timing value.")
+        reasoning = _build_base_camera_reasoning(wrapped_tool_name, timing=timing)
+    else:
+        reasoning = INITIAL_GET_IMAGE_REASONING_BY_CAMERA[camera_view]
 
     return {
         "step": -1,
         "agent": agent_id,
         "tool": GET_IMAGE_TOOL_NAME,
         "args": {"camera_view": camera_view},
-        "reasoning": GET_IMAGE_REASONING_BY_CAMERA[camera_view],
+        "reasoning": reasoning,
     }
 
 
@@ -108,11 +137,21 @@ def rebuild_steps_with_get_image(
             )
 
         rebuilt_steps.append(
-            _build_get_image_step(agent_id, camera_view=BASE_CAMERA_VIEW)
+            _build_get_image_step(
+                agent_id,
+                camera_view=BASE_CAMERA_VIEW,
+                wrapped_tool_name=tool_name,
+                timing="before",
+            )
         )
         rebuilt_steps.append(copied_step)
         rebuilt_steps.append(
-            _build_get_image_step(agent_id, camera_view=BASE_CAMERA_VIEW)
+            _build_get_image_step(
+                agent_id,
+                camera_view=BASE_CAMERA_VIEW,
+                wrapped_tool_name=tool_name,
+                timing="after",
+            )
         )
 
     for step_index, step in enumerate(rebuilt_steps):
@@ -146,30 +185,6 @@ def _resolve_initial_image_agent_id(trajectory: dict[str, Any]) -> str:
             return agent_id
 
     raise ValueError("Trajectory records must contain at least one valid agent.")
-
-
-def _resolve_canonical_agents(trajectory: dict[str, Any]) -> list[dict[str, str]]:
-    """Builds the saved agent roster from trajectory metadata or the shared default."""
-
-    initial_state_agents = trajectory.get("initial_state", {}).get("agents")
-    if isinstance(initial_state_agents, dict) and initial_state_agents:
-        return build_canonical_agents(tuple(initial_state_agents))
-
-    existing_agents = trajectory.get("agents")
-    if isinstance(existing_agents, list):
-        normalized_agent_ids: list[str] = []
-        for agent in existing_agents:
-            agent_id = agent.get("agent") if isinstance(agent, dict) else None
-            if (
-                isinstance(agent_id, str)
-                and agent_id
-                and agent_id not in normalized_agent_ids
-            ):
-                normalized_agent_ids.append(agent_id)
-        if normalized_agent_ids:
-            return build_canonical_agents(tuple(normalized_agent_ids))
-
-    return build_canonical_agents(DEFAULT_AGENT_IDS)
 
 
 def _normalized_signature_payload(trajectory: dict[str, Any]) -> dict[str, Any]:
@@ -214,7 +229,6 @@ def post_process_trajectory(trajectory: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("Trajectory records must contain a non-empty trajectory_id.")
 
     updated_trajectory = dict(trajectory)
-    updated_trajectory["agents"] = _resolve_canonical_agents(updated_trajectory)
     updated_trajectory["steps"] = rebuild_steps_with_get_image(
         updated_trajectory["steps"],
         initial_image_agent_id=_resolve_initial_image_agent_id(updated_trajectory),
@@ -231,6 +245,22 @@ def _load_json_file(path: Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError(f"{path} must contain a top-level JSON object.")
     return payload
+
+
+def resolve_output_dataset_path(dataset_path: Path) -> Path:
+    """Maps one source dataset path to the default copied w_images destination."""
+
+    resolved_path = dataset_path.resolve()
+    parts = list(resolved_path.parts)
+    try:
+        data_index = parts.index("data")
+    except ValueError:
+        return dataset_path.parent / "w_images" / dataset_path.name
+
+    relative_parts = parts[data_index + 1 :]
+    if relative_parts and relative_parts[0] in {"raw", "w_images"}:
+        relative_parts = relative_parts[1:]
+    return Path(*parts[: data_index + 1]) / "w_images" / Path(*relative_parts)
 
 
 def _resolve_summary_trajectory_paths(
@@ -256,11 +286,20 @@ def _post_process_summary_dataset(
     dataset_path: Path,
     payload: dict[str, Any],
     *,
+    output_dataset_path: Path,
     disable_progress: bool,
 ) -> int:
-    """Rewrites every sidecar trajectory referenced by a summary dataset."""
+    """Writes a copied summary dataset tree and post-processes its trajectories."""
 
-    trajectory_paths = _resolve_summary_trajectory_paths(dataset_path, payload)
+    if output_dataset_path.resolve() != dataset_path.resolve():
+        shutil.copytree(
+            dataset_path.parent,
+            output_dataset_path.parent,
+            dirs_exist_ok=True,
+        )
+        payload = _load_json_file(output_dataset_path)
+
+    trajectory_paths = _resolve_summary_trajectory_paths(output_dataset_path, payload)
     progress_handles = _create_progress_handles(
         PostProcessRuntimeConfig(num_trajectories=len(trajectory_paths)),
         disable_progress=disable_progress,
@@ -277,7 +316,7 @@ def _post_process_summary_dataset(
                 f"done calls={len(updated_trajectory['steps'])}"
             )
             progress_handles.overall_progress.update(1)
-        write_json_output(payload, dataset_path)
+        write_json_output(payload, output_dataset_path)
     finally:
         _close_progress_handles(progress_handles)
     return len(trajectory_paths)
@@ -287,9 +326,10 @@ def _post_process_payload_dataset(
     dataset_path: Path,
     payload: dict[str, Any],
     *,
+    output_dataset_path: Path,
     disable_progress: bool,
 ) -> int:
-    """Rewrites an inline dataset payload that stores trajectories directly."""
+    """Writes a copied inline dataset payload with post-processed trajectories."""
 
     trajectories = payload.get("trajectories")
     if not isinstance(trajectories, list):
@@ -314,7 +354,7 @@ def _post_process_payload_dataset(
             )
             progress_handles.overall_progress.update(1)
         payload["trajectories"] = updated_trajectories
-        write_json_output(payload, dataset_path)
+        write_json_output(payload, output_dataset_path)
     finally:
         _close_progress_handles(progress_handles)
     return len(trajectories)
@@ -323,20 +363,26 @@ def _post_process_payload_dataset(
 def post_process_dataset(
     dataset_path: Path,
     *,
+    output_dataset_path: Path | None = None,
     disable_progress: bool = False,
 ) -> int:
-    """Post-processes one saved dataset JSON in place and returns the trajectory count."""
+    """Post-processes one dataset into a copied output JSON and returns the count."""
 
+    output_dataset_path = output_dataset_path or resolve_output_dataset_path(
+        dataset_path
+    )
     payload = _load_json_file(dataset_path)
     if "trajectory_files" in payload:
         return _post_process_summary_dataset(
             dataset_path,
             payload,
+            output_dataset_path=output_dataset_path,
             disable_progress=disable_progress,
         )
     return _post_process_payload_dataset(
         dataset_path,
         payload,
+        output_dataset_path=output_dataset_path,
         disable_progress=disable_progress,
     )
 
@@ -345,18 +391,32 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parses the CLI arguments for the post-processing entrypoint."""
 
     parser = argparse.ArgumentParser(
-        description="Insert get_image steps into saved task-level trajectories."
+        description=(
+            "Insert get_image steps into trajectories referenced by a dataset JSON "
+            "and write the results to a copied output tree."
+        )
     )
     parser.add_argument(
         "--dataset",
         required=True,
         type=Path,
-        help="Path to the saved dataset JSON to update in place.",
+        help=(
+            "Path to the source dataset summary JSON or inline dataset JSON to "
+            "copy and post-process."
+        ),
     )
     parser.add_argument(
         "--disable-progress",
         action="store_true",
         help="Disable the trajectory progress bars.",
+    )
+    parser.add_argument(
+        "--output-dataset",
+        type=Path,
+        help=(
+            "Optional destination dataset JSON. Defaults to a mirrored copy under "
+            "data/w_images/."
+        ),
     )
     return parser.parse_args(argv)
 
@@ -365,16 +425,23 @@ def main(argv: list[str] | None = None) -> int:
     """Runs the CLI entrypoint and returns a process exit code."""
 
     args = parse_args(argv)
+    output_dataset_path = args.output_dataset or resolve_output_dataset_path(
+        args.dataset
+    )
     try:
         processed_count = post_process_dataset(
             args.dataset,
+            output_dataset_path=output_dataset_path,
             disable_progress=args.disable_progress,
         )
     except Exception as exc:
         print(f"Failed to post-process trajectories: {exc}", file=sys.stderr)
         return POST_PROCESS_ERROR_EXIT_CODE
 
-    print(f"Post-processed {processed_count} trajectories in {args.dataset}.")
+    print(
+        f"Post-processed {processed_count} trajectories from {args.dataset} "
+        f"to {output_dataset_path}."
+    )
     return 0
 
 

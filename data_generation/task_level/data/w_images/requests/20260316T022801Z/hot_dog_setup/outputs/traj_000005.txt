@@ -1,0 +1,132 @@
+{
+  "probability": 0.9,
+  "trajectory": {
+    "steps": [
+      {
+        "agent": "agent_0",
+        "args": {
+          "message": "agent_0 will get the bun.",
+          "to": "agent_1"
+        },
+        "reasoning": "agent_0 announces its intent.",
+        "step": 0,
+        "tool": "communicate"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "message": "agent_1 will wait at the table.",
+          "to": "agent_0"
+        },
+        "reasoning": "agent_1 coordinates by waiting.",
+        "step": 1,
+        "tool": "communicate"
+      },
+      {
+        "agent": "agent_0",
+        "args": {
+          "object_id": "hotdog_bun_1",
+          "source_id": "counter_1"
+        },
+        "reasoning": "agent_0 picks up the bun.",
+        "step": 2,
+        "tool": "pick_up_object"
+      },
+      {
+        "agent": "agent_0",
+        "args": {
+          "fixture_id": "dining_table_1"
+        },
+        "reasoning": "agent_0 moves to the table.",
+        "step": 3,
+        "tool": "navigate_to_fixture"
+      },
+      {
+        "agent": "agent_0",
+        "args": {
+          "object_id": "hotdog_bun_1",
+          "support_object_id": "plate_1"
+        },
+        "reasoning": "agent_0 places the bun.",
+        "step": 4,
+        "tool": "place_on_object"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "fixture_id": "fridge_1"
+        },
+        "reasoning": "agent_1 goes to the fridge.",
+        "step": 5,
+        "tool": "navigate_to_fixture"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "object_id": "sausage_1",
+          "source_id": "fridge_1"
+        },
+        "reasoning": "agent_1 picks up the sausage.",
+        "step": 6,
+        "tool": "pick_up_object"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "fixture_id": "dining_table_1"
+        },
+        "reasoning": "agent_1 moves to the table.",
+        "step": 7,
+        "tool": "navigate_to_fixture"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "object_id": "sausage_1",
+          "support_object_id": "plate_1"
+        },
+        "reasoning": "agent_1 places the sausage.",
+        "step": 8,
+        "tool": "place_on_object"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "fixture_id": "cabinet_1"
+        },
+        "reasoning": "agent_1 moves to the cabinet.",
+        "step": 9,
+        "tool": "navigate_to_fixture"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "object_id": "condiment_1",
+          "source_id": "cabinet_1"
+        },
+        "reasoning": "agent_1 picks up the condiment.",
+        "step": 10,
+        "tool": "pick_up_object"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "fixture_id": "dining_table_1"
+        },
+        "reasoning": "agent_1 returns to the table.",
+        "step": 11,
+        "tool": "navigate_to_fixture"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "object_id": "condiment_1",
+          "reference_object_id": "plate_1"
+        },
+        "reasoning": "agent_1 completes the task.",
+        "step": 12,
+        "tool": "place_next_to"
+      }
+    ]
+  }
+}

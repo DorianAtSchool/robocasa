@@ -115,12 +115,23 @@ python -m data_generation.task_level.generation.cli \
 For Gemini 3 models, you can optionally tune reasoning depth with
 `--thinking-level minimal|low|medium|high`.
 
-Then run post-processing to add the canonical `agents` key plus canonical `get_image`
-steps and deterministic `image_path` fields in place:
+Then run post-processing to add canonical `get_image` steps and deterministic
+`image_path` fields in a copied dataset tree under `data/w_images/`. The source
+dataset stays unchanged:
 
 ```bash
 python -m data_generation.task_level.post_traj_generation \
   --dataset /tmp/summary.json
+```
+
+You can override the copied output path with `--output-dataset /path/to/summary.json`.
+
+To post-process every task summary inside one request directory, run directly in CLI:
+
+```bash
+for summary in data_generation/task_level/data/raw/requests/20260316T022801Z/*/summary.json; do
+  python -m data_generation.task_level.post_traj_generation --dataset "$summary"
+done
 ```
 
 The generator also writes sibling sidecar directories next to the dataset summary:

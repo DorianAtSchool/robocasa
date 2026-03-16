@@ -1,0 +1,425 @@
+{
+  "trajectory_id": "traj_000010",
+  "composite_task": "PrepareCoffee",
+  "agents": [
+    {
+      "agent": "agent_0"
+    },
+    {
+      "agent": "agent_1"
+    }
+  ],
+  "initial_state": {
+    "agents": {
+      "agent_0": {
+        "location": "counter_1",
+        "held_object": null
+      },
+      "agent_1": {
+        "location": "coffee_machine_1",
+        "held_object": null
+      }
+    },
+    "objects": {
+      "mug_1": {
+        "object_type": "mug",
+        "location": "cabinet_1"
+      }
+    },
+    "fixtures": {
+      "cabinet_1": {
+        "fixture_type": "cabinet",
+        "parts": {
+          "door": {
+            "part_type": "hinged_part",
+            "state": "closed"
+          }
+        }
+      },
+      "counter_1": {
+        "fixture_type": "counter"
+      },
+      "coffee_machine_1": {
+        "fixture_type": "coffee_machine",
+        "controls": {
+          "start_button": {
+            "control_type": "button"
+          }
+        }
+      }
+    },
+    "machine_state": {
+      "coffee_machine_1": {
+        "started": false,
+        "dispenser_id": "coffee_machine_dispenser"
+      }
+    }
+  },
+  "steps": [
+    {
+      "step": 0,
+      "agent": "agent_0",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "top_view"
+      },
+      "reasoning": "I need an initial top-view image before the task begins.",
+      "image_path": "trajectories/images/traj_000010/0_top_view_agent_0.png"
+    },
+    {
+      "step": 1,
+      "agent": "agent_0",
+      "tool": "communicate",
+      "args": {
+        "to": "agent_1",
+        "message": "I will get the mug from cabinet_1."
+      },
+      "reasoning": "agent_0 announces the start of the task."
+    },
+    {
+      "step": 2,
+      "agent": "agent_1",
+      "tool": "communicate",
+      "args": {
+        "to": "agent_0",
+        "message": "I will wait at the coffee machine for you."
+      },
+      "reasoning": "agent_1 coordinates by waiting."
+    },
+    {
+      "step": 3,
+      "agent": "agent_0",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "base_camera"
+      },
+      "reasoning": "I need a base-camera image to observe the current scene before I execute navigate_to_fixture.",
+      "image_path": "trajectories/images/traj_000010/3_base_camera_agent_0.png"
+    },
+    {
+      "step": 4,
+      "agent": "agent_0",
+      "tool": "navigate_to_fixture",
+      "args": {
+        "fixture_id": "cabinet_1"
+      },
+      "reasoning": "agent_0 navigates to the cabinet."
+    },
+    {
+      "step": 5,
+      "agent": "agent_0",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "base_camera"
+      },
+      "reasoning": "I need a base-camera image to observe the current scene after I executed navigate_to_fixture.",
+      "image_path": "trajectories/images/traj_000010/5_base_camera_agent_0.png"
+    },
+    {
+      "step": 6,
+      "agent": "agent_0",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "base_camera"
+      },
+      "reasoning": "I need a base-camera image to observe the current scene before I execute open_hinged_part.",
+      "image_path": "trajectories/images/traj_000010/6_base_camera_agent_0.png"
+    },
+    {
+      "step": 7,
+      "agent": "agent_0",
+      "tool": "open_hinged_part",
+      "args": {
+        "target_id": "cabinet_1",
+        "part_id": "door"
+      },
+      "reasoning": "agent_0 opens the cabinet door."
+    },
+    {
+      "step": 8,
+      "agent": "agent_0",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "base_camera"
+      },
+      "reasoning": "I need a base-camera image to observe the current scene after I executed open_hinged_part.",
+      "image_path": "trajectories/images/traj_000010/8_base_camera_agent_0.png"
+    },
+    {
+      "step": 9,
+      "agent": "agent_0",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "base_camera"
+      },
+      "reasoning": "I need a base-camera image to observe the current scene before I execute pick_up_object.",
+      "image_path": "trajectories/images/traj_000010/9_base_camera_agent_0.png"
+    },
+    {
+      "step": 10,
+      "agent": "agent_0",
+      "tool": "pick_up_object",
+      "args": {
+        "object_id": "mug_1",
+        "source_id": "cabinet_1"
+      },
+      "reasoning": "agent_0 picks up the mug."
+    },
+    {
+      "step": 11,
+      "agent": "agent_0",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "base_camera"
+      },
+      "reasoning": "I need a base-camera image to observe the current scene after I executed pick_up_object.",
+      "image_path": "trajectories/images/traj_000010/11_base_camera_agent_0.png"
+    },
+    {
+      "step": 12,
+      "agent": "agent_0",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "base_camera"
+      },
+      "reasoning": "I need a base-camera image to observe the current scene before I execute navigate_to_fixture.",
+      "image_path": "trajectories/images/traj_000010/12_base_camera_agent_0.png"
+    },
+    {
+      "step": 13,
+      "agent": "agent_0",
+      "tool": "navigate_to_fixture",
+      "args": {
+        "fixture_id": "counter_1"
+      },
+      "reasoning": "agent_0 moves to the counter."
+    },
+    {
+      "step": 14,
+      "agent": "agent_0",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "base_camera"
+      },
+      "reasoning": "I need a base-camera image to observe the current scene after I executed navigate_to_fixture.",
+      "image_path": "trajectories/images/traj_000010/14_base_camera_agent_0.png"
+    },
+    {
+      "step": 15,
+      "agent": "agent_0",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "base_camera"
+      },
+      "reasoning": "I need a base-camera image to observe the current scene before I execute place_on_surface.",
+      "image_path": "trajectories/images/traj_000010/15_base_camera_agent_0.png"
+    },
+    {
+      "step": 16,
+      "agent": "agent_0",
+      "tool": "place_on_surface",
+      "args": {
+        "object_id": "mug_1",
+        "support_id": "counter_1"
+      },
+      "reasoning": "agent_0 places the mug on the counter."
+    },
+    {
+      "step": 17,
+      "agent": "agent_0",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "base_camera"
+      },
+      "reasoning": "I need a base-camera image to observe the current scene after I executed place_on_surface.",
+      "image_path": "trajectories/images/traj_000010/17_base_camera_agent_0.png"
+    },
+    {
+      "step": 18,
+      "agent": "agent_1",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "base_camera"
+      },
+      "reasoning": "I need a base-camera image to observe the current scene before I execute navigate_to_fixture.",
+      "image_path": "trajectories/images/traj_000010/18_base_camera_agent_1.png"
+    },
+    {
+      "step": 19,
+      "agent": "agent_1",
+      "tool": "navigate_to_fixture",
+      "args": {
+        "fixture_id": "counter_1"
+      },
+      "reasoning": "agent_1 navigates to the counter to pick up the mug."
+    },
+    {
+      "step": 20,
+      "agent": "agent_1",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "base_camera"
+      },
+      "reasoning": "I need a base-camera image to observe the current scene after I executed navigate_to_fixture.",
+      "image_path": "trajectories/images/traj_000010/20_base_camera_agent_1.png"
+    },
+    {
+      "step": 21,
+      "agent": "agent_1",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "base_camera"
+      },
+      "reasoning": "I need a base-camera image to observe the current scene before I execute pick_up_object.",
+      "image_path": "trajectories/images/traj_000010/21_base_camera_agent_1.png"
+    },
+    {
+      "step": 22,
+      "agent": "agent_1",
+      "tool": "pick_up_object",
+      "args": {
+        "object_id": "mug_1",
+        "source_id": "counter_1"
+      },
+      "reasoning": "agent_1 picks up the mug."
+    },
+    {
+      "step": 23,
+      "agent": "agent_1",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "base_camera"
+      },
+      "reasoning": "I need a base-camera image to observe the current scene after I executed pick_up_object.",
+      "image_path": "trajectories/images/traj_000010/23_base_camera_agent_1.png"
+    },
+    {
+      "step": 24,
+      "agent": "agent_0",
+      "tool": "communicate",
+      "args": {
+        "to": "agent_1",
+        "message": "I am standing by at the counter."
+      },
+      "reasoning": "agent_0 communicates status."
+    },
+    {
+      "step": 25,
+      "agent": "agent_1",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "base_camera"
+      },
+      "reasoning": "I need a base-camera image to observe the current scene before I execute navigate_to_fixture.",
+      "image_path": "trajectories/images/traj_000010/25_base_camera_agent_1.png"
+    },
+    {
+      "step": 26,
+      "agent": "agent_1",
+      "tool": "navigate_to_fixture",
+      "args": {
+        "fixture_id": "coffee_machine_1"
+      },
+      "reasoning": "agent_1 moves to the coffee machine."
+    },
+    {
+      "step": 27,
+      "agent": "agent_1",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "base_camera"
+      },
+      "reasoning": "I need a base-camera image to observe the current scene after I executed navigate_to_fixture.",
+      "image_path": "trajectories/images/traj_000010/27_base_camera_agent_1.png"
+    },
+    {
+      "step": 28,
+      "agent": "agent_1",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "base_camera"
+      },
+      "reasoning": "I need a base-camera image to observe the current scene before I execute place_under_dispenser.",
+      "image_path": "trajectories/images/traj_000010/28_base_camera_agent_1.png"
+    },
+    {
+      "step": 29,
+      "agent": "agent_1",
+      "tool": "place_under_dispenser",
+      "args": {
+        "object_id": "mug_1",
+        "dispenser_id": "coffee_machine_dispenser"
+      },
+      "reasoning": "agent_1 places the mug under the dispenser."
+    },
+    {
+      "step": 30,
+      "agent": "agent_1",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "base_camera"
+      },
+      "reasoning": "I need a base-camera image to observe the current scene after I executed place_under_dispenser.",
+      "image_path": "trajectories/images/traj_000010/30_base_camera_agent_1.png"
+    },
+    {
+      "step": 31,
+      "agent": "agent_1",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "base_camera"
+      },
+      "reasoning": "I need a base-camera image to observe the current scene before I execute press_button.",
+      "image_path": "trajectories/images/traj_000010/31_base_camera_agent_1.png"
+    },
+    {
+      "step": 32,
+      "agent": "agent_1",
+      "tool": "press_button",
+      "args": {
+        "target_id": "coffee_machine_1",
+        "control_id": "start_button"
+      },
+      "reasoning": "agent_1 starts the coffee machine."
+    },
+    {
+      "step": 33,
+      "agent": "agent_1",
+      "tool": "get_image",
+      "args": {
+        "camera_view": "base_camera"
+      },
+      "reasoning": "I need a base-camera image to observe the current scene after I executed press_button.",
+      "image_path": "trajectories/images/traj_000010/33_base_camera_agent_1.png"
+    }
+  ],
+  "validation": {
+    "is_valid": false,
+    "checks": [],
+    "final_state": null,
+    "error_type": "PostProcessingValidationRequired",
+    "error": "Trajectory was post-processed after validation and must be revalidated.",
+    "step": null,
+    "signature": "ea1beb6afebeae77a6887f684af6e2348238b9c8760b82011e200bde9765327f"
+  },
+  "generation_usage": {
+    "prompt_tokens": 934,
+    "output_tokens": 1131,
+    "reasoning_tokens": 681,
+    "total_tokens": 2746,
+    "usage_source": "api_usage_metadata",
+    "traffic_type": "ON_DEMAND",
+    "observed_cost_usd": 0.003,
+    "pricing": {
+      "model": "gemini-3.1-flash-lite-preview",
+      "input_usd_per_million_tokens": 0.25,
+      "output_usd_per_million_tokens": 1.5
+    }
+  },
+  "sampling_metadata": {
+    "strategy": "verbalized",
+    "probability": 0.92,
+    "candidate_index": 1,
+    "run_index": 3
+  }
+}
