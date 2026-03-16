@@ -5,19 +5,22 @@ from __future__ import annotations
 from typing import Any
 
 from data_generation.task_level.subatomic_tool_specs import build_allowed_tool_specs
-from data_generation.task_level.tasks.base import (
-    build_randomized_fixture_task_instance,
-    build_canonical_agents,
-    build_task_response_schema,
-    FiniteStateTaskValidator,
-    PreflightTokenEstimate,
+from data_generation.task_level.tasks.shared.errors import (
     TaskPreconditionSemanticValidationError,
+)
+from data_generation.task_level.tasks.shared.fsm import FiniteStateTaskValidator
+from data_generation.task_level.tasks.shared.instances import (
+    build_canonical_agents,
+    build_randomized_fixture_task_instance,
+)
+from data_generation.task_level.tasks.shared.prompting import make_task_prompt_builder
+from data_generation.task_level.tasks.shared.schema import build_task_response_schema
+from data_generation.task_level.tasks.shared.state import TaskRuntimeState
+from data_generation.task_level.tasks.shared.types import (
+    PreflightTokenEstimate,
     TaskDefinition,
     TaskInstance,
-    TaskRuntimeState,
-    make_task_prompt_builder,
 )
-
 
 MAX_REASONING_CHARS = 200
 AGENT_IDS = ("agent_0", "agent_1")

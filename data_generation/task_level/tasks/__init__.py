@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from data_generation.task_level.tasks.base import (
+from data_generation.task_level.tasks.shared.errors import (
     CommunicationStepSemanticValidationError,
     DuplicateTrajectoryValidationError,
     HeldObjectSemanticValidationError,
@@ -20,8 +20,6 @@ from data_generation.task_level.tasks.base import (
     ResponseFormatValidationError,
     TaskPreconditionSemanticValidationError,
     TaskSemanticValidationError,
-    TaskDefinition,
-    TaskValidator,
     ToolArgumentSemanticValidationError,
     TrajectoryStructureValidationError,
     TrajectoryValidationError,
@@ -30,6 +28,7 @@ from data_generation.task_level.tasks.base import (
     UnsatisfiedGoalSemanticValidationError,
     WaitDurationSemanticValidationError,
 )
+from data_generation.task_level.tasks.shared.types import TaskDefinition, TaskValidator
 from data_generation.task_level.tasks.hot_dog_setup import (
     HOT_DOG_SETUP_TASK,
     HotDogSetupValidator,

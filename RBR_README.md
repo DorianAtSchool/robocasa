@@ -21,12 +21,19 @@ This writes a rollout video to `test.mp4` at the repo root.
 ## Vertex AI trajectory generation
 
 The multi-agent task-level generator lives under `data_generation/task_level` and is
-isolated from the core RoboCasa task definitions.
+isolated from the core RoboCasa task definitions. The CLI entrypoint is
+`data_generation.task_level.generation.cli`.
 
 Install the required Google SDK into your active environment:
 
 ```bash
 uv pip install google-genai
+```
+
+If you plan to use Vertex batch mode, install the GCS client too:
+
+```bash
+uv pip install google-cloud-storage
 ```
 
 Create a repo-root `.env` file:
@@ -60,7 +67,7 @@ python test_google_cloud.py
 Generate validated symbolic two-agent trajectories for `PrepareCoffee` with base sampling:
 
 ```bash
-python -m data_generation.task_level.trajectory_generation \
+python -m data_generation.task_level.generation.cli \
   --tasks PrepareCoffee \
   --num-runs 2 \
   --sampling base \
@@ -76,7 +83,7 @@ Generate verbalized samples, where each run asks the model for multiple full
 trajectories plus a probability label for each one:
 
 ```bash
-python -m data_generation.task_level.trajectory_generation \
+python -m data_generation.task_level.generation.cli \
   --tasks PrepareCoffee \
   --num-runs 2 \
   --sampling verbalized \
@@ -93,7 +100,7 @@ Generate both supported tasks with shared runtime settings. `--num-runs` applies
 to each task, so the example below runs 10 model calls total:
 
 ```bash
-python -m data_generation.task_level.trajectory_generation \
+python -m data_generation.task_level.generation.cli \
   --tasks PrepareCoffee HotDogSetup \
   --num-runs 5 \
   --sampling base \
@@ -138,29 +145,25 @@ Sampling notes:
 
 ## Batch trajectory generation
 
-Trajectory generation now supports a Vertex AI batch mode for large offline sweeps.
-
-### Why use batch mode
-
-Batch mode is useful when you want to:
-- run large trajectory sweeps more cheaply than online generation
-- avoid many concurrent live API calls
-- be able to cancel outstanding remote work cleanly
+Trajectory generation supports a Vertex AI batch mode for large offline sweeps. It will be 50% cheaper, but significantly slower--as much as 10x from past runs.
 
 The generated local outputs are the same as the normal path:
 - trajectory JSON
 - summary JSON
+- error JSON
 - cost JSON
+- prompt sidecars in `prompts/`
+- raw model output sidecars in `outputs/`
 
 ### Enabling batch mode
 
-Use `--batch-processing` when launching trajectory generation.
+Use `--batch-processing` when launching the task-level generator CLI.
 
 ```bash
-PYTHONPATH=. uv run python -m data_generation.task_level.trajectory_generation \
+PYTHONPATH=. uv run python -m data_generation.task_level.generation.cli \
   --tasks PrepareCoffee \
   --num-runs 100 \
-  --model gemini-2.5-flash \
+  --model gemini-3.1-flash-lite-preview \
   --sampling base \
   --batch-processing \
   --batch-gcs-prefix gs://YOUR_BUCKET/robocasa-batch
@@ -192,10 +195,12 @@ Notes:
   and the current average cost per saved trajectory. Until at least one trajectory
   finishes, that live projected value is shown as `NaN`.
 - The generator now uses a single supported client path:
-  `genai.Client(http_options=HttpOptions(api_version="v1"))`.
+  `genai.Client(http_options=HttpOptions(api_version="v1"))` after the runtime
+  configures the Vertex environment variables internally.
 - `GOOGLE_API_KEY` and `GOOGLE_GENAI_USE_VERTEXAI` are not required for the generator.
 - The smoke test in `test_google_cloud.py` now loads `.env` and explicitly passes
-  `vertexai=True`, `project`, and `location`.
+  `vertexai=True`, `project`, and `location` directly because it exercises the
+  raw SDK path outside the generator runtime wrapper.
 - The ADC principal also needs Vertex AI permission to call the publisher model.
   If you see `aiplatform.endpoints.predict` denied, grant a role such as Vertex AI User.
 - Keep the shell clean while testing. Old exported Google variables can override `.env`.

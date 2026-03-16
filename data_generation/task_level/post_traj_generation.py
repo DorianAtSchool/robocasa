@@ -9,8 +9,8 @@ from pathlib import Path
 import sys
 from typing import Any
 
-from data_generation.task_level.trajectory_generation import (
-    TRAJECTORY_DIRECTORY_NAME,
+from data_generation.task_level.generation.config import TRAJECTORY_DIRECTORY_NAME
+from data_generation.task_level.generation.progress import (
     _close_progress_handles,
     _create_progress_handles,
 )

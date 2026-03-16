@@ -5,17 +5,23 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
 import threading
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-import data_generation.task_level.trajectory_generation as trajectory_generation
+from data_generation.task_level.generation import costs as _costs
+from data_generation.task_level.generation import errors as _errors
+from data_generation.task_level.generation import outputs as _outputs
+from data_generation.task_level.generation import progress as _progress
+from data_generation.task_level.generation import runtime_support as _runtime_support
+from data_generation.task_level.generation.config import RuntimeConfig
 from data_generation.task_level.runtime.client import (
     TrajectoryGenerationError,
     build_generation_client,
 )
-from data_generation.task_level.tasks import TaskDefinition
-
-if TYPE_CHECKING:
-    from data_generation.task_level.trajectory_generation import RuntimeConfig
+from data_generation.task_level.tasks import (
+    DuplicateTrajectoryValidationError,
+    TaskDefinition,
+    TrajectoryValidationError,
+)
 
 
 def generate_single_trajectory(
@@ -83,7 +89,7 @@ def generate_single_run(
     )
     task_instance = task_definition.build_task_instance(run_index)
     validator = task_definition.validator_factory(task_instance)
-    sampling_strategy = trajectory_generation._sampling_strategy_for_runtime(runtime_config)
+    sampling_strategy = _runtime_support._sampling_strategy_for_runtime(runtime_config)
     last_error: Exception | None = None
     trajectory_started = False
     retry_feedback: str | None = None
@@ -100,7 +106,7 @@ def generate_single_run(
 
     for attempt_index in range(runtime_config.max_retries):
         # Variation keys give retries a stable way to ask for distinct traces.
-        variation_key = trajectory_generation.format_trajectory_variation_key(
+        variation_key = _runtime_support.format_trajectory_variation_key(
             run_index,
             attempt_index,
         )
@@ -112,7 +118,7 @@ def generate_single_run(
             retry_feedback=retry_feedback,
         )
         attempt_prompt_entry = {
-            "run_id": trajectory_generation.format_attempt_prompt_owner_id(
+            "run_id": _outputs.format_attempt_prompt_owner_id(
                 runtime_config,
                 run_index=run_index,
             ),
@@ -133,7 +139,7 @@ def generate_single_run(
                 trajectory_progress.start()
                 trajectory_started = True
             trajectory_progress.set_postfix_str(
-                trajectory_generation._trajectory_generation_status(
+                _progress._trajectory_generation_status(
                     runtime_config,
                     attempt_number=attempt_index + 1,
                     previous_invalid_summary=previous_invalid_summary,
@@ -150,7 +156,7 @@ def generate_single_run(
                 temperature=runtime_config.temperature,
                 thinking_level=runtime_config.thinking_level,
             )
-            response_payload, usage = trajectory_generation._unwrap_generation_response(
+            response_payload, usage = _runtime_support._unwrap_generation_response(
                 raw_response
             )
             sampled_candidates = sampling_strategy.extract_candidates(
@@ -162,10 +168,10 @@ def generate_single_run(
                 # Reuse the single invalid candidate as a tiny negative example on retries.
                 retry_feedback_candidate = sampled_candidates[0].candidate
             tool_call_count = sum(
-                trajectory_generation._tool_call_count(sampled_candidate.candidate) or 0
+                _runtime_support._tool_call_count(sampled_candidate.candidate) or 0
                 for sampled_candidate in sampled_candidates
             ) or None
-            shared_generation_usage = trajectory_generation._build_shared_generation_usage(
+            shared_generation_usage = _runtime_support._build_shared_generation_usage(
                 runtime_config=runtime_config,
                 sampled_candidates=sampled_candidates,
                 prompt=prompt,
@@ -180,7 +186,7 @@ def generate_single_run(
                 if accumulated_cost_tracker is not None
                 else None
             )
-            trajectory_generation._update_overall_progress_status(
+            _progress._update_overall_progress_status(
                 overall_progress,
                 status="running",
                 accumulated_cost_text=accumulated_cost_text,
@@ -193,7 +199,7 @@ def generate_single_run(
                 needed_count = runtime_config.verbalized_k - len(accumulated_valid_results)
 
                 for sampled_candidate in sampled_candidates:
-                    validation, normalized_candidate = trajectory_generation._validate_candidate(
+                    validation, normalized_candidate = _runtime_support._validate_candidate(
                         sampled_candidate.candidate,
                         validator,
                         enforce_validation=False,
@@ -205,15 +211,15 @@ def generate_single_run(
                         continue
 
                     try:
-                        trajectory_generation._maybe_reserve_signature(
+                        _runtime_support._maybe_reserve_signature(
                             validation,
                             disable_validation=False,
                             seen_signatures=seen_signatures,
                             seen_signatures_lock=seen_signatures_lock,
                         )
-                    except trajectory_generation.DuplicateTrajectoryValidationError as exc:
+                    except DuplicateTrajectoryValidationError as exc:
                         invalid_validations.append(
-                            trajectory_generation._validation_error_payload(
+                            _runtime_support._validation_error_payload(
                                 exc,
                                 candidate=normalized_candidate,
                             )
@@ -235,9 +241,9 @@ def generate_single_run(
                         break
 
                 for invalid_validation in invalid_validations:
-                    trajectory_generation._append_error_event(
+                    _errors._append_error_event(
                         error_events,
-                        trajectory_generation._validation_error_event_from_payload(
+                        _errors._validation_error_event_from_payload(
                             invalid_validation,
                             source="on_demand",
                             trajectory_index=run_index,
@@ -256,20 +262,20 @@ def generate_single_run(
                     accumulated_valid_results.extend(valid_results_this_attempt)
 
                 if len(accumulated_valid_results) < runtime_config.verbalized_k:
-                    last_error = trajectory_generation._build_verbalized_insufficient_results_error(
+                    last_error = _runtime_support._build_verbalized_insufficient_results_error(
                         required_count=runtime_config.verbalized_k,
                         collected_count=len(accumulated_valid_results),
                         invalid_validations=invalid_validations,
                     )
                     if trajectory_progress is not None:
                         invalid_summary = (
-                            trajectory_generation._validation_errors_retry_summary(
+                            _runtime_support._validation_errors_retry_summary(
                                 invalid_validations
                             )
                         )
                         previous_invalid_summary = invalid_summary
                         trajectory_progress.set_postfix_str(
-                            trajectory_generation._trajectory_retry_status(
+                            _progress._trajectory_retry_status(
                                 runtime_config,
                                 attempt_number=attempt_index + 1,
                                 tool_call_count=tool_call_count,
@@ -278,7 +284,7 @@ def generate_single_run(
                         )
                     if invalid_validations:
                         first_invalid = invalid_validations[0]
-                        retry_feedback = trajectory_generation._build_retry_feedback_text_from_validation(
+                        retry_feedback = _runtime_support._build_retry_feedback_text_from_validation(
                             first_invalid,
                             candidate=retry_feedback_candidate,
                         )
@@ -293,10 +299,10 @@ def generate_single_run(
                     for generation_usage in accumulated_generation_usages
                 )
                 total_reasoning_tokens = sum(
-                    trajectory_generation._reasoning_token_count(generation_usage)
+                    _costs._reasoning_token_count(generation_usage)
                     for generation_usage in accumulated_generation_usages
                 )
-                total_observed_cost_usd = trajectory_generation._observed_cost_total(
+                total_observed_cost_usd = _costs._observed_cost_total(
                     accumulated_generation_usages
                 )
                 aggregate_generation_usage = dict(accumulated_generation_usages[0])
@@ -312,7 +318,7 @@ def generate_single_run(
                     attempt_index + 1 > 1
                 )
                 split_generation_usages = (
-                    trajectory_generation._split_generation_usage_across_candidates(
+                    _runtime_support._split_generation_usage_across_candidates(
                         aggregate_generation_usage,
                         candidate_count=len(accumulated_valid_results),
                     )
@@ -329,8 +335,8 @@ def generate_single_run(
                 ) in enumerate(
                     zip(accumulated_valid_results, split_generation_usages)
                 ):
-                    trajectory_id = trajectory_generation.format_trajectory_id(
-                        trajectory_generation._global_trajectory_index(
+                    trajectory_id = _runtime_support.format_trajectory_id(
+                        _runtime_support._global_trajectory_index(
                             runtime_config,
                             run_index=run_index,
                             candidate_index=candidate_index,
@@ -354,7 +360,7 @@ def generate_single_run(
                     trajectory_record["raw_output"] = sampled_candidate.raw_output
                     trajectory_records.append(trajectory_record)
             else:
-                trajectory_records = trajectory_generation._build_trajectory_records_from_sampled_candidates(
+                trajectory_records = _runtime_support._build_trajectory_records_from_sampled_candidates(
                     run_index=run_index,
                     runtime_config=runtime_config,
                     task_definition=task_definition,
@@ -370,9 +376,9 @@ def generate_single_run(
                 )
             for trajectory_record in trajectory_records:
                 validation = trajectory_record["validation"]
-                trajectory_generation._append_error_event(
+                _errors._append_error_event(
                     error_events,
-                    trajectory_generation._validation_error_event(
+                    _errors._validation_error_event(
                         validation,
                         source="on_demand",
                         trajectory_id=trajectory_record["trajectory_id"],
@@ -387,13 +393,13 @@ def generate_single_run(
                 if accumulated_cost_tracker is not None
                 else accumulated_cost_text
             )
-            trajectory_generation._update_overall_progress_status(
+            _progress._update_overall_progress_status(
                 overall_progress,
                 amount=1,
                 status="running",
                 accumulated_cost_text=completed_cost_text,
             )
-            total_observed_cost_usd = trajectory_generation._observed_cost_total(
+            total_observed_cost_usd = _costs._observed_cost_total(
                 [
                     trajectory_record["generation_usage"]
                     for trajectory_record in trajectory_records
@@ -417,7 +423,7 @@ def generate_single_run(
                 ),
                 None,
             )
-            trajectory_generation._update_completed_trajectory_progress(
+            _progress._update_completed_trajectory_progress(
                 trajectory_progress,
                 attempt_number=attempt_index + 1,
                 max_retries=runtime_config.max_retries,
@@ -438,45 +444,45 @@ def generate_single_run(
             last_error = exc
             if (
                 not runtime_config.disable_validation
-                and isinstance(exc, trajectory_generation.TrajectoryValidationError)
+                and isinstance(exc, TrajectoryValidationError)
             ):
-                retry_feedback = trajectory_generation._build_retry_feedback_text(
+                retry_feedback = _runtime_support._build_retry_feedback_text(
                     exc,
                     candidate=retry_feedback_candidate,
                 )
-            trajectory_generation._append_error_event(
+            _errors._append_error_event(
                 error_events,
-                trajectory_generation._exception_error_event(
+                _errors._exception_error_event(
                     exc,
                     source="on_demand",
                     stage=(
                         "validation"
-                        if isinstance(exc, trajectory_generation.TrajectoryValidationError)
+                        if isinstance(exc, TrajectoryValidationError)
                         else "generation"
                     ),
                     trajectory_index=run_index,
                     attempt_number=attempt_index + 1,
                     retryable=(
                         attempt_index + 1 < runtime_config.max_retries
-                        and not trajectory_generation._is_non_retryable_generation_error(exc)
+                        and not _runtime_support._is_non_retryable_generation_error(exc)
                     ),
                 ),
                 error_events_lock=error_events_lock,
             )
-            if trajectory_generation._is_non_retryable_generation_error(exc):
+            if _runtime_support._is_non_retryable_generation_error(exc):
                 raise TrajectoryGenerationError(
                     "Trajectory generation failed with a non-retryable error: "
-                    f"{trajectory_generation._exception_summary(exc)}"
+                    f"{_runtime_support._exception_summary(exc)}"
                 ) from exc
             if trajectory_progress is not None:
                 invalid_summary = None
-                if isinstance(exc, trajectory_generation.TrajectoryValidationError):
-                    invalid_summary = trajectory_generation._validation_error_retry_summary(
-                        trajectory_generation._validation_error_payload(exc)
+                if isinstance(exc, TrajectoryValidationError):
+                    invalid_summary = _runtime_support._validation_error_retry_summary(
+                        _runtime_support._validation_error_payload(exc)
                     )
                 previous_invalid_summary = invalid_summary
                 trajectory_progress.set_postfix_str(
-                    trajectory_generation._trajectory_retry_status(
+                    _progress._trajectory_retry_status(
                         runtime_config,
                         attempt_number=attempt_index + 1,
                         tool_call_count=tool_call_count,
@@ -495,7 +501,7 @@ def generate_single_run(
     raise TrajectoryGenerationError(
         f"Unable to generate a valid trajectory run for index {run_index} after "
         f"{runtime_config.max_retries} attempts: "
-        f"{trajectory_generation._exception_summary(last_error) if last_error is not None else 'Unknown error'}"
+        f"{_runtime_support._exception_summary(last_error) if last_error is not None else 'Unknown error'}"
     )
 
 
@@ -508,12 +514,12 @@ def generate_trajectories_on_demand(
 ) -> dict[str, Any]:
     seen_signatures: set[str] = set()
     seen_signatures_lock = threading.Lock()
-    projected_cost_estimate = trajectory_generation._build_preflight_cost_estimate_summary(
+    projected_cost_estimate = _costs._build_preflight_cost_estimate_summary(
         runtime_config,
         task_definition,
     )
-    accumulated_cost_tracker = trajectory_generation.AccumulatedCostTracker(
-        total_trajectories=trajectory_generation._expected_saved_trajectory_count(
+    accumulated_cost_tracker = _progress.AccumulatedCostTracker(
+        total_trajectories=_runtime_support._expected_saved_trajectory_count(
             runtime_config
         ),
     )
@@ -523,18 +529,18 @@ def generate_trajectories_on_demand(
     attempt_prompts_lock = threading.Lock()
 
     disable_progress = not show_progress or not os.isatty(2)
-    progress_handles = trajectory_generation._create_progress_handles(
+    progress_handles = _progress._create_progress_handles(
         runtime_config,
         disable_progress=disable_progress,
     )
-    trajectory_generation._log_cost_summary(
+    _progress._log_cost_summary(
         label="Initial projected cost",
         cost_estimate=projected_cost_estimate,
         runtime_config=runtime_config,
         enabled=show_progress,
         writer=progress_handles.log_writer,
     )
-    trajectory_generation._update_overall_progress_status(
+    _progress._update_overall_progress_status(
         progress_handles.overall_progress,
         status="running",
         accumulated_cost_text=accumulated_cost_tracker.status_text(),
@@ -581,14 +587,14 @@ def generate_trajectories_on_demand(
     finally:
         if wait_for_shutdown:
             executor.shutdown(wait=True, cancel_futures=False)
-        trajectory_generation._close_progress_handles(progress_handles)
+        _progress._close_progress_handles(progress_handles)
 
     ordered_trajectories = [
         trajectory_record
         for index in sorted(results)
         for trajectory_record in results[index]
     ]
-    return trajectory_generation._build_generation_payload(
+    return _outputs._build_generation_payload(
         runtime_config,
         ordered_trajectories,
         error_events=error_events,
