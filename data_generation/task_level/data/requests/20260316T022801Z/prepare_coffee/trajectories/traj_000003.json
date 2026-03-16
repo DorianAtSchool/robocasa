@@ -1,0 +1,247 @@
+{
+  "trajectory_id": "traj_000003",
+  "composite_task": "PrepareCoffee",
+  "agents": [
+    {
+      "agent": "agent_0"
+    },
+    {
+      "agent": "agent_1"
+    }
+  ],
+  "initial_state": {
+    "agents": {
+      "agent_0": {
+        "location": "counter_1",
+        "held_object": null
+      },
+      "agent_1": {
+        "location": "counter_1",
+        "held_object": null
+      }
+    },
+    "objects": {
+      "mug_1": {
+        "object_type": "mug",
+        "location": "cabinet_1"
+      }
+    },
+    "fixtures": {
+      "cabinet_1": {
+        "fixture_type": "cabinet",
+        "parts": {
+          "door": {
+            "part_type": "hinged_part",
+            "state": "closed"
+          }
+        }
+      },
+      "counter_1": {
+        "fixture_type": "counter"
+      },
+      "coffee_machine_1": {
+        "fixture_type": "coffee_machine",
+        "controls": {
+          "start_button": {
+            "control_type": "button"
+          }
+        }
+      }
+    },
+    "machine_state": {
+      "coffee_machine_1": {
+        "started": false,
+        "dispenser_id": "coffee_machine_dispenser"
+      }
+    }
+  },
+  "steps": [
+    {
+      "step": 0,
+      "agent": "agent_0",
+      "tool": "communicate",
+      "args": {
+        "to": "agent_1",
+        "message": "agent_0 will open cabinet_1 to retrieve mug_1."
+      },
+      "reasoning": "agent_0 initiates coordination to begin the coffee task."
+    },
+    {
+      "step": 1,
+      "agent": "agent_1",
+      "tool": "communicate",
+      "args": {
+        "to": "agent_0",
+        "message": "agent_1 will wait at counter_1 for the mug."
+      },
+      "reasoning": "agent_1 confirms its role in the coordination."
+    },
+    {
+      "step": 2,
+      "agent": "agent_0",
+      "tool": "navigate_to_fixture",
+      "args": {
+        "fixture_id": "cabinet_1"
+      },
+      "reasoning": "agent_0 moves to the cabinet to access the mug."
+    },
+    {
+      "step": 3,
+      "agent": "agent_0",
+      "tool": "open_hinged_part",
+      "args": {
+        "target_id": "cabinet_1",
+        "part_id": "door"
+      },
+      "reasoning": "agent_0 opens the cabinet door."
+    },
+    {
+      "step": 4,
+      "agent": "agent_0",
+      "tool": "pick_up_object",
+      "args": {
+        "object_id": "mug_1",
+        "source_id": "cabinet_1"
+      },
+      "reasoning": "agent_0 picks up the mug from the cabinet."
+    },
+    {
+      "step": 5,
+      "agent": "agent_0",
+      "tool": "navigate_to_fixture",
+      "args": {
+        "fixture_id": "counter_1"
+      },
+      "reasoning": "agent_0 brings the mug to the counter."
+    },
+    {
+      "step": 6,
+      "agent": "agent_0",
+      "tool": "place_on_surface",
+      "args": {
+        "object_id": "mug_1",
+        "support_id": "counter_1"
+      },
+      "reasoning": "agent_0 places the mug on the counter for agent_1."
+    },
+    {
+      "step": 7,
+      "agent": "agent_1",
+      "tool": "pick_up_object",
+      "args": {
+        "object_id": "mug_1",
+        "source_id": "counter_1"
+      },
+      "reasoning": "agent_1 picks up the mug from the counter."
+    },
+    {
+      "step": 8,
+      "agent": "agent_1",
+      "tool": "navigate_to_fixture",
+      "args": {
+        "fixture_id": "coffee_machine_1"
+      },
+      "reasoning": "agent_1 moves to the coffee machine."
+    },
+    {
+      "step": 9,
+      "agent": "agent_1",
+      "tool": "place_under_dispenser",
+      "args": {
+        "object_id": "mug_1",
+        "dispenser_id": "coffee_machine_dispenser"
+      },
+      "reasoning": "agent_1 places the mug under the dispenser."
+    },
+    {
+      "step": 10,
+      "agent": "agent_1",
+      "tool": "press_button",
+      "args": {
+        "target_id": "coffee_machine_1",
+        "control_id": "start_button"
+      },
+      "reasoning": "agent_1 starts the coffee machine."
+    }
+  ],
+  "validation": {
+    "is_valid": true,
+    "checks": [
+      "initial_communication",
+      "allowed_tools",
+      "navigation_preconditions",
+      "manipulation_preconditions",
+      "effects",
+      "final_success"
+    ],
+    "final_state": {
+      "mug_location": "coffee_machine_dispenser",
+      "coffee_machine_started": true,
+      "agents": {
+        "agent_0": {
+          "location": "counter_1",
+          "held_object": null
+        },
+        "agent_1": {
+          "location": "coffee_machine_1",
+          "held_object": null
+        }
+      },
+      "objects": {
+        "mug_1": {
+          "object_type": "mug",
+          "location": "coffee_machine_dispenser"
+        }
+      },
+      "fixtures": {
+        "cabinet_1": {
+          "fixture_type": "cabinet",
+          "parts": {
+            "door": {
+              "part_type": "hinged_part",
+              "state": "open"
+            }
+          }
+        },
+        "counter_1": {
+          "fixture_type": "counter"
+        },
+        "coffee_machine_1": {
+          "fixture_type": "coffee_machine",
+          "controls": {
+            "start_button": {
+              "control_type": "button"
+            }
+          }
+        }
+      },
+      "machine_state": {
+        "coffee_machine_1": {
+          "started": true,
+          "dispenser_id": "coffee_machine_dispenser"
+        }
+      }
+    },
+    "signature": "c13a3e22a2858616394af80aaa4f7e06c1d6a75aece8ca70587f1d93980d95b3"
+  },
+  "generation_usage": {
+    "prompt_tokens": 933,
+    "output_tokens": 997,
+    "reasoning_tokens": 169,
+    "total_tokens": 2099,
+    "usage_source": "api_usage_metadata",
+    "traffic_type": "ON_DEMAND",
+    "observed_cost_usd": 0.002,
+    "pricing": {
+      "model": "gemini-3.1-flash-lite-preview",
+      "input_usd_per_million_tokens": 0.25,
+      "output_usd_per_million_tokens": 1.5
+    }
+  },
+  "sampling_metadata": {
+    "strategy": "verbalized",
+    "probability": 0.9,
+    "candidate_index": 0,
+    "run_index": 1
+  }
+}

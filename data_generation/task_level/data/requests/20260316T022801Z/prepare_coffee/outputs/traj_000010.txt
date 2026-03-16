@@ -1,0 +1,133 @@
+{
+  "probability": 0.92,
+  "trajectory": {
+    "steps": [
+      {
+        "agent": "agent_0",
+        "args": {
+          "message": "I will get the mug from cabinet_1.",
+          "to": "agent_1"
+        },
+        "reasoning": "agent_0 announces the start of the task.",
+        "step": 0,
+        "tool": "communicate"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "message": "I will wait at the coffee machine for you.",
+          "to": "agent_0"
+        },
+        "reasoning": "agent_1 coordinates by waiting.",
+        "step": 1,
+        "tool": "communicate"
+      },
+      {
+        "agent": "agent_0",
+        "args": {
+          "fixture_id": "cabinet_1"
+        },
+        "reasoning": "agent_0 navigates to the cabinet.",
+        "step": 2,
+        "tool": "navigate_to_fixture"
+      },
+      {
+        "agent": "agent_0",
+        "args": {
+          "part_id": "door",
+          "target_id": "cabinet_1"
+        },
+        "reasoning": "agent_0 opens the cabinet door.",
+        "step": 3,
+        "tool": "open_hinged_part"
+      },
+      {
+        "agent": "agent_0",
+        "args": {
+          "object_id": "mug_1",
+          "source_id": "cabinet_1"
+        },
+        "reasoning": "agent_0 picks up the mug.",
+        "step": 4,
+        "tool": "pick_up_object"
+      },
+      {
+        "agent": "agent_0",
+        "args": {
+          "fixture_id": "counter_1"
+        },
+        "reasoning": "agent_0 moves to the counter.",
+        "step": 5,
+        "tool": "navigate_to_fixture"
+      },
+      {
+        "agent": "agent_0",
+        "args": {
+          "object_id": "mug_1",
+          "support_id": "counter_1"
+        },
+        "reasoning": "agent_0 places the mug on the counter.",
+        "step": 6,
+        "tool": "place_on_surface"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "fixture_id": "counter_1"
+        },
+        "reasoning": "agent_1 navigates to the counter to pick up the mug.",
+        "step": 7,
+        "tool": "navigate_to_fixture"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "object_id": "mug_1",
+          "source_id": "counter_1"
+        },
+        "reasoning": "agent_1 picks up the mug.",
+        "step": 8,
+        "tool": "pick_up_object"
+      },
+      {
+        "agent": "agent_0",
+        "args": {
+          "message": "I am standing by at the counter.",
+          "to": "agent_1"
+        },
+        "reasoning": "agent_0 communicates status.",
+        "step": 9,
+        "tool": "communicate"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "fixture_id": "coffee_machine_1"
+        },
+        "reasoning": "agent_1 moves to the coffee machine.",
+        "step": 10,
+        "tool": "navigate_to_fixture"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "dispenser_id": "coffee_machine_dispenser",
+          "object_id": "mug_1"
+        },
+        "reasoning": "agent_1 places the mug under the dispenser.",
+        "step": 11,
+        "tool": "place_under_dispenser"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "control_id": "start_button",
+          "target_id": "coffee_machine_1"
+        },
+        "reasoning": "agent_1 starts the coffee machine.",
+        "step": 12,
+        "tool": "press_button"
+      }
+    ]
+  }
+}
