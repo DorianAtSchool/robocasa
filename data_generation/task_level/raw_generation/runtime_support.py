@@ -7,7 +7,7 @@ import re
 import threading
 from typing import Any
 
-from data_generation.task_level.generation.config import (
+from data_generation.task_level.raw_generation.config import (
     RETRY_PROGRESS_ERROR_MESSAGE_MAX_LENGTH,
     RuntimeConfig,
     TRAJECTORY_ID_DIGITS,

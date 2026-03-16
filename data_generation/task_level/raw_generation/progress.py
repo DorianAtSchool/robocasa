@@ -34,8 +34,8 @@ except ImportError:  # pragma: no cover
     Text = None
     TimeElapsedColumn = None
 
-from data_generation.task_level.generation.config import RuntimeConfig
-from data_generation.task_level.generation.runtime_support import (
+from data_generation.task_level.raw_generation.config import RuntimeConfig
+from data_generation.task_level.raw_generation.runtime_support import (
     _expected_saved_trajectory_count,
     _trajectories_per_run,
     _validation_error_progress_summary,

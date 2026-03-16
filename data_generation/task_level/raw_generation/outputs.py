@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from data_generation.task_level.generation.config import (
+from data_generation.task_level.raw_generation.config import (
     COST_SUMMARY_OUTPUT_FILENAME,
     DATASET_RUN_TIMESTAMP_FORMAT,
     DEFAULT_OUTPUT_DIR,
@@ -18,15 +18,15 @@ from data_generation.task_level.generation.config import (
     SUMMARY_OUTPUT_FILENAME,
     TRAJECTORY_DIRECTORY_NAME,
 )
-from data_generation.task_level.generation.costs import (
+from data_generation.task_level.raw_generation.costs import (
     _append_sampling_cost_note,
     _build_cost_summary_from_generation_usages,
 )
-from data_generation.task_level.generation.errors import (
+from data_generation.task_level.raw_generation.errors import (
     _collect_payload_error_events,
     _error_event_key,
 )
-from data_generation.task_level.generation.runtime_support import (
+from data_generation.task_level.raw_generation.runtime_support import (
     _global_trajectory_index,
     format_trajectory_id,
 )

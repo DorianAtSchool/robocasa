@@ -25,7 +25,7 @@ __all__ = [
 
 def __getattr__(name):
     if name in {"RuntimeConfig", "generate_trajectories"}:
-        from data_generation.task_level.generation import (
+        from data_generation.task_level.raw_generation import (
             RuntimeConfig,
             generate_trajectories,
         )

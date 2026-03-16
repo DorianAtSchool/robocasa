@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from data_generation.task_level.generation.config import (
+from data_generation.task_level.raw_generation.config import (
     RuntimeConfig,
     _validate_runtime_config,
 )
-from data_generation.task_level.generation.runtime_support import (
+from data_generation.task_level.raw_generation.runtime_support import (
     _resolve_task_definition_or_raise,
 )
 

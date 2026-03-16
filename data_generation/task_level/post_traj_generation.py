@@ -10,7 +10,7 @@ import shutil
 import sys
 from typing import Any
 
-from data_generation.task_level.generation.progress import (
+from data_generation.task_level.raw_generation.progress import (
     _close_progress_handles,
     _create_progress_handles,
 )

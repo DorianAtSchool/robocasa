@@ -17,7 +17,7 @@ from data_generation.utils import stable_json_sha256
 
 if TYPE_CHECKING:
     from data_generation.task_level.tasks import TaskDefinition
-    from data_generation.task_level.generation.config import RuntimeConfig
+    from data_generation.task_level.raw_generation.config import RuntimeConfig
     from data_generation.task_level.tasks.base import TaskInstance
 
 

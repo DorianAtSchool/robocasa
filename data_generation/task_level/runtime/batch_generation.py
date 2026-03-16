@@ -13,12 +13,12 @@ from typing import Any, Callable
 
 from tqdm import tqdm
 
-from data_generation.task_level.generation import costs as _costs
-from data_generation.task_level.generation import errors as _errors
-from data_generation.task_level.generation import outputs as _outputs
-from data_generation.task_level.generation import progress as _progress
-from data_generation.task_level.generation import runtime_support as _runtime_support
-from data_generation.task_level.generation.config import (
+from data_generation.task_level.raw_generation import costs as _costs
+from data_generation.task_level.raw_generation import errors as _errors
+from data_generation.task_level.raw_generation import outputs as _outputs
+from data_generation.task_level.raw_generation import progress as _progress
+from data_generation.task_level.raw_generation import runtime_support as _runtime_support
+from data_generation.task_level.raw_generation.config import (
     BATCH_DIRECTORY_NAME,
     BATCH_INTERRUPTED_MESSAGE,
     BATCH_POLL_INTERVAL_SECONDS,

@@ -7,7 +7,7 @@ import os
 import sys
 from pathlib import Path
 
-from data_generation.task_level.generation.config import (
+from data_generation.task_level.raw_generation.config import (
     DEFAULT_COMPOSITE_TASK,
     GENERATION_ERROR_EXIT_CODE,
     GOOGLE_CLOUD_BATCH_GCS_PREFIX_ENV_VAR,
@@ -17,8 +17,8 @@ from data_generation.task_level.generation.config import (
     THINKING_LEVEL_CHOICES,
     _validate_runtime_config,
 )
-from data_generation.task_level.generation.orchestrator import generate_trajectories
-from data_generation.task_level.generation.outputs import (
+from data_generation.task_level.raw_generation.orchestrator import generate_trajectories
+from data_generation.task_level.raw_generation.outputs import (
     _print_written_output_summary,
     _resolve_output_paths,
     _write_generation_outputs,
@@ -29,7 +29,7 @@ from data_generation.task_level.generation.outputs import (
     resolve_request_output_path,
     resolve_request_task_output_path,
 )
-from data_generation.task_level.generation.runtime_support import (
+from data_generation.task_level.raw_generation.runtime_support import (
     _exception_summary,
     _resolve_task_definitions_or_raise,
 )

@@ -9,7 +9,7 @@ from data_generation.task_level.tasks import TaskDefinition
 from data_generation.task_level.tasks.base import PreflightTokenEstimate
 
 if TYPE_CHECKING:
-    from data_generation.task_level.generation.config import RuntimeConfig
+    from data_generation.task_level.raw_generation.config import RuntimeConfig
     from data_generation.task_level.tasks.base import TaskInstance
 
 
@@ -128,7 +128,7 @@ class BaseSamplingStrategy:
 
         del task_definition
         del runtime_config
-        from data_generation.task_level.generation.runtime_support import (
+        from data_generation.task_level.raw_generation.runtime_support import (
             extract_json_candidate,
         )
 
