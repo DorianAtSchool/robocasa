@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from data_generation.task_level.generation.raw.config import (
+    ALL_COMPOSITE_TASKS_OPTION,
     DEFAULT_COMPOSITE_TASK,
     GENERATION_ERROR_EXIT_CODE,
     GOOGLE_CLOUD_BATCH_GCS_PREFIX_ENV_VAR,
@@ -72,7 +73,8 @@ def parse_args(argv: list[str] | None = None) -> RuntimeConfig:
         default=[DEFAULT_COMPOSITE_TASK],
         dest="composite_tasks",
         help=(
-            "Task names to generate. Available tasks: "
+            "Task names to generate. Use "
+            f"`{ALL_COMPOSITE_TASKS_OPTION}` for every task. Available tasks: "
             f"{supported_tasks}. --num-runs applies to each selected task."
         ),
     )
@@ -220,11 +222,12 @@ def parse_args(argv: list[str] | None = None) -> RuntimeConfig:
     )
     args = parser.parse_args(argv)
     parsed_tasks = tuple(args.composite_tasks)
-    # Resolve the default single-task summary path here so downstream runtime
-    # code only deals with explicit output locations.
+    normalized_tasks = RuntimeConfig._normalize_composite_tasks(None, parsed_tasks)
+    # Resolve the default single-task summary path from the normalized task list
+    # so special selectors like `all` follow the same output-path behavior.
     default_summary_path = (
-        resolve_dataset_output_path(parsed_tasks[0], model=args.model)
-        if len(parsed_tasks) == 1
+        resolve_dataset_output_path(normalized_tasks[0], model=args.model)
+        if len(normalized_tasks) == 1
         else None
     )
 

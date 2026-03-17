@@ -14,6 +14,7 @@ from data_generation.task_level.tasks import supported_task_names
 REPO_ROOT = Path(__file__).resolve().parents[4]
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "data_generation" / "task_level" / "data"
 DEFAULT_COMPOSITE_TASK = supported_task_names()[0]
+ALL_COMPOSITE_TASKS_OPTION = "all"
 DATASET_RUN_TIMESTAMP_FORMAT = "%Y%m%dT%H%M%SZ"
 TRAJECTORY_DIRECTORY_NAME = "trajectories"
 SUMMARY_OUTPUT_FILENAME = "summary.json"
@@ -88,6 +89,9 @@ class RuntimeConfig:
                 continue
             normalized_task_name = " ".join(task_name.strip().split())
             if normalized_task_name:
+                # Expand the CLI sentinel into the full supported task list.
+                if normalized_task_name.casefold() == ALL_COMPOSITE_TASKS_OPTION:
+                    return supported_task_names()
                 normalized_tasks.append(normalized_task_name)
         return tuple(normalized_tasks)
 
