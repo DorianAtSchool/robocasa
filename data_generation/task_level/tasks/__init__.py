@@ -38,10 +38,16 @@ from data_generation.task_level.tasks.prepare_coffee import (
     PrepareCoffeeValidator,
     build_prepare_coffee_prompt,
 )
+from data_generation.task_level.tasks.prepare_sandwich_station import (
+    PREPARE_SANDWICH_STATION_TASK,
+    PrepareSandwichStationValidator,
+    build_prepare_sandwich_station_prompt,
+)
 
 TASK_REGISTRY: dict[str, TaskDefinition] = {
     HOT_DOG_SETUP_TASK.composite_task: HOT_DOG_SETUP_TASK,
     PREPARE_COFFEE_TASK.composite_task: PREPARE_COFFEE_TASK,
+    PREPARE_SANDWICH_STATION_TASK.composite_task: PREPARE_SANDWICH_STATION_TASK,
 }
 
 __all__ = [
@@ -60,9 +66,11 @@ __all__ = [
     "ObjectStateSemanticValidationError",
     "ObservationSequenceSemanticValidationError",
     "PREPARE_COFFEE_TASK",
+    "PREPARE_SANDWICH_STATION_TASK",
     "PlacementDestinationSemanticValidationError",
     "PostGoalActionSemanticValidationError",
     "PrepareCoffeeValidator",
+    "PrepareSandwichStationValidator",
     "ResponseFormatValidationError",
     "TASK_REGISTRY",
     "TaskPreconditionSemanticValidationError",
@@ -77,6 +85,7 @@ __all__ = [
     "UnsatisfiedGoalSemanticValidationError",
     "build_hot_dog_setup_prompt",
     "build_prepare_coffee_prompt",
+    "build_prepare_sandwich_station_prompt",
     "get_task_definition",
     "supported_task_names",
 ]

@@ -47,6 +47,8 @@ from data_generation.task_level.tasks import (
     ObservationSequenceSemanticValidationError,
     DuplicateTrajectoryValidationError,
     PREPARE_COFFEE_TASK,
+    PREPARE_SANDWICH_STATION_TASK,
+    PrepareSandwichStationValidator,
     ResponseFormatValidationError,
     TaskSemanticValidationError,
     TaskPreconditionSemanticValidationError,
@@ -63,6 +65,10 @@ from data_generation.task_level.tasks.prepare_coffee import (
     PREPARE_COFFEE_INITIAL_STATE,
     PrepareCoffeeValidator,
     build_prepare_coffee_prompt,
+)
+from data_generation.task_level.tasks.prepare_sandwich_station import (
+    PREPARE_SANDWICH_STATION_INITIAL_STATE,
+    build_prepare_sandwich_station_prompt,
 )
 from data_generation.task_level.subatomic_tool_calls import discover_subatomic_tools
 from data_generation.task_level.runtime.batch_generation import (
@@ -149,6 +155,32 @@ HOT_DOG_SETUP_ACTION_SPECS = (
     ("pick_up_object", {"object_id": "sausage_1", "source_id": "fridge_1"}),
     ("navigate_to_fixture", {"fixture_id": "dining_table_1"}),
     ("place_on_object", {"object_id": "sausage_1", "support_object_id": "plate_1"}),
+)
+
+PREPARE_SANDWICH_STATION_ACTION_SPECS = (
+    ("navigate_to_fixture", {"fixture_id": "fridge_1"}),
+    (
+        "pick_up_object",
+        {"object_id": "ingredient_bowl_1", "source_id": "fridge_1"},
+    ),
+    ("navigate_to_fixture", {"fixture_id": "counter_1"}),
+    (
+        "place_next_to",
+        {
+            "object_id": "ingredient_bowl_1",
+            "reference_object_id": "toaster_zone_marker_1",
+        },
+    ),
+    ("navigate_to_fixture", {"fixture_id": "fridge_1"}),
+    ("pick_up_object", {"object_id": "baguette_1", "source_id": "fridge_1"}),
+    ("navigate_to_fixture", {"fixture_id": "counter_1"}),
+    (
+        "place_next_to",
+        {
+            "object_id": "baguette_1",
+            "reference_object_id": "toaster_zone_marker_1",
+        },
+    ),
 )
 
 
@@ -359,6 +391,60 @@ def make_valid_hot_dog_setup_candidate(*, include_agents=True):
                     "message": "I will handle the condiment and sausage.",
                 },
                 "reasoning": "I should confirm the remaining ingredients.",
+            },
+            *action_steps,
+        ],
+    }
+    if include_agents:
+        candidate["agents"] = [
+            {"agent": "agent_0"},
+            {"agent": "agent_1"},
+        ]
+    return renumber_candidate_steps(candidate)
+
+
+def make_valid_prepare_sandwich_station_candidate(*, include_agents=True):
+    """Builds a valid PrepareSandwichStation candidate trajectory for tests."""
+
+    action_agents = ("agent_0",) * 4 + ("agent_1",) * 4
+    action_reasoning = ("The ingredient bowl should be staged first.",) * 4 + (
+        "The baguette should join it near the toaster.",
+    ) * 4
+    action_steps = [
+        {
+            "step": -1,
+            "agent": agent_id,
+            "tool": tool_name,
+            "args": dict(tool_args),
+            "reasoning": reasoning,
+        }
+        for (tool_name, tool_args), agent_id, reasoning in zip(
+            PREPARE_SANDWICH_STATION_ACTION_SPECS,
+            action_agents,
+            action_reasoning,
+        )
+    ]
+    candidate = {
+        "steps": [
+            {
+                "step": 0,
+                "agent": "agent_0",
+                "tool": "communicate",
+                "args": {
+                    "to": "agent_1",
+                    "message": "I will move the ingredient bowl to the counter.",
+                },
+                "reasoning": "We need a shared staging plan first.",
+            },
+            {
+                "step": 1,
+                "agent": "agent_1",
+                "tool": "communicate",
+                "args": {
+                    "to": "agent_0",
+                    "message": "I will bring the baguette beside it.",
+                },
+                "reasoning": "I should confirm the second half of the setup.",
             },
             *action_steps,
         ],
@@ -973,6 +1059,19 @@ class SubatomicToolCatalogTests(unittest.TestCase):
         self.assertNotIn("wait", PREPARE_COFFEE_ALLOWED_TOOL_SPECS)
         self.assertNotIn("wait", PREPARE_COFFEE_NON_COMMUNICATE_TOOL_NAMES)
 
+    def test_prepare_sandwich_station_prompt_contains_allowed_tools_and_rules(self):
+        prompt = build_prepare_sandwich_station_prompt("unit-test")
+
+        self.assertIn("pick_up_object", prompt)
+        self.assertIn("place_next_to", prompt)
+        self.assertIn("PrepareSandwichStation", prompt)
+        self.assertIn("toaster_zone_marker_1", prompt)
+        self.assertIn(
+            "Use place_next_to with reference_object_id toaster_zone_marker_1",
+            prompt,
+        )
+        self.assertNotIn('"wait"', prompt)
+
 
 class PrepareCoffeeTaskInstanceTests(unittest.TestCase):
     def test_task_instance_samples_start_positions_from_existing_fixtures(self):
@@ -1081,6 +1180,56 @@ class HotDogSetupTaskTests(unittest.TestCase):
         candidate = make_valid_hot_dog_setup_candidate()
         place_condiment_index = find_step_index(candidate, "place_next_to")
         candidate["steps"].pop(place_condiment_index)
+        renumber_candidate_steps(candidate)
+
+        with self.assertRaises(TaskSemanticValidationError) as raised:
+            validator.validate(candidate)
+
+        self.assertIsInstance(raised.exception, TaskSemanticValidationError)
+
+
+class PrepareSandwichStationTaskTests(unittest.TestCase):
+    def test_prepare_sandwich_station_task_is_registered(self):
+        self.assertEqual(
+            PREPARE_SANDWICH_STATION_TASK.composite_task,
+            "PrepareSandwichStation",
+        )
+
+    def test_prepare_sandwich_station_validator_accepts_valid_candidate(self):
+        validator = PrepareSandwichStationValidator(
+            TaskInstance(initial_state=deepcopy(PREPARE_SANDWICH_STATION_INITIAL_STATE))
+        )
+
+        validation = validator.validate(make_valid_prepare_sandwich_station_candidate())
+
+        self.assertTrue(validation["is_valid"])
+        self.assertEqual(
+            validation["final_state"]["objects"]["ingredient_bowl_1"]["location"],
+            "counter_1",
+        )
+        self.assertEqual(
+            validation["final_state"]["objects"]["baguette_1"]["location"],
+            "counter_1",
+        )
+        self.assertTrue(
+            validation["final_state"]["machine_state"]["prepare_sandwich_station"][
+                "ingredient_bowl_staged"
+            ]
+        )
+        self.assertTrue(
+            validation["final_state"]["machine_state"]["prepare_sandwich_station"][
+                "baguette_staged"
+            ]
+        )
+
+    def test_prepare_sandwich_station_validator_requires_both_items_staged(self):
+        validator = PrepareSandwichStationValidator(
+            TaskInstance(initial_state=deepcopy(PREPARE_SANDWICH_STATION_INITIAL_STATE))
+        )
+        candidate = make_valid_prepare_sandwich_station_candidate()
+        candidate["steps"].pop(
+            find_step_index(candidate, "place_next_to", occurrence=1)
+        )
         renumber_candidate_steps(candidate)
 
         with self.assertRaises(TaskSemanticValidationError) as raised:
