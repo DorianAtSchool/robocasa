@@ -62,9 +62,16 @@ def resolve_error_output_path(summary_path: Path) -> Path:
     return summary_path.with_name(ERROR_SUMMARY_OUTPUT_FILENAME)
 
 
+def _resolve_model_output_root(model: str) -> Path:
+    """Resolves the default output root for one model name."""
+
+    return DEFAULT_OUTPUT_DIR / model
+
+
 def resolve_dataset_output_path(
     composite_task: str,
     *,
+    model: str,
     generated_at: datetime | None = None,
 ) -> Path:
     """Resolves the default single-task summary output path."""
@@ -72,7 +79,7 @@ def resolve_dataset_output_path(
     timestamp = (generated_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
     task_dir = camel_to_snake_case(composite_task)
     return (
-        DEFAULT_OUTPUT_DIR
+        _resolve_model_output_root(model)
         / task_dir
         / timestamp.strftime(DATASET_RUN_TIMESTAMP_FORMAT)
         / SUMMARY_OUTPUT_FILENAME
@@ -81,13 +88,14 @@ def resolve_dataset_output_path(
 
 def resolve_request_output_path(
     *,
+    model: str,
     generated_at: datetime | None = None,
 ) -> Path:
     """Resolves the request-level combined summary path for multi-task generation."""
 
     timestamp = (generated_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
     return (
-        DEFAULT_OUTPUT_DIR
+        _resolve_model_output_root(model)
         / REQUEST_DIRECTORY_NAME
         / timestamp.strftime(DATASET_RUN_TIMESTAMP_FORMAT)
         / SUMMARY_OUTPUT_FILENAME
@@ -112,7 +120,10 @@ def _resolve_summary_path(runtime_config: RuntimeConfig) -> Path:
 
     if runtime_config.summary_path is not None:
         return runtime_config.summary_path
-    return resolve_dataset_output_path(runtime_config.composite_task)
+    return resolve_dataset_output_path(
+        runtime_config.composite_task,
+        model=runtime_config.model,
+    )
 
 
 def resolve_trajectory_output_dir(output_path: Path) -> Path:
@@ -457,6 +468,7 @@ def _aggregate_task_cost_summaries(
     )
     aggregated_cost_summary = {
         "prompt_tokens": 0,
+        "cached_input_tokens": 0,
         "output_tokens": 0,
         "reasoning_tokens": 0,
         "total_tokens": 0,
@@ -475,6 +487,9 @@ def _aggregate_task_cost_summaries(
             continue
         aggregated_cost_summary["prompt_tokens"] += int(
             task_cost_summary.get("prompt_tokens", 0)
+        )
+        aggregated_cost_summary["cached_input_tokens"] += int(
+            task_cost_summary.get("cached_input_tokens", 0)
         )
         aggregated_cost_summary["output_tokens"] += int(
             task_cost_summary.get("output_tokens", 0)

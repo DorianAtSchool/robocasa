@@ -16,7 +16,6 @@ from .constants import (
     OPEN_PART_TOOL_NAMES,
     PLACE_LOCATION_ARG_NAMES,
     RELEASE_TOOL_NAMES,
-    WAIT_TOOL_NAMES,
 )
 from .errors import (
     CommunicationStepSemanticValidationError,
@@ -35,7 +34,6 @@ from .errors import (
     UnexpectedStepIndexSemanticValidationError,
     UnsupportedToolSemanticValidationError,
     UnsatisfiedGoalSemanticValidationError,
-    WaitDurationSemanticValidationError,
 )
 from .instances import build_canonical_agents
 from .prompting import _format_agent_id_list
@@ -454,7 +452,6 @@ class FiniteStateTaskValidator:
             and tool_name not in NAVIGATION_TOOL_NAMES
             and tool_name not in RELEASE_TOOL_NAMES
             and tool_name not in OBSERVATION_TOOL_NAMES
-            and tool_name not in WAIT_TOOL_NAMES
             and tool_name not in GIVE_SPACE_TOOL_NAMES
         ):
             raise HeldObjectSemanticValidationError(
@@ -466,7 +463,7 @@ class FiniteStateTaskValidator:
                 },
             )
 
-        if tool_name in OBSERVATION_TOOL_NAMES or tool_name in WAIT_TOOL_NAMES:
+        if tool_name in OBSERVATION_TOOL_NAMES:
             return
 
         if tool_name in GIVE_SPACE_TOOL_NAMES:
@@ -546,15 +543,6 @@ class FiniteStateTaskValidator:
                             "arg_value": arg_value,
                         },
                     )
-                if step["tool"] == "wait" and arg_name == "seconds" and arg_value < 1:
-                    raise WaitDurationSemanticValidationError(
-                        "wait requires seconds to be a positive integer.",
-                        details={
-                            "tool": step["tool"],
-                            "arg_name": arg_name,
-                            "arg_value": arg_value,
-                        },
-                    )
             allowed_ids_key = _allowed_ids_key_for_arg_name(arg_name)
             if allowed_ids_key is None or allowed_ids_key not in tool_spec:
                 continue
@@ -596,9 +584,6 @@ class FiniteStateTaskValidator:
             return
 
         if tool_name in OBSERVATION_TOOL_NAMES:
-            return
-
-        if tool_name in WAIT_TOOL_NAMES:
             return
 
         if tool_name in GIVE_SPACE_TOOL_NAMES:

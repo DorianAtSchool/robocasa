@@ -82,7 +82,6 @@ HOT_DOG_SETUP_ALLOWED_TOOL_SPECS = build_allowed_tool_specs(
         "pick_up_object",
         "place_on_object",
         "place_next_to",
-        "wait",
     ),
     overrides={
         "navigate_to_fixture": {
@@ -256,11 +255,11 @@ class HotDogSetupValidator(FiniteStateTaskValidator):
         runtime_state.public_state["plate_location"] = runtime_state.objects["plate_1"][
             "location"
         ]
-        runtime_state.public_state[
-            "condiment_placed_next_to_plate"
-        ] = runtime_state.machine_state["hot_dog_setup"][
-            "condiment_placed_next_to_plate"
-        ]
+        runtime_state.public_state["condiment_placed_next_to_plate"] = (
+            runtime_state.machine_state["hot_dog_setup"][
+                "condiment_placed_next_to_plate"
+            ]
+        )
 
 
 def build_hot_dog_setup_trajectory_record(

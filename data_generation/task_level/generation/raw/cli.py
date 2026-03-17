@@ -223,7 +223,9 @@ def parse_args(argv: list[str] | None = None) -> RuntimeConfig:
     # Resolve the default single-task summary path here so downstream runtime
     # code only deals with explicit output locations.
     default_summary_path = (
-        resolve_dataset_output_path(parsed_tasks[0]) if len(parsed_tasks) == 1 else None
+        resolve_dataset_output_path(parsed_tasks[0], model=args.model)
+        if len(parsed_tasks) == 1
+        else None
     )
 
     return RuntimeConfig(
@@ -277,7 +279,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
-    request_summary_path = resolve_request_output_path()
+    request_summary_path = resolve_request_output_path(model=runtime_config.model)
     task_run_entries: list[dict[str, Any]] = []
     # The multi-task path runs each task independently, then writes request-
     # level summaries that point back to those per-task outputs.

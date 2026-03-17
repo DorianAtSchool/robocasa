@@ -161,11 +161,6 @@ SUBATOMIC_TOOL_SPECS: tuple[SubatomicToolSpec, ...] = (
         "control_id",
         "goal",
     ),
-    _build_tool_spec(
-        "wait",
-        "Pause in place for a fixed number of seconds without changing symbolic state.",
-        ("seconds", "INTEGER"),
-    ),
 )
 
 

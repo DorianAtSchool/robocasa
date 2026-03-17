@@ -26,7 +26,6 @@ from data_generation.task_level.tasks.shared.errors import (
     UnexpectedStepIndexSemanticValidationError,
     UnsupportedToolSemanticValidationError,
     UnsatisfiedGoalSemanticValidationError,
-    WaitDurationSemanticValidationError,
 )
 from data_generation.task_level.tasks.shared.types import TaskDefinition, TaskValidator
 from data_generation.task_level.tasks.hot_dog_setup import (
@@ -39,7 +38,6 @@ from data_generation.task_level.tasks.prepare_coffee import (
     PrepareCoffeeValidator,
     build_prepare_coffee_prompt,
 )
-
 
 TASK_REGISTRY: dict[str, TaskDefinition] = {
     HOT_DOG_SETUP_TASK.composite_task: HOT_DOG_SETUP_TASK,
@@ -77,7 +75,6 @@ __all__ = [
     "UnexpectedStepIndexSemanticValidationError",
     "UnsupportedToolSemanticValidationError",
     "UnsatisfiedGoalSemanticValidationError",
-    "WaitDurationSemanticValidationError",
     "build_hot_dog_setup_prompt",
     "build_prepare_coffee_prompt",
     "get_task_definition",

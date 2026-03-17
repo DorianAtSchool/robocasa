@@ -79,7 +79,6 @@ PREPARE_COFFEE_ALLOWED_TOOL_SPECS = build_allowed_tool_specs(
         "place_on_surface",
         "place_under_dispenser",
         "press_button",
-        "wait",
     ),
     overrides={
         "navigate_to_fixture": {
@@ -139,7 +138,7 @@ build_prepare_coffee_prompt = make_task_prompt_builder(
     extra_execution_rules=(
         "Open cabinet_1.door before using pick_up_object on mug_1 from cabinet_1.",
         "Only press coffee_machine_1.start_button after mug_1 is already at coffee_machine_dispenser.",
-        "If an agent is blocked because the other agent still needs to open the cabinet, move the mug, or place the mug under the dispenser, use wait with a short positive duration.",
+        "If an agent is blocked because the other agent still needs to open the cabinet, move the mug, or place the mug under the dispenser, use communicate to explain what it is waiting on before the other agent proceeds.",
     ),
 )
 
@@ -251,9 +250,9 @@ class PrepareCoffeeValidator(FiniteStateTaskValidator):
         runtime_state.public_state["mug_location"] = runtime_state.objects["mug_1"][
             "location"
         ]
-        runtime_state.public_state[
-            "coffee_machine_started"
-        ] = runtime_state.machine_state["coffee_machine_1"]["started"]
+        runtime_state.public_state["coffee_machine_started"] = (
+            runtime_state.machine_state["coffee_machine_1"]["started"]
+        )
 
 
 def build_prepare_coffee_trajectory_record(

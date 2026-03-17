@@ -13,12 +13,14 @@ import types
 
 import data_generation.task_level.generation.raw.cli as trajectory_generation_module
 from data_generation.task_level.runtime.client import (
+    DEFAULT_MODEL,
     GenerationResult,
     GenerationUsage,
     GoogleGenAIClient,
     TrajectoryGenerationError,
     _generation_error_status_code,
     _resolve_pricing_tier,
+    build_generation_usage_metadata,
     load_dotenv_file,
     validate_google_auth,
 )
@@ -51,7 +53,6 @@ from data_generation.task_level.tasks import (
     TrajectoryStructureValidationError,
     TrajectoryValidationError,
     ToolArgumentSemanticValidationError,
-    WaitDurationSemanticValidationError,
 )
 from data_generation.task_level.tasks.hot_dog_setup import (
     HOT_DOG_SETUP_INITIAL_STATE,
@@ -439,7 +440,6 @@ TOY_FSM_ALLOWED_TOOL_SPECS = build_allowed_tool_specs(
         "open_hinged_part",
         "pick_up_object",
         "place_on_surface",
-        "wait",
     )
 )
 
@@ -677,13 +677,17 @@ def make_batch_usage_metadata(
     candidate_tokens=200,
     thoughts_tokens=50,
     total_tokens=1250,
+    cached_content_tokens=None,
 ):
-    return {
+    usage_metadata = {
         "promptTokenCount": prompt_tokens,
         "candidatesTokenCount": candidate_tokens,
         "thoughtsTokenCount": thoughts_tokens,
         "totalTokenCount": total_tokens,
     }
+    if cached_content_tokens is not None:
+        usage_metadata["cachedContentTokenCount"] = cached_content_tokens
+    return usage_metadata
 
 
 def make_batch_output_row(
@@ -863,7 +867,7 @@ class SubatomicToolCatalogTests(unittest.TestCase):
         self.assertIn("place_under", tool_names)
         self.assertIn("place_under_dispenser", tool_names)
         self.assertIn("press_button", tool_names)
-        self.assertIn("wait", tool_names)
+        self.assertNotIn("wait", tool_names)
         self.assertTrue(all(tool_name == tool_name.lower() for tool_name in tool_names))
 
     def test_prepare_coffee_prompt_contains_allowed_tools_and_rules(self):
@@ -872,7 +876,7 @@ class SubatomicToolCatalogTests(unittest.TestCase):
         self.assertIn("pick_up_object", prompt)
         self.assertIn("place_under_dispenser", prompt)
         self.assertIn("press_button", prompt)
-        self.assertIn('"wait"', prompt)
+        self.assertNotIn('"wait"', prompt)
         self.assertIn("communicate", prompt)
         self.assertIn("Simple execution rules:", prompt)
         self.assertIn("variation key: unit-test", prompt)
@@ -901,7 +905,7 @@ class SubatomicToolCatalogTests(unittest.TestCase):
             prompt,
         )
         self.assertIn(
-            "emit wait(seconds) instead of skipping that agent",
+            "use communicate to explain the dependency before the other agent proceeds",
             prompt,
         )
         self.assertIn(
@@ -936,7 +940,7 @@ class SubatomicToolCatalogTests(unittest.TestCase):
         self.assertIn("NavigationSemanticValidationError", prompt)
         self.assertIn("Regenerate the full trajectory from step 0.", prompt)
         self.assertIn(
-            "use wait with a short positive duration",
+            "use communicate to explain what it is waiting on before the other agent proceeds",
             prompt,
         )
         self.assertNotIn("get_image", prompt)
@@ -963,11 +967,11 @@ class SubatomicToolCatalogTests(unittest.TestCase):
             prompt,
         )
 
-    def test_prepare_coffee_allowed_tools_include_wait(self):
+    def test_prepare_coffee_allowed_tools_exclude_wait(self):
         self.assertIn("give_space", PREPARE_COFFEE_ALLOWED_TOOL_SPECS)
         self.assertIn("give_space", PREPARE_COFFEE_NON_COMMUNICATE_TOOL_NAMES)
-        self.assertIn("wait", PREPARE_COFFEE_ALLOWED_TOOL_SPECS)
-        self.assertIn("wait", PREPARE_COFFEE_NON_COMMUNICATE_TOOL_NAMES)
+        self.assertNotIn("wait", PREPARE_COFFEE_ALLOWED_TOOL_SPECS)
+        self.assertNotIn("wait", PREPARE_COFFEE_NON_COMMUNICATE_TOOL_NAMES)
 
 
 class PrepareCoffeeTaskInstanceTests(unittest.TestCase):
@@ -1166,6 +1170,11 @@ class DotenvLoadingTests(unittest.TestCase):
 
         self.assertEqual(runtime_config.composite_task, "PrepareCoffee")
         self.assertEqual(runtime_config.composite_tasks, ("PrepareCoffee",))
+        self.assertIsNotNone(runtime_config.summary_path)
+        self.assertEqual(runtime_config.summary_path.name, "summary.json")
+        self.assertEqual(runtime_config.summary_path.parents[3], DEFAULT_OUTPUT_DIR)
+        self.assertEqual(runtime_config.summary_path.parents[2].name, DEFAULT_MODEL)
+        self.assertEqual(runtime_config.summary_path.parents[1].name, "prepare_coffee")
 
     def test_parse_args_accepts_multiple_tasks(self):
         runtime_config = parse_args(["--tasks", "PrepareCoffee", "HotDogSetup"])
@@ -1230,12 +1239,17 @@ class DotenvLoadingTests(unittest.TestCase):
     ):
         resolved = resolve_dataset_output_path(
             "PrepareCoffee",
+            model=DEFAULT_MODEL,
             generated_at=datetime(2026, 3, 10, 12, 34, 56, tzinfo=timezone.utc),
         )
 
         self.assertEqual(
             resolved,
-            DEFAULT_OUTPUT_DIR / "prepare_coffee" / "20260310T123456Z" / "summary.json",
+            DEFAULT_OUTPUT_DIR
+            / DEFAULT_MODEL
+            / "prepare_coffee"
+            / "20260310T123456Z"
+            / "summary.json",
         )
 
     def test_default_output_dir_points_to_repo_task_level_data_directory(self):
@@ -1258,12 +1272,17 @@ class DotenvLoadingTests(unittest.TestCase):
             ):
                 resolved = resolve_dataset_output_path(
                     "PrepareCoffee",
+                    model=DEFAULT_MODEL,
                     generated_at=datetime(2026, 3, 10, 12, 34, 56, tzinfo=timezone.utc),
                 )
 
         self.assertEqual(
             resolved,
-            output_root / "prepare_coffee" / "20260310T123456Z" / "summary.json",
+            output_root
+            / DEFAULT_MODEL
+            / "prepare_coffee"
+            / "20260310T123456Z"
+            / "summary.json",
         )
 
     def test_resolve_request_output_path_uses_patched_default_output_dir(self):
@@ -1276,12 +1295,17 @@ class DotenvLoadingTests(unittest.TestCase):
                 output_root,
             ):
                 resolved = resolve_request_output_path(
+                    model=DEFAULT_MODEL,
                     generated_at=datetime(2026, 3, 10, 12, 34, 56, tzinfo=timezone.utc),
                 )
 
         self.assertEqual(
             resolved,
-            output_root / REQUEST_DIRECTORY_NAME / "20260310T123456Z" / "summary.json",
+            output_root
+            / DEFAULT_MODEL
+            / REQUEST_DIRECTORY_NAME
+            / "20260310T123456Z"
+            / "summary.json",
         )
 
     def test_resolve_trajectory_output_dir_uses_sibling_trajectories_directory(self):
@@ -1553,7 +1577,6 @@ class FiniteStateTaskValidatorTests(unittest.TestCase):
                 "place_on_object",
                 "place_under",
                 "set_rotary_control",
-                "wait",
             )
         )
 
@@ -1583,17 +1606,12 @@ class FiniteStateTaskValidatorTests(unittest.TestCase):
                 "target_id",
                 "control_id",
                 "goal",
-                "seconds",
                 "fixture_id",
             ],
         )
         self.assertEqual(
             step_properties["args"]["properties"]["to"]["enum"],
             ["agent_0", "agent_1"],
-        )
-        self.assertEqual(
-            step_properties["args"]["properties"]["seconds"]["type"],
-            "INTEGER",
         )
         self.assertNotIn("agents", response_schema["properties"])
         self.assertEqual(response_schema["required"], ["steps"])
@@ -1655,39 +1673,6 @@ class FiniteStateTaskValidatorTests(unittest.TestCase):
             make_toy_action_spec(
                 "get_image",
                 {"camera_view": "wrist"},
-            ),
-            make_toy_action_spec(
-                "navigate_to_fixture",
-                {"fixture_id": "shelf_1"},
-            ),
-            make_toy_action_spec(
-                "place_on_surface",
-                {"object_id": "apple_1", "support_id": "shelf_1"},
-            ),
-        )
-
-        validator = ToyFiniteStateValidator()
-        validation = validator.validate(make_toy_candidate(actions))
-
-        self.assertTrue(validation["is_valid"])
-        self.assertEqual(
-            validation["final_state"]["objects"]["apple_1"]["location"],
-            "shelf_1",
-        )
-
-    def test_validator_allows_wait_while_holding(self):
-        actions = (
-            make_toy_action_spec(
-                "navigate_to_fixture",
-                {"fixture_id": "table_1"},
-            ),
-            make_toy_action_spec(
-                "pick_up_object",
-                {"object_id": "apple_1", "source_id": "table_1"},
-            ),
-            make_toy_action_spec(
-                "wait",
-                {"seconds": 3},
             ),
             make_toy_action_spec(
                 "navigate_to_fixture",
@@ -1886,41 +1871,6 @@ class FiniteStateTaskValidatorTests(unittest.TestCase):
         self.assertEqual(
             validation["final_state"]["objects"]["cup_1"]["location"],
             "coffee_machine_dispenser",
-        )
-
-    def test_validator_rejects_non_positive_wait_duration(self):
-        actions = (
-            make_toy_action_spec(
-                "wait",
-                {"seconds": 0},
-            ),
-            make_toy_action_spec(
-                "navigate_to_fixture",
-                {"fixture_id": "table_1"},
-            ),
-            make_toy_action_spec(
-                "pick_up_object",
-                {"object_id": "apple_1", "source_id": "table_1"},
-            ),
-            make_toy_action_spec(
-                "navigate_to_fixture",
-                {"fixture_id": "shelf_1"},
-            ),
-            make_toy_action_spec(
-                "place_on_surface",
-                {"object_id": "apple_1", "support_id": "shelf_1"},
-            ),
-        )
-
-        validator = ToyFiniteStateValidator()
-
-        with self.assertRaises(TaskSemanticValidationError) as raised:
-            validator.validate(make_toy_candidate(actions))
-
-        self.assertIsInstance(raised.exception, WaitDurationSemanticValidationError)
-        self.assertIn(
-            "wait requires seconds to be a positive integer",
-            str(raised.exception),
         )
 
     def test_validator_accepts_alternative_valid_action_order(self):
@@ -2614,13 +2564,35 @@ class GenerationTests(unittest.TestCase):
 
         self.assertIsNotNone(on_demand_pricing)
         self.assertEqual(on_demand_pricing.input_usd_per_million_tokens, 0.25)
+        self.assertEqual(
+            on_demand_pricing.cached_input_usd_per_million_tokens,
+            0.025,
+        )
         self.assertEqual(on_demand_pricing.output_usd_per_million_tokens, 1.5)
         self.assertIsNotNone(priority_pricing)
         self.assertEqual(priority_pricing.input_usd_per_million_tokens, 0.45)
+        self.assertEqual(
+            priority_pricing.cached_input_usd_per_million_tokens,
+            0.045,
+        )
         self.assertEqual(priority_pricing.output_usd_per_million_tokens, 2.7)
         self.assertIsNotNone(flex_pricing)
         self.assertEqual(flex_pricing.input_usd_per_million_tokens, 0.13)
+        self.assertEqual(
+            flex_pricing.cached_input_usd_per_million_tokens,
+            0.013,
+        )
         self.assertEqual(flex_pricing.output_usd_per_million_tokens, 0.75)
+
+    def test_build_generation_usage_metadata_reads_cached_content_token_count(self):
+        usage = build_generation_usage_metadata(
+            make_batch_usage_metadata(cached_content_tokens=320)
+        )
+
+        self.assertIsNotNone(usage)
+        self.assertEqual(usage.prompt_tokens, 1000)
+        self.assertEqual(usage.cached_content_tokens, 320)
+        self.assertEqual(usage.total_tokens, 1250)
 
     def test_generate_trajectories_cancels_pending_futures_on_keyboard_interrupt(self):
         runtime_config = RuntimeConfig(
@@ -3064,6 +3036,7 @@ class GenerationTests(unittest.TestCase):
             {
                 "model": "gemini-3-flash-preview",
                 "input_usd_per_million_tokens": 0.25,
+                "cached_input_usd_per_million_tokens": 0.025,
                 "output_usd_per_million_tokens": 1.5,
             },
         )
@@ -3906,7 +3879,13 @@ class GenerationTests(unittest.TestCase):
 
         self.assertEqual(
             summary["best_case_tokens"],
-            {"prompt": 1020, "output": 2040, "reasoning": 150, "total": 3210},
+            {
+                "prompt": 1020,
+                "cached_input": 0,
+                "output": 2040,
+                "reasoning": 150,
+                "total": 3210,
+            },
         )
         self.assertAlmostEqual(summary["best_case_total_usd"], 0.0035)
         self.assertIn("observed API usage", summary["notes"][0])
@@ -4021,6 +4000,10 @@ class GenerationTests(unittest.TestCase):
             200,
         )
         self.assertEqual(
+            payload["trajectories"][0]["generation_usage"]["cached_input_tokens"],
+            0,
+        )
+        self.assertEqual(
             payload["trajectories"][0]["generation_usage"]["reasoning_tokens"],
             50,
         )
@@ -4031,6 +4014,10 @@ class GenerationTests(unittest.TestCase):
         self.assertEqual(
             payload["cost_summary"]["prompt_tokens"],
             1000,
+        )
+        self.assertEqual(
+            payload["cost_summary"]["cached_input_tokens"],
+            0,
         )
         self.assertEqual(
             payload["cost_summary"]["output_tokens"],
@@ -4065,6 +4052,7 @@ class GenerationTests(unittest.TestCase):
             {
                 "model": "gemini-3-flash-preview",
                 "input_usd_per_million_tokens": 0.5,
+                "cached_input_usd_per_million_tokens": 0.05,
                 "output_usd_per_million_tokens": 3.0,
             },
         )
@@ -4077,6 +4065,57 @@ class GenerationTests(unittest.TestCase):
         self.assertNotIn("pricing_reference", payload["cost_summary"])
         self.assertNotIn("currency", payload["cost_summary"])
         self.assertNotIn("cost_estimate", payload)
+
+    def test_cost_summary_applies_cached_input_discount_when_usage_metadata_has_cache_hits(
+        self,
+    ):
+        runtime_config = RuntimeConfig(
+            composite_task="PrepareCoffee",
+            num_runs=1,
+            model="gemini-3-flash-preview",
+            sdk="google-genai",
+            project="demo-project",
+            location="global",
+            temperature=0.5,
+            max_workers=1,
+            max_retries=3,
+        )
+        payload = generate_trajectories(
+            runtime_config,
+            client_factory=lambda: SequencedFakeClient(
+                [
+                    GenerationResult(
+                        payload=make_valid_candidate(),
+                        usage=GenerationUsage(
+                            prompt_tokens=1000,
+                            cached_content_tokens=400,
+                            candidates_tokens=200,
+                            thoughts_tokens=50,
+                            total_tokens=1250,
+                            traffic_type="ON_DEMAND",
+                        ),
+                    )
+                ]
+            ),
+            show_progress=False,
+        )
+
+        self.assertEqual(
+            payload["trajectories"][0]["generation_usage"]["cached_input_tokens"],
+            400,
+        )
+        self.assertEqual(payload["cost_summary"]["cached_input_tokens"], 400)
+        self.assertAlmostEqual(payload["cost_summary"]["input_cost_usd"], 0.0003)
+        self.assertAlmostEqual(payload["cost_summary"]["output_cost_usd"], 0.0008)
+        self.assertAlmostEqual(payload["cost_summary"]["total_cost_usd"], 0.0011)
+        self.assertEqual(
+            payload["cost_summary"]["pricing"]["cached_input_usd_per_million_tokens"],
+            0.05,
+        )
+        self.assertIn(
+            "Input totals include cached prompt tokens",
+            payload["cost_summary"]["notes"][-1],
+        )
 
     def test_generate_trajectories_logs_cost_when_progress_enabled(self):
         runtime_config = RuntimeConfig(
@@ -5149,6 +5188,7 @@ class GenerationTests(unittest.TestCase):
             {
                 "model": "gemini-3-flash-preview",
                 "input_usd_per_million_tokens": 0.5,
+                "cached_input_usd_per_million_tokens": 0.05,
                 "output_usd_per_million_tokens": 3.0,
             },
         )
@@ -5224,7 +5264,13 @@ class GenerationTests(unittest.TestCase):
 
         self.assertEqual(
             summary["best_case_tokens"],
-            {"prompt": 12440, "output": 14400, "reasoning": 0, "total": 26840},
+            {
+                "prompt": 12440,
+                "cached_input": 0,
+                "output": 14400,
+                "reasoning": 0,
+                "total": 26840,
+            },
         )
         self.assertAlmostEqual(summary["best_case_total_usd"], 0.0494)
         self.assertAlmostEqual(summary["worst_case_total_usd"], 0.0494)
@@ -5233,6 +5279,7 @@ class GenerationTests(unittest.TestCase):
             {
                 "model": "gemini-3-flash-preview",
                 "input_usd_per_million_tokens": 0.5,
+                "cached_input_usd_per_million_tokens": 0.05,
                 "output_usd_per_million_tokens": 3.0,
             },
         )
@@ -5304,6 +5351,7 @@ class GenerationTests(unittest.TestCase):
                 {
                     "successful_attempt_number": 1,
                     "prompt_tokens": 100,
+                    "cached_input_tokens": 20,
                     "output_tokens": 20,
                     "reasoning_tokens": 5,
                     "total_tokens": 125,
@@ -5316,6 +5364,7 @@ class GenerationTests(unittest.TestCase):
                 {
                     "successful_attempt_number": 3,
                     "prompt_tokens": 200,
+                    "cached_input_tokens": 50,
                     "output_tokens": 40,
                     "reasoning_tokens": 10,
                     "total_tokens": 250,
@@ -5329,13 +5378,22 @@ class GenerationTests(unittest.TestCase):
         )
 
         self.assertEqual(summary["prompt_tokens"], 700)
+        self.assertEqual(summary["cached_input_tokens"], 170)
         self.assertEqual(summary["output_tokens"], 140)
         self.assertEqual(summary["reasoning_tokens"], 35)
         self.assertEqual(summary["total_tokens"], 875)
         self.assertAlmostEqual(summary["input_cost_usd"], 0.0003)
         self.assertAlmostEqual(summary["output_cost_usd"], 0.0005)
-        self.assertAlmostEqual(summary["total_cost_usd"], 0.0009)
+        self.assertAlmostEqual(summary["total_cost_usd"], 0.0008)
         self.assertAlmostEqual(summary["average_trajectory_cost_usd"], 0.0004)
+        self.assertEqual(
+            summary["pricing"]["cached_input_usd_per_million_tokens"],
+            0.05,
+        )
+        self.assertIn(
+            "Input totals include cached prompt tokens",
+            summary["notes"][-1],
+        )
 
     def test_disable_validation_keeps_invalid_trajectory_and_records_error(self):
         runtime_config = RuntimeConfig(
@@ -6001,6 +6059,7 @@ class GenerationTests(unittest.TestCase):
             "generated_at": "2026-03-10T00:00:00+00:00",
             "cost_summary": {
                 "prompt_tokens": 100,
+                "cached_input_tokens": 20,
                 "output_tokens": 40,
                 "reasoning_tokens": 0,
                 "total_tokens": 140,
@@ -6038,6 +6097,7 @@ class GenerationTests(unittest.TestCase):
             "generated_at": "2026-03-10T00:00:01+00:00",
             "cost_summary": {
                 "prompt_tokens": 120,
+                "cached_input_tokens": 30,
                 "output_tokens": 50,
                 "reasoning_tokens": 0,
                 "total_tokens": 170,
@@ -6104,8 +6164,12 @@ class GenerationTests(unittest.TestCase):
             self.assertEqual(combined_summary["num_runs_per_task"], 2)
             self.assertEqual(combined_summary["total_requested_runs"], 4)
             self.assertEqual(combined_summary["num_trajectories"], 2)
+            self.assertEqual(
+                combined_summary["cost_summary"]["cached_input_tokens"], 50
+            )
             self.assertEqual(combined_summary["cost_summary"]["total_cost_usd"], 0.008)
             self.assertEqual(len(combined_summary["task_summaries"]), 2)
+            self.assertEqual(combined_cost["cost_summary"]["cached_input_tokens"], 50)
             self.assertEqual(combined_cost["cost_summary"]["total_cost_usd"], 0.008)
             self.assertEqual(combined_errors["total_errors"], 0)
             self.assertTrue(

@@ -59,6 +59,21 @@ def _reasoning_token_count(generation_usage: dict[str, Any]) -> int:
     return coerce_int(generation_usage.get("reasoning_tokens")) or 0
 
 
+def _cached_input_token_count(generation_usage: dict[str, Any]) -> int:
+    """Read cached input tokens from persisted usage, defaulting old payloads to zero."""
+
+    prompt_tokens = coerce_int(generation_usage.get("prompt_tokens")) or 0
+    cached_input_tokens = coerce_int(generation_usage.get("cached_input_tokens")) or 0
+    return min(cached_input_tokens, prompt_tokens)
+
+
+def _non_cached_prompt_token_count(generation_usage: dict[str, Any]) -> int:
+    """Return prompt tokens that bill at the standard input rate."""
+
+    prompt_tokens = coerce_int(generation_usage.get("prompt_tokens")) or 0
+    return max(prompt_tokens - _cached_input_token_count(generation_usage), 0)
+
+
 def _billable_output_token_count(generation_usage: dict[str, Any]) -> int:
     """Reasoning tokens share the standard output-token billing tier."""
     return generation_usage["output_tokens"] + _reasoning_token_count(generation_usage)
@@ -71,6 +86,12 @@ def _scaled_token_totals(
     return {
         "prompt": sum(
             generation_usage["prompt_tokens"] * attempt_count
+            for generation_usage, attempt_count in zip(
+                generation_usages, attempt_counts
+            )
+        ),
+        "cached_input": sum(
+            _cached_input_token_count(generation_usage) * attempt_count
             for generation_usage, attempt_count in zip(
                 generation_usages, attempt_counts
             )
@@ -144,9 +165,19 @@ def _shared_pricing(
             pricing = {
                 "model": pricing_tier.model,
                 "input_usd_per_million_tokens": pricing_tier.input_usd_per_million_tokens,
+                "cached_input_usd_per_million_tokens": (
+                    pricing_tier.cached_input_usd_per_million_tokens
+                ),
                 "output_usd_per_million_tokens": pricing_tier.output_usd_per_million_tokens,
             }
-        resolved_pricings.append(pricing)
+        normalized_pricing = dict(pricing)
+        if "cached_input_usd_per_million_tokens" not in normalized_pricing:
+            input_rate = normalized_pricing.get("input_usd_per_million_tokens")
+            if input_rate is not None:
+                normalized_pricing["cached_input_usd_per_million_tokens"] = (
+                    float(input_rate) * 0.1
+                )
+        resolved_pricings.append(normalized_pricing)
 
     first_pricing = resolved_pricings[0]
     if any(pricing != first_pricing for pricing in resolved_pricings[1:]):
@@ -248,6 +279,9 @@ def _combine_split_generation_usages(
     combined_usage["successful_attempt_number"] = successful_attempt_number
     combined_usage["prompt_tokens"] = sum(
         usage_entry["prompt_tokens"] for usage_entry in usage_entries
+    )
+    combined_usage["cached_input_tokens"] = sum(
+        _cached_input_token_count(usage_entry) for usage_entry in usage_entries
     )
     combined_usage["output_tokens"] = sum(
         usage_entry["output_tokens"] for usage_entry in usage_entries
@@ -379,9 +413,11 @@ def _build_cost_estimate_summary_from_generation_usages(
             decimal_places=COST_DECIMAL_PLACES,
         ),
         "best_case_per_trajectory_usd": round_cost(
-            best_case_total_cost / max(len(generation_usages), 1)
-            if best_case_total_cost is not None
-            else None,
+            (
+                best_case_total_cost / max(len(generation_usages), 1)
+                if best_case_total_cost is not None
+                else None
+            ),
             decimal_places=COST_DECIMAL_PLACES,
         ),
         "worst_case_total_usd": round_cost(
@@ -389,9 +425,11 @@ def _build_cost_estimate_summary_from_generation_usages(
             decimal_places=COST_DECIMAL_PLACES,
         ),
         "worst_case_per_trajectory_usd": round_cost(
-            worst_case_total_cost / max(len(generation_usages), 1)
-            if worst_case_total_cost is not None
-            else None,
+            (
+                worst_case_total_cost / max(len(generation_usages), 1)
+                if worst_case_total_cost is not None
+                else None
+            ),
             decimal_places=COST_DECIMAL_PLACES,
         ),
         "best_case_tokens": best_case_tokens,
@@ -420,6 +458,7 @@ def _build_cost_summary_from_generation_usages(
         attempt_counts,
     )
     total_prompt_tokens = scaled_tokens["prompt"]
+    total_cached_input_tokens = scaled_tokens["cached_input"]
     total_output_tokens = scaled_tokens["output"]
     total_reasoning_tokens = scaled_tokens["reasoning"]
     total_tokens = scaled_tokens["total"]
@@ -432,8 +471,13 @@ def _build_cost_summary_from_generation_usages(
     if pricing_supported:
         # Keep the cost fields aligned with the retry-inclusive token totals.
         input_cost = sum(
-            (usage["prompt_tokens"] * attempt_count / 1_000_000)
+            (_non_cached_prompt_token_count(usage) * attempt_count / 1_000_000)
             * usage["pricing"]["input_usd_per_million_tokens"]
+            + (_cached_input_token_count(usage) * attempt_count / 1_000_000)
+            * usage["pricing"].get(
+                "cached_input_usd_per_million_tokens",
+                usage["pricing"]["input_usd_per_million_tokens"] * 0.1,
+            )
             for usage, attempt_count in zip(generation_usages, attempt_counts)
         )
         output_cost = sum(
@@ -445,6 +489,7 @@ def _build_cost_summary_from_generation_usages(
 
     summary = {
         "prompt_tokens": total_prompt_tokens,
+        "cached_input_tokens": total_cached_input_tokens,
         "output_tokens": total_output_tokens,
         "reasoning_tokens": total_reasoning_tokens,
         "total_tokens": total_tokens,
@@ -461,9 +506,11 @@ def _build_cost_summary_from_generation_usages(
             decimal_places=COST_DECIMAL_PLACES,
         ),
         "average_trajectory_cost_usd": round_cost(
-            total_cost / trajectory_count
-            if total_cost is not None and trajectory_count > 0
-            else None,
+            (
+                total_cost / trajectory_count
+                if total_cost is not None and trajectory_count > 0
+                else None
+            ),
             decimal_places=COST_DECIMAL_PLACES,
         ),
         "notes": [
@@ -471,6 +518,11 @@ def _build_cost_summary_from_generation_usages(
             "Retry-inclusive totals assume earlier failed attempts used the same token profile as the successful attempt.",
         ],
     }
+    if total_cached_input_tokens > 0:
+        summary["notes"].append(
+            "Input totals include cached prompt tokens, billed at the cached-input "
+            "rate when available and otherwise at 10% of the standard input rate."
+        )
     if shared_pricing is not None:
         summary["pricing"] = shared_pricing
     return summary

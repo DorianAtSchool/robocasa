@@ -46,7 +46,6 @@ or container-like region that contains the object.
 | Controls | `press_button` | `press_button(target, control)` | Activate a discrete button-like control. | `press_coffee_machine_button`, `press_microwave_start` |
 | Controls | `press_lever` | `press_lever(target, control)` | Activate a discrete lever-like control. | `press_toaster_lever`, `press_kettle_power_lever` |
 | Controls | `set_rotary_control` | `set_rotary_control(target, control, goal)` | Set a knob, handle, or rotatable control to an explicit goal state. | `turn_stove_burner_on`, `turn_sink_spout_left`, `increase_toaster_oven_temperature` |
-| Temporal | `wait` | `wait(seconds)` | Pause in place for a fixed number of seconds. | `wait_for_kettle`, `pause_before_handoff` |
 
 ### Recommended Alias Layer
 
@@ -196,7 +195,7 @@ aliases in the canonical layer.
 ### Recommended Refactor Outcome
 
 If RoboCasa is refactored around this taxonomy, the canonical subatomic inventory would
-be 14 subatomic tasks:
+be 13 subatomic tasks:
 
 1. `navigate_to_fixture`
 2. `pick_up_object`
@@ -211,7 +210,5 @@ be 14 subatomic tasks:
 11. `press_button`
 12. `press_lever`
 13. `set_rotary_control`
-14. `wait`
-
 That canonical set is expressive enough to cover the current 65 RoboCasa atomic tasks
 while making transport, access, and control semantics much easier to compose explicitly.

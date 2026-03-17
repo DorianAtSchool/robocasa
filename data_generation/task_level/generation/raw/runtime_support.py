@@ -554,6 +554,18 @@ def _reasoning_token_count(generation_usage: dict[str, Any]) -> int:
     return reasoning_tokens
 
 
+def _cached_input_token_count(generation_usage: dict[str, Any]) -> int:
+    """Read cached input tokens from usage payloads when splitting shared totals."""
+
+    prompt_tokens = generation_usage.get("prompt_tokens")
+    if not isinstance(prompt_tokens, int):
+        prompt_tokens = 0
+    cached_input_tokens = generation_usage.get("cached_input_tokens")
+    if not isinstance(cached_input_tokens, int):
+        return 0
+    return min(cached_input_tokens, prompt_tokens)
+
+
 def _split_generation_usage_across_candidates(
     generation_usage: dict[str, Any],
     *,
@@ -566,6 +578,10 @@ def _split_generation_usage_across_candidates(
 
     prompt_splits = _split_integer_total(
         generation_usage["prompt_tokens"], candidate_count
+    )
+    cached_input_splits = _split_integer_total(
+        _cached_input_token_count(generation_usage),
+        candidate_count,
     )
     output_splits = _split_integer_total(
         generation_usage["output_tokens"], candidate_count
@@ -583,6 +599,7 @@ def _split_generation_usage_across_candidates(
     for index in range(candidate_count):
         split_usage = dict(generation_usage)
         split_usage["prompt_tokens"] = prompt_splits[index]
+        split_usage["cached_input_tokens"] = cached_input_splits[index]
         split_usage["output_tokens"] = output_splits[index]
         split_usage["reasoning_tokens"] = reasoning_splits[index]
         split_usage["total_tokens"] = (

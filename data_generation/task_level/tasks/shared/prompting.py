@@ -13,7 +13,6 @@ from .constants import (
     NAVIGATION_TOOL_NAMES,
     OPEN_PART_TOOL_NAMES,
     RELEASE_TOOL_NAMES,
-    WAIT_TOOL_NAMES,
 )
 from .types import TaskInstance, TaskPromptBuilder
 
@@ -81,10 +80,6 @@ def _build_fsm_prompt_rules(
     if allowed_tool_names & RELEASE_TOOL_NAMES:
         prompt_rules.append(
             "Only use a placement tool for the exact object the acting agent is currently holding."
-        )
-    if allowed_tool_names & WAIT_TOOL_NAMES:
-        prompt_rules.append(
-            "Use wait only to pause in place when a delay is necessary, and provide a positive integer number of seconds."
         )
     if allowed_tool_names & GIVE_SPACE_TOOL_NAMES:
         prompt_rules.append(
@@ -189,7 +184,7 @@ Important rules:
 - The reasoning text should explain why the agent is using the tool call, referencing what happened before or what the agent plans on doing. Each reasoning text must be a single short sentence.
 - In reasoning text and communicate.message text, refer to agents using exact IDs like agent_0 and agent_1, not Agent 0 or Agent 1.
 - Agents can pass each other freely in the kitchen, including around the island.
-- If an agent has no immediate legal task action because it is waiting on the other agent, emit wait(seconds) instead of skipping that agent.
+- If an agent has no immediate legal task action because it is waiting on the other agent, use communicate to explain the dependency before the other agent proceeds.
 - Make this trajectory distinct from previous attempts by following variation key: {variation_key}
 - Output JSON only, with no markdown.
 

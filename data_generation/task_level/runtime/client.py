@@ -17,7 +17,6 @@ from data_generation.utils import (
     usage_field,
 )
 
-
 DEFAULT_MODEL = "gemini-3-flash-preview"
 DEFAULT_LOCATION = "global"
 DEFAULT_SDK = "google-genai"
@@ -27,6 +26,7 @@ COST_DECIMAL_PLACES = 4
 DEFAULT_TRAFFIC_TYPE = "ON_DEMAND"
 BATCH_TRAFFIC_TYPE = "ON_DEMAND_FLEX"
 HEURISTIC_CHARS_PER_TOKEN = 4
+CACHED_INPUT_TOKEN_DISCOUNT = 0.1
 # Vertex AI text pricing is keyed by normalized traffic tier for cost estimation.
 MODEL_TEXT_PRICING_USD_PER_MILLION = {
     "gemini-3.1-flash-lite-preview": {
@@ -71,6 +71,7 @@ class GenerationUsage:
     prompt_tokens: int | None = None
     candidates_tokens: int | None = None
     thoughts_tokens: int | None = None
+    cached_content_tokens: int | None = None
     tool_use_prompt_tokens: int | None = None
     total_tokens: int | None = None
     traffic_type: str | None = None
@@ -85,11 +86,17 @@ class GenerationResult:
 @dataclass(frozen=True)
 class AttemptUsage:
     prompt_tokens: int
+    cached_input_tokens: int
     output_tokens: int
     reasoning_tokens: int
     total_tokens: int
     source: str
     traffic_type: str
+
+    def non_cached_input_tokens(self) -> int:
+        """Return the prompt tokens that should bill at the standard input rate."""
+
+        return max(self.prompt_tokens - self.cached_input_tokens, 0)
 
     def billable_output_tokens(self) -> int:
         """Return all tokens billed at the model output rate."""
@@ -101,6 +108,7 @@ class PricingTier:
     model: str
     traffic_type: str
     input_usd_per_million_tokens: float
+    cached_input_usd_per_million_tokens: float
     output_usd_per_million_tokens: float
 
 
@@ -167,6 +175,10 @@ def _build_attempt_usage(
     if prompt_tokens is not None:
         candidate_tokens = coerce_int(getattr(usage, "candidates_tokens", None)) or 0
         reasoning_tokens = coerce_int(getattr(usage, "thoughts_tokens", None)) or 0
+        cached_input_tokens = min(
+            coerce_int(getattr(usage, "cached_content_tokens", None)) or 0,
+            prompt_tokens,
+        )
         tool_use_prompt_tokens = (
             coerce_int(getattr(usage, "tool_use_prompt_tokens", None)) or 0
         )
@@ -183,6 +195,7 @@ def _build_attempt_usage(
             )
         return AttemptUsage(
             prompt_tokens=prompt_tokens,
+            cached_input_tokens=cached_input_tokens,
             output_tokens=output_tokens,
             reasoning_tokens=reasoning_tokens,
             total_tokens=(
@@ -210,6 +223,7 @@ def _build_attempt_usage(
     )
     return AttemptUsage(
         prompt_tokens=estimated_prompt_tokens,
+        cached_input_tokens=0,
         output_tokens=estimated_output_tokens,
         reasoning_tokens=0,
         total_tokens=estimated_prompt_tokens + estimated_output_tokens,
@@ -239,6 +253,10 @@ def _resolve_pricing_tier(model: str, traffic_type: str | None) -> PricingTier |
         model=pricing_model,
         traffic_type=normalized_traffic_type,
         input_usd_per_million_tokens=tier_pricing["input"],
+        cached_input_usd_per_million_tokens=round(
+            tier_pricing["input"] * CACHED_INPUT_TOKEN_DISCOUNT,
+            6,
+        ),
         output_usd_per_million_tokens=tier_pricing["output"],
     )
 
@@ -259,8 +277,12 @@ def _build_attempt_cost_breakdown(
         )
 
     input_cost = (
-        usage.prompt_tokens / 1_000_000
-    ) * pricing.input_usd_per_million_tokens
+        (usage.non_cached_input_tokens() / 1_000_000)
+        * pricing.input_usd_per_million_tokens
+    ) + (
+        (usage.cached_input_tokens / 1_000_000)
+        * pricing.cached_input_usd_per_million_tokens
+    )
     # Vertex bills reasoning tokens at the same rate as other output tokens.
     output_cost = (
         usage.billable_output_tokens() / 1_000_000
@@ -280,6 +302,9 @@ def _serialize_pricing_tier(pricing: PricingTier) -> dict[str, Any]:
     return {
         "model": pricing.model,
         "input_usd_per_million_tokens": pricing.input_usd_per_million_tokens,
+        "cached_input_usd_per_million_tokens": (
+            pricing.cached_input_usd_per_million_tokens
+        ),
         "output_usd_per_million_tokens": pricing.output_usd_per_million_tokens,
     }
 
@@ -292,6 +317,10 @@ def _build_attempt_usage_from_generation_usage(
     """Builds attempt usage from persisted token counts before repricing."""
 
     prompt_tokens = coerce_int(generation_usage.get("prompt_tokens")) or 0
+    cached_input_tokens = min(
+        coerce_int(generation_usage.get("cached_input_tokens")) or 0,
+        prompt_tokens,
+    )
     output_tokens = coerce_int(generation_usage.get("output_tokens")) or 0
     reasoning_tokens = coerce_int(generation_usage.get("reasoning_tokens")) or 0
     total_tokens = coerce_int(generation_usage.get("total_tokens"))
@@ -304,6 +333,7 @@ def _build_attempt_usage_from_generation_usage(
 
     return AttemptUsage(
         prompt_tokens=prompt_tokens,
+        cached_input_tokens=cached_input_tokens,
         output_tokens=output_tokens,
         reasoning_tokens=reasoning_tokens,
         total_tokens=total_tokens,
@@ -320,6 +350,7 @@ def _serialize_generation_usage(
     payload = {
         "successful_attempt_number": attempt_number,
         "prompt_tokens": cost_breakdown.usage.prompt_tokens,
+        "cached_input_tokens": cost_breakdown.usage.cached_input_tokens,
         "output_tokens": cost_breakdown.usage.output_tokens,
         "reasoning_tokens": cost_breakdown.usage.reasoning_tokens,
         "total_tokens": cost_breakdown.usage.total_tokens,
@@ -480,6 +511,11 @@ def build_generation_usage_metadata(
         ),
         thoughts_tokens=usage_field(
             usage_metadata, "thoughts_token_count", "thoughtsTokenCount"
+        ),
+        cached_content_tokens=usage_field(
+            usage_metadata,
+            "cached_content_token_count",
+            "cachedContentTokenCount",
         ),
         tool_use_prompt_tokens=usage_field(
             usage_metadata,

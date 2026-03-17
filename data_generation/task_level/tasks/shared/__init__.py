@@ -9,7 +9,6 @@ from data_generation.task_level.tasks.shared.constants import (
     OPEN_PART_TOOL_NAMES,
     PLACE_LOCATION_ARG_NAMES,
     RELEASE_TOOL_NAMES,
-    WAIT_TOOL_NAMES,
 )
 from data_generation.task_level.tasks.shared.errors import *
 from data_generation.task_level.tasks.shared.fsm import FiniteStateTaskValidator

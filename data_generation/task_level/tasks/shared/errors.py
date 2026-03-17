@@ -130,10 +130,6 @@ class ToolArgumentSemanticValidationError(TaskSemanticValidationError):
     """Raised when a tool argument is missing, malformed, or disallowed."""
 
 
-class WaitDurationSemanticValidationError(ToolArgumentSemanticValidationError):
-    """Raised when wait.seconds is not a positive integer."""
-
-
 class PlacementDestinationSemanticValidationError(TaskSemanticValidationError):
     """Raised when a placement tool omits its symbolic destination."""
 

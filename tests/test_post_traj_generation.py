@@ -323,22 +323,26 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
         self.assertNotIn("agents", processed)
 
     def test_resolve_output_dataset_path_targets_w_images_copy(self):
-        dataset_path = Path("/tmp/data/raw/prepare_coffee/summary.json")
-
-        self.assertEqual(
-            resolve_output_dataset_path(dataset_path),
-            Path("/tmp/data/w_images/prepare_coffee/summary.json"),
-        )
-
-    def test_resolve_output_dataset_path_preserves_request_layout(self):
         dataset_path = Path(
-            "/tmp/data/raw/requests/20260316T022801Z/prepare_coffee/summary.json"
+            "/tmp/data/raw/gemini-3-flash-preview/prepare_coffee/summary.json"
         )
 
         self.assertEqual(
             resolve_output_dataset_path(dataset_path),
             Path(
-                "/tmp/data/w_images/requests/20260316T022801Z/prepare_coffee/summary.json"
+                "/tmp/data/w_images/gemini-3-flash-preview/prepare_coffee/summary.json"
+            ),
+        )
+
+    def test_resolve_output_dataset_path_preserves_request_layout(self):
+        dataset_path = Path(
+            "/tmp/data/raw/gemini-3-flash-preview/requests/20260316T022801Z/prepare_coffee/summary.json"
+        )
+
+        self.assertEqual(
+            resolve_output_dataset_path(dataset_path),
+            Path(
+                "/tmp/data/w_images/gemini-3-flash-preview/requests/20260316T022801Z/prepare_coffee/summary.json"
             ),
         )
 
@@ -360,7 +364,12 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             dataset_path = (
-                Path(tmpdir) / "data" / "raw" / "prepare_coffee" / "summary.json"
+                Path(tmpdir)
+                / "data"
+                / "raw"
+                / "gemini-3-flash-preview"
+                / "prepare_coffee"
+                / "summary.json"
             )
             trajectory_path = dataset_path.parent / "trajectories" / "traj_000000.json"
             prompt_path = dataset_path.parent / "prompts" / "traj_000000.md"

@@ -154,13 +154,18 @@ Trajectory generation supports a Vertex AI batch mode for large offline sweeps. 
 Use `--batch-processing` when launching the task-level generator CLI.
 
 ```bash
-PYTHONPATH=. uv run python -m data_generation.task_level.generation.raw.cli \
-  --tasks PrepareCoffee \
-  --num-runs 100 \
-  --model gemini-3.1-flash-lite-preview \
-  --sampling base \
+python -m data_generation.task_level.generation.raw.cli \
+  --tasks PrepareCoffee HotDogSetup \
+  --num-runs 4 \
+  --sampling verbalized \
+  --verbalized-k 3 \
+  --model gemini-3-flash-preview \
+  --location global \
+  --thinking-level medium \
+  --max-workers 10 \
+  --max-retries 2 \
   --batch-processing \
-  --batch-gcs-prefix gs://YOUR_BUCKET/robocasa-batch
+  --batch-gcs-prefix gs://your-bucket/robocasa-batch
 ```
 
 

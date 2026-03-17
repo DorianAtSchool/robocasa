@@ -315,6 +315,10 @@ def generate_single_run(
                     generation_usage["prompt_tokens"]
                     for generation_usage in accumulated_generation_usages
                 )
+                total_cached_input_tokens = sum(
+                    _costs._cached_input_token_count(generation_usage)
+                    for generation_usage in accumulated_generation_usages
+                )
                 total_output_tokens = sum(
                     generation_usage["output_tokens"]
                     for generation_usage in accumulated_generation_usages
@@ -328,6 +332,9 @@ def generate_single_run(
                 )
                 aggregate_generation_usage = dict(accumulated_generation_usages[0])
                 aggregate_generation_usage["prompt_tokens"] = total_prompt_tokens
+                aggregate_generation_usage["cached_input_tokens"] = (
+                    total_cached_input_tokens
+                )
                 aggregate_generation_usage["output_tokens"] = total_output_tokens
                 aggregate_generation_usage["reasoning_tokens"] = total_reasoning_tokens
                 aggregate_generation_usage["total_tokens"] = (
