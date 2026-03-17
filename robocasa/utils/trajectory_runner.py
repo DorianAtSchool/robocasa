@@ -40,15 +40,12 @@ from robocasa.models.fixtures import FixtureType
 from robocasa.wrappers.enclosing_wall_render_wrapper import EnclosingWallRenderWrapper
 from robocasa.models.fixtures.fixture import Fixture
 from robocasa.models.fixtures.fixture_utils import fixture_is_type
-
-# Candidate side-offset magnitudes (metres) applied along the fixture face when
-# a second robot needs to stand next to the first one at the same workspace.
-# We try the smallest viable offset first so the robot stays as close as
-# possible to the target object / fixture without violating separation.
-ROBOT_SIDE_OFFSET_CANDIDATES = (0.35, 0.55, 0.75, 1.0)
+from robocasa.utils.occupancy_grid import OccupancyGrid
+from robocasa.utils.placement import ContinuousPlacement
 
 # Minimum 2-D distance between robots; used as a safety check.
-MIN_ROBOT_SEPARATION = 0.60
+# Two robots side-by-side need ~0.40 m (0.18 radius × 2 + margin).
+MIN_ROBOT_SEPARATION = 0.40
 
 
 # ---------------------------------------------------------------------------
@@ -89,10 +86,10 @@ _AGENT_CAMERA_SUFFIXES = [
 # framing so we can keep the oblique room camera tighter around the active task
 # workspace while preserving enough margin to avoid accidental cropping.
 ROOM_VIEW_FIXTURE_RADIUS = 1.35
-ROOM_VIEW_XY_MARGIN = 1.05
+ROOM_VIEW_XY_MARGIN = 1.10
 ROOM_VIEW_Z_LOOKAT_FRACTION = 0.45
-ROOM_VIEW_BASE_DISTANCE_SCALE = 0.70
-ROOM_VIEW_MIN_DISTANCE = 3.5
+ROOM_VIEW_BASE_DISTANCE_SCALE = 0.80
+ROOM_VIEW_MIN_DISTANCE = 4.0
 
 
 def _classify_fixture(fixture: Fixture) -> str | None:
@@ -355,6 +352,12 @@ class TrajectoryRunner:
         render_width: int = 512,
         render_height: int = 512,
         gl_backend: str = "osmesa",
+        placement: str = "continuous",
+        cell_size: float = 0.10,
+        align_to_wall: bool = True,
+        standoff: float = 0.40,
+        sample_spacing: float = 0.08,
+        robot_radius: float = 0.18,
     ):
         os.environ.setdefault("MUJOCO_GL", gl_backend)
 
@@ -392,8 +395,16 @@ class TrajectoryRunner:
         else:
             self.camera_names = camera_names
 
-        # Build fixture index
+        # Build fixture index and placement strategy
         self._fixtures: dict[str, Fixture] = dict(self.env.fixtures)
+        self._placement_mode = placement
+        grid_kwargs = dict(cell_size=cell_size, align_to_wall=align_to_wall,
+                           standoff=standoff, sample_spacing=sample_spacing)
+        continuous_kwargs = dict(standoff=standoff, sample_spacing=sample_spacing, robot_radius=robot_radius)
+        # Always init both strategies: grid for cell-based queries and
+        # continuous for standability validation (room bounds, collision, enclosed).
+        self._occupancy_grid = OccupancyGrid(self._fixtures, **grid_kwargs)
+        self._continuous = ContinuousPlacement(self._fixtures, **continuous_kwargs)
 
         base_room_cam_config = CamUtils.LAYOUT_CAMS.get(
             self.env.layout_id, CamUtils.DEFAULT_LAYOUT_CAM
@@ -585,13 +596,13 @@ class TrajectoryRunner:
 
         fovy_deg = float(getattr(self.env.sim.model.vis.global_, "fovy", 45.0))
         half_fovy_rad = np.deg2rad(np.clip(fovy_deg, 1.0, 89.0) / 2.0)
-        required_distance = (max_radius / np.tan(half_fovy_rad)) * 1.2
+        required_distance = (max_radius / np.tan(half_fovy_rad)) * 1.05
 
         lookat = np.asarray(room_cam_config["lookat"], dtype=float).copy()
         lookat[:2] = center_xy
         return dict(
             lookat=lookat.tolist(),
-            distance=float(max(8.0, required_distance)),
+            distance=float(max(6.0, required_distance)),
             azimuth=float(room_cam_config["azimuth"]),
             elevation=-89.0,
         )
@@ -648,120 +659,218 @@ class TrajectoryRunner:
         fixture_id: str,
         ref_object_id: str | None = None,
     ):
-        """Re-place *robot_idx* to the **side** of the other robot at the same
-        fixture, using ``compute_robot_base_placement_pose`` with a lateral
-        offset — the same mechanism the env uses for ``secondary_robot_spawn_offset``.
+        """Re-place *robot_idx* beside the other robot at the same fixture.
 
-        Candidate offsets are tried in both directions (+x and -x in
-        fixture-local coords). We prefer the closest safe offset to the ideal
-        placement so robots stay near the object / plate they are working on,
-        while still maintaining ``MIN_ROBOT_SEPARATION``.
+        Re-queries placement with both the other robot's position and the
+        current (colliding) position excluded.
         """
         if fixture_id not in self._fixtures:
             return
         fxtr = self._fixtures[fixture_id]
+        ref_pos = self._resolve_ref_object_pos(ref_object_id)
 
+        if self._placement_mode == "continuous" and self._continuous is not None:
+            # For continuous: include current robot position as a "robot" to avoid
+            robot_positions = []
+            for other_idx in range(self._num_robots):
+                if other_idx != robot_idx:
+                    robot_positions.append(self._get_robot_position(other_idx)[:2])
+            # Also add own position to force a different result
+            robot_positions.append(self._get_robot_position(robot_idx)[:2])
+            result = self._continuous.find_placement(fxtr, robot_positions, ref_pos)
+        else:
+            robot_cells = []
+            for other_idx in range(self._num_robots):
+                if other_idx != robot_idx:
+                    other_pos = self._get_robot_position(other_idx)[:2]
+                    robot_cells.append(self._occupancy_grid._world_to_grid(other_pos))
+            my_pos = self._get_robot_position(robot_idx)[:2]
+            my_cell = self._occupancy_grid._world_to_grid(my_pos)
+            if my_cell not in robot_cells:
+                robot_cells.append(my_cell)
+            result = self._occupancy_grid.find_placement(fxtr, robot_cells, ref_pos)
+
+        if result is not None:
+            pos_xy, yaw = result
+            # Validate the offset position is actually standable
+            if self._continuous is not None:
+                if not self._continuous.is_standable(pos_xy):
+                    return  # Don't move to a non-standable position
+            self._set_robot_pose(robot_idx, pos_xy, yaw)
+
+    def _resolve_ref_object_pos(self, ref_object_id: str | None) -> np.ndarray | None:
+        """Return the 2D world position of a reference object, or None."""
+        if ref_object_id is None:
+            return None
         try:
-            ideal_pos, ideal_ori = EnvUtils.compute_robot_base_placement_pose(
-                self.env,
-                ref_fixture=fxtr,
-                ref_object=ref_object_id,
-                robot_idx=robot_idx,
-            )
+            body_id = self.env.obj_body_id.get(ref_object_id)
+            if body_id is not None:
+                return self.env.sim.data.body_xpos[body_id][:2].copy()
         except Exception:
-            ideal_pos, ideal_ori = None, None
-
-        best_safe = None
-        best_fallback = None
-
-        for lateral in ROBOT_SIDE_OFFSET_CANDIDATES:
-            for sign in (+1.0, -1.0):
-                offset = (sign * lateral, 0.0)
-                try:
-                    pos, ori = EnvUtils.compute_robot_base_placement_pose(
-                        self.env,
-                        ref_fixture=fxtr,
-                        ref_object=ref_object_id,
-                        offset=offset,
-                        robot_idx=robot_idx,
-                    )
-                except Exception:
-                    continue
-
-                min_dist = float("inf")
-                for other_idx in range(self._num_robots):
-                    if other_idx == robot_idx:
-                        continue
-                    other_pos = self._get_robot_position(other_idx)
-                    d = float(np.linalg.norm(pos[:2] - other_pos[:2]))
-                    min_dist = min(min_dist, d)
-
-                ideal_delta = (
-                    float(np.linalg.norm(pos[:2] - ideal_pos[:2]))
-                    if ideal_pos is not None
-                    else lateral
-                )
-                candidate = (ideal_delta, -min_dist, pos, ori)
-
-                if min_dist >= MIN_ROBOT_SEPARATION:
-                    if best_safe is None or candidate < best_safe:
-                        best_safe = candidate
-                else:
-                    fallback = (-min_dist, ideal_delta, pos, ori)
-                    if best_fallback is None or fallback < best_fallback:
-                        best_fallback = fallback
-
-        chosen = best_safe if best_safe is not None else best_fallback
-        if chosen is not None:
-            pos = chosen[2]
-            ori = chosen[3]
-            EnvUtils.set_robot_to_position(self.env, pos, robot_idx=robot_idx)
-            self._set_robot_yaw(
-                robot_idx, ori[2] if ori is not None else None,
-            )
+            pass
+        return None
 
     def _move_robot_near_fixture(
         self,
         robot_idx: int,
         fixture_id: str,
         ref_object_id: str | None = None,
-    ):
+        ref_pos_override: np.ndarray | None = None,
+        require_front: bool = False,
+    ) -> bool:
         """Teleport a robot's base near the given fixture, facing it.
 
-        If, after placement, another robot is too close (< MIN_ROBOT_SEPARATION)
-        the moved robot is re-placed to the **left or right** of that other
-        robot along the fixture face — just like the env places robot 1 beside
-        robot 0 using ``secondary_robot_spawn_offset``.
+        Delegates to the active placement strategy (grid or continuous).
+        If, after placement, another robot is too close (< MIN_ROBOT_SEPARATION),
+        the moved robot is re-placed to an alternative position.
+
+        Args:
+            ref_pos_override: explicit 2D position to prefer (takes precedence
+                over ``ref_object_id``).  Used when the target position is
+                known before the object is actually placed (e.g.,
+                ``place_on_surface`` pre-computes the landing spot).
+            require_front: If True, robot must approach from the fixture's
+                front face (for interactive fixtures like fridge, cabinet).
+                If False, pick the closest valid position on any face.
+
+        Returns:
+            True if the robot was successfully placed, False if no valid
+            position was found (robot stays at current position).
         """
         if fixture_id not in self._fixtures:
-            return
+            return False
         fxtr = self._fixtures[fixture_id]
+        if ref_pos_override is not None:
+            ref_pos = np.asarray(ref_pos_override, dtype=float)[:2]
+        else:
+            ref_pos = self._resolve_ref_object_pos(ref_object_id)
 
-        try:
-            pos, ori = EnvUtils.compute_robot_base_placement_pose(
-                self.env,
-                ref_fixture=fxtr,
-                ref_object=ref_object_id,
-                robot_idx=robot_idx,
-            )
-            EnvUtils.set_robot_to_position(self.env, pos, robot_idx=robot_idx)
-            self._set_robot_yaw(robot_idx, ori[2] if ori is not None else None)
-        except Exception:
-            # Fallback: place robot in front of fixture, facing it
-            fxtr_pos = np.array(fxtr.pos, dtype=float)
-            angle = getattr(fxtr, "rot", 0.0) or 0.0
-            fxtr_pos[0] += 0.6 * np.cos(angle + np.pi)
-            fxtr_pos[1] += 0.6 * np.sin(angle + np.pi)
-            EnvUtils.set_robot_to_position(self.env, fxtr_pos, robot_idx=robot_idx)
-            self._set_robot_yaw(robot_idx, None)
+        if self._placement_mode == "continuous" and self._continuous is not None:
+            result = self._move_robot_continuous(robot_idx, fxtr, ref_pos, require_front)
+        else:
+            result = self._move_robot_grid(robot_idx, fxtr, ref_pos, require_front)
+
+        # Validate result: standable, not inside fixture, and reachable
+        if result is not None:
+            pos_xy, yaw = result
+            rejected = False
+            if self._continuous is not None:
+                if (not self._continuous.is_standable(pos_xy) or
+                        self._continuous.is_inside_any_fixture(pos_xy)):
+                    rejected = True
+            # Grid reachability catches enclosed pockets (flood-fill)
+            if self._occupancy_grid is not None:
+                if not self._occupancy_grid.is_free(pos_xy):
+                    rejected = True
+            if rejected:
+                result = None  # reject, try fallback
+
+        placed = False
+        if result is not None:
+            pos_xy, yaw = result
+            self._set_robot_pose(robot_idx, pos_xy, yaw)
+            placed = True
+        else:
+            # Fallback: try the OTHER placement strategy before giving up.
+            fallback_result = None
+            if self._placement_mode != "continuous" and self._continuous is not None:
+                fallback_result = self._move_robot_continuous(robot_idx, fxtr, ref_pos, require_front)
+            elif self._placement_mode == "continuous" and self._occupancy_grid is not None:
+                fallback_result = self._move_robot_grid(robot_idx, fxtr, ref_pos, require_front)
+
+            # Validate fallback result: standable + not inside fixture + reachable
+            if fallback_result is not None:
+                pos_xy, yaw = fallback_result
+                rejected = False
+                if self._continuous is not None:
+                    if (not self._continuous.is_standable(pos_xy) or
+                            self._continuous.is_inside_any_fixture(pos_xy)):
+                        rejected = True
+                if self._occupancy_grid is not None:
+                    if not self._occupancy_grid.is_free(pos_xy):
+                        rejected = True
+                if rejected:
+                    fallback_result = None
+            if fallback_result is not None:
+                pos_xy, yaw = fallback_result
+                self._set_robot_pose(robot_idx, pos_xy, yaw)
+                placed = True
+            elif self._continuous is not None:
+                # Last resort: try multiple directions and standoffs to find
+                # a standable position. Prefer the fixture front face but
+                # fall back to sides and even behind.
+                angle = getattr(fxtr, "rot", 0.0) or 0.0
+                # Directions: front, left, right, back
+                directions = [
+                    angle + np.pi,       # front approach
+                    angle + np.pi / 2,   # left side
+                    angle - np.pi / 2,   # right side
+                    angle,               # behind (last resort)
+                ]
+                for direction in directions:
+                    for standoff in (0.6, 0.8, 0.4, 1.0, 1.2, 1.5):
+                        fallback_pos = np.array(fxtr.pos[:2], dtype=float)
+                        fallback_pos[0] += standoff * np.cos(direction)
+                        fallback_pos[1] += standoff * np.sin(direction)
+                        if (not self._continuous._collides_with_obstacles(fallback_pos, exclude_fixture=fxtr)
+                                and self._continuous.is_standable(fallback_pos)
+                                and not self._continuous.is_inside_any_fixture(fallback_pos)
+                                and (self._occupancy_grid is None or
+                                     self._occupancy_grid.is_free(fallback_pos))):
+                            self._set_robot_pose(robot_idx, fallback_pos, direction)
+                            placed = True
+                            break
+                    if placed:
+                        break
 
         # --- If overlapping another robot, shift to its side ---
+        if placed:
+            for other_idx in range(self._num_robots):
+                if other_idx == robot_idx:
+                    continue
+                if self._robots_too_close(robot_idx, other_idx):
+                    self._offset_robot_beside_other(robot_idx, fixture_id, ref_object_id=ref_object_id)
+                    break  # only one correction needed for 2-robot setups
+
+        return placed
+
+    def _move_robot_continuous(
+        self,
+        robot_idx: int,
+        fixture: Fixture,
+        ref_pos: np.ndarray | None,
+        require_front: bool = False,
+    ) -> tuple[np.ndarray, float] | None:
+        """Find placement using continuous AABB collision checks."""
+        robot_positions = []
         for other_idx in range(self._num_robots):
             if other_idx == robot_idx:
                 continue
-            if self._robots_too_close(robot_idx, other_idx):
-                self._offset_robot_beside_other(robot_idx, fixture_id, ref_object_id=ref_object_id)
-                break  # only one correction needed for 2-robot setups
+            robot_positions.append(self._get_robot_position(other_idx)[:2])
+        return self._continuous.find_placement(
+            fixture, robot_positions, ref_pos, require_front=require_front,
+        )
+
+    def _move_robot_grid(
+        self,
+        robot_idx: int,
+        fixture: Fixture,
+        ref_pos: np.ndarray | None,
+        require_front: bool = False,
+    ) -> tuple[np.ndarray, float] | None:
+        """Find placement using the occupancy grid."""
+        robot_cells = []
+        robot_positions = []
+        for other_idx in range(self._num_robots):
+            if other_idx == robot_idx:
+                continue
+            other_pos = self._get_robot_position(other_idx)[:2]
+            robot_cells.append(self._occupancy_grid._world_to_grid(other_pos))
+            robot_positions.append(other_pos)
+        return self._occupancy_grid.find_placement(
+            fixture, robot_cells, ref_pos, robot_positions=robot_positions,
+            require_front=require_front,
+        )
 
     def _find_nearest_surface(self, pos_2d: np.ndarray) -> str | None:
         """Find the nearest counter / placeable surface to a 2-D position."""
@@ -775,6 +884,103 @@ class TrajectoryRunner:
                 best_dist = d
                 best_id = fid
         return best_id
+
+    def give_space(
+        self,
+        robot_idx: int,
+        fixture_id: str,
+        min_distance: float = 1.5,
+    ):
+        """Move *robot_idx* to open floor space away from *fixture_id*.
+
+        Grid mode: finds the nearest free cell that is ≥ *min_distance* from
+        the fixture center and not occupied by another robot.
+
+        Continuous mode: samples positions on a circle around the fixture at
+        increasing radii until a standable, collision-free position is found.
+        """
+        if fixture_id not in self._fixtures:
+            return
+        fxtr = self._fixtures[fixture_id]
+        fxtr_pos = np.asarray(fxtr.pos[:2], dtype=float)
+
+        # Collect other robot positions
+        other_positions = []
+        for other_idx in range(self._num_robots):
+            if other_idx == robot_idx:
+                continue
+            other_positions.append(self._get_robot_position(other_idx)[:2])
+
+        best_pos = None
+        best_yaw = None
+        robot_pos = self._get_robot_position(robot_idx)[:2]
+
+        def _is_valid_candidate(pos):
+            """Check a candidate is collision-free and standable."""
+            for rp in other_positions:
+                if float(np.linalg.norm(pos - rp)) < MIN_ROBOT_SEPARATION:
+                    return False
+            # Always validate standability if continuous placement is available
+            if self._continuous is not None:
+                if self._continuous._collides_with_obstacles(pos):
+                    return False
+                if not self._continuous.is_standable(pos):
+                    return False
+            return True
+
+        def _try_continuous():
+            """Sample on expanding circles around the fixture."""
+            nonlocal best_pos, best_yaw
+            if self._continuous is None:
+                return
+            for radius in np.arange(min_distance, min_distance + 3.0, 0.3):
+                for angle in np.linspace(0, 2 * np.pi, 16, endpoint=False):
+                    candidate = fxtr_pos + radius * np.array([np.cos(angle), np.sin(angle)])
+                    if not _is_valid_candidate(candidate):
+                        continue
+                    best_pos = candidate
+                    delta = fxtr_pos - candidate
+                    best_yaw = float(np.arctan2(delta[1], delta[0]))
+                    return
+            return
+
+        def _try_grid():
+            """Scan all free cells for the closest one far enough from fixture."""
+            nonlocal best_pos, best_yaw
+            if self._occupancy_grid is None:
+                return
+            grid = self._occupancy_grid
+            best_dist_to_robot = float("inf")
+
+            for r in range(grid._rows):
+                for c in range(grid._cols):
+                    if grid._grid[r, c]:
+                        continue  # occupied cell
+                    cell_pos = grid._grid_to_world(r, c)
+                    dist_to_fixture = float(np.linalg.norm(cell_pos - fxtr_pos))
+                    if dist_to_fixture < min_distance:
+                        continue
+                    if not _is_valid_candidate(cell_pos):
+                        continue
+                    dist_to_robot = float(np.linalg.norm(cell_pos - robot_pos))
+                    if dist_to_robot < best_dist_to_robot:
+                        best_dist_to_robot = dist_to_robot
+                        best_pos = cell_pos
+                        delta = fxtr_pos - cell_pos
+                        best_yaw = float(np.arctan2(delta[1], delta[0]))
+
+        # Try the preferred strategy first, then fall back to the other
+        if self._placement_mode == "continuous":
+            _try_continuous()
+            if best_pos is None:
+                _try_grid()
+        else:
+            _try_grid()
+            if best_pos is None:
+                _try_continuous()
+
+        if best_pos is not None:
+            self._set_robot_pose(robot_idx, best_pos, best_yaw)
 
     def hand_off_object(
         self,
@@ -821,6 +1027,26 @@ class TrajectoryRunner:
         except Exception:
             pass
 
+    def _set_robot_pose(self, robot_idx: int, pos_xy: np.ndarray, yaw: float | None):
+        """Set robot position and yaw atomically.
+
+        The yaw joint rotates the body offset relative to the joint anchor,
+        which shifts body_xpos.  To achieve the desired world position *and*
+        yaw, we: (1) set yaw, (2) set position, (3) correct for the
+        yaw-induced position drift by re-setting position.
+        """
+        self._set_robot_yaw(robot_idx, yaw)
+        pos_3d = np.array([pos_xy[0], pos_xy[1], 0.0])
+        EnvUtils.set_robot_to_position(self.env, pos_3d, robot_idx=robot_idx)
+        # Correct for yaw-induced body offset: read back actual position
+        # and adjust if it doesn't match the target.
+        actual = self._get_robot_position(robot_idx)[:2]
+        error = pos_xy - actual
+        if np.linalg.norm(error) > 0.01:
+            corrected = pos_3d.copy()
+            corrected[:2] += error
+            EnvUtils.set_robot_to_position(self.env, corrected, robot_idx=robot_idx)
+
     def _get_step_fixture(self, action: str, args: dict) -> str | None:
         """Extract the fixture a step interacts with."""
         if action == "move_object":
@@ -831,6 +1057,8 @@ class TrajectoryRunner:
             return args.get("fixture") or args.get("fixture_id")
         elif action == "move_away":
             return None  # hand_off_object handles its own positioning
+        elif action == "give_space":
+            return None  # give_space handles its own positioning
         return None
 
     # ------------------------------------------------------------------
@@ -1028,8 +1256,33 @@ class TrajectoryRunner:
     # Maximum number of placement retries before accepting best-effort.
     _PLACE_MAX_RETRIES = 8
 
+    def _find_contained_objects(self, container_id: str) -> list[str]:
+        """Find objects physically inside/on top of *container_id*."""
+        contained = []
+        body_id = self.env.obj_body_id.get(container_id)
+        if body_id is None:
+            return contained
+        container_pos = self.env.sim.data.body_xpos[body_id].copy()
+        container_obj = self.env.objects[container_id]
+        radius = getattr(container_obj, "horizontal_radius", 0.10) * 1.2
+        for other_id in self.env.objects:
+            if other_id == container_id:
+                continue
+            other_body_id = self.env.obj_body_id.get(other_id)
+            if other_body_id is None:
+                continue
+            other_pos = self.env.sim.data.body_xpos[other_body_id].copy()
+            xy_dist = float(np.linalg.norm(other_pos[:2] - container_pos[:2]))
+            z_diff = other_pos[2] - container_pos[2]
+            if xy_dist < radius and -0.05 < z_diff < 0.20:
+                contained.append(other_id)
+        return contained
+
     def move_object(self, object_id: str, to_fixture: str):
         """Teleport an object to a fixture's surface.
+
+        If the object contains other objects (e.g. a bowl with slices),
+        those are moved along with it.
 
         After placement the position is validated: if the object did not
         land inside the target fixture's bounding box the placement is
@@ -1051,6 +1304,10 @@ class TrajectoryRunner:
         obj = self.env.objects[object_id]
         current_qpos = self.env.sim.data.get_joint_qpos(obj.joints[0])
         current_quat = current_qpos[3:7]
+        old_pos = current_qpos[:3].copy()
+
+        # Snapshot contained objects before moving
+        contained = self._find_contained_objects(object_id)
 
         best_pos = None
         best_dist = float("inf")
@@ -1078,6 +1335,16 @@ class TrajectoryRunner:
             obj.joints[0],
             np.concatenate([best_pos, current_quat]),
         )
+
+        # Move contained objects by the same delta
+        if contained:
+            delta = best_pos - old_pos
+            for child_id in contained:
+                child_obj = self.env.objects[child_id]
+                child_qpos = self.env.sim.data.get_joint_qpos(child_obj.joints[0])
+                child_qpos[:3] += delta
+                self.env.sim.data.set_joint_qpos(child_obj.joints[0], child_qpos)
+
         self.env.sim.forward()
 
         self._object_locations[object_id] = to_fixture
@@ -1161,10 +1428,20 @@ class TrajectoryRunner:
             # Parse robot index from agent_id
             robot_idx = int(agent_id.replace("agent_", ""))
 
-            # Teleport robot near the fixture it will interact with
+            # Teleport robot near the fixture it will interact with.
+            # For move_object, pre-compute the drop position so the robot
+            # stands near where the object will actually land.
             target_fixture = self._get_step_fixture(action, args)
             if target_fixture is not None:
-                self._move_robot_near_fixture(robot_idx, target_fixture)
+                ref_override = None
+                if action == "move_object" and target_fixture in self._fixtures:
+                    target_pos = self._compute_object_target_pos(
+                        self._fixtures[target_fixture],
+                    )
+                    ref_override = target_pos[:2]
+                self._move_robot_near_fixture(
+                    robot_idx, target_fixture, ref_pos_override=ref_override,
+                )
 
             # Render before
             before = self.render()
@@ -1191,6 +1468,9 @@ class TrajectoryRunner:
                 obj_id = args.get("object", "")
                 to_robot = int(to_agent.replace("agent_", "")) if to_agent else (1 - robot_idx)
                 self.hand_off_object(robot_idx, obj_id, to_robot)
+            elif action == "give_space":
+                fixture_id = args.get("fixture") or args.get("fixture_id", "")
+                self.give_space(robot_idx, fixture_id)
             elif action == "communicate":
                 pass  # no sim change
             elif action == "wait":
@@ -1198,7 +1478,7 @@ class TrajectoryRunner:
             else:
                 raise ValueError(
                     f"Step {i}: unknown action '{action}'. "
-                    f"Expected: move_object, interact, navigate, communicate, wait"
+                    f"Expected: move_object, interact, navigate, give_space, communicate, wait"
                 )
 
             # Render after

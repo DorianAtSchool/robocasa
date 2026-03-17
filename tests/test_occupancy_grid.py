@@ -1,0 +1,355 @@
+"""Tests for OccupancyGrid — unit tests (mock fixtures) and functional tests (real sim)."""
+
+from __future__ import annotations
+
+import unittest
+from unittest.mock import MagicMock
+
+import numpy as np
+
+from robocasa.utils.occupancy_grid import OccupancyGrid
+
+
+# ---------------------------------------------------------------------------
+# Helpers — lightweight mock fixtures
+# ---------------------------------------------------------------------------
+
+def _make_mock_fixture(
+    pos: tuple[float, float, float],
+    size: tuple[float, float, float] = (0.5, 0.5, 0.9),
+    rot: float = 0.0,
+    name: str = "fixture",
+) -> MagicMock:
+    """Create a mock Fixture with pos, rot, and get_ext_sites returning an AABB."""
+    fxtr = MagicMock()
+    fxtr.pos = np.array(pos, dtype=float)
+    fxtr.rot = rot
+    fxtr.name = name
+
+    # Build 8 AABB corners (world frame, no rotation for simplicity)
+    hx, hy, hz = size[0] / 2, size[1] / 2, size[2] / 2
+    cx, cy, cz = pos
+    corners = [
+        np.array([cx - hx, cy - hy, cz - hz]),  # p0
+        np.array([cx + hx, cy - hy, cz - hz]),  # px
+        np.array([cx - hx, cy + hy, cz - hz]),  # py
+        np.array([cx - hx, cy - hy, cz + hz]),  # pz
+        np.array([cx - hx, cy + hy, cz + hz]),
+        np.array([cx + hx, cy + hy, cz + hz]),
+        np.array([cx + hx, cy + hy, cz - hz]),
+        np.array([cx + hx, cy - hy, cz + hz]),
+    ]
+    fxtr.get_ext_sites = MagicMock(return_value=corners)
+    return fxtr
+
+
+# ---------------------------------------------------------------------------
+# Unit tests (no sim needed)
+# ---------------------------------------------------------------------------
+
+class TestOccupancyGridUnit(unittest.TestCase):
+    """Unit tests using mock fixtures."""
+
+    def test_grid_construction_bounds(self):
+        """Grid should have correct dimensions for a simple layout."""
+        f1 = _make_mock_fixture((0.0, 0.0, 0.0), size=(1.0, 1.0, 0.9))
+        grid = OccupancyGrid({"f1": f1}, cell_size=0.50)
+
+        # Fixture spans [-0.5, 0.5] in both X and Y
+        # With 1.0m margin: [-1.5, 1.5] → 3.0m extent → 6 cells per axis
+        self.assertGreaterEqual(grid._rows, 4)
+        self.assertGreaterEqual(grid._cols, 4)
+
+    def test_rasterization_marks_fixture_cells(self):
+        """Cells overlapping a fixture footprint should be occupied."""
+        f1 = _make_mock_fixture((0.0, 0.0, 0.0), size=(1.0, 1.0, 0.9))
+        grid = OccupancyGrid({"f1": f1}, cell_size=0.50)
+
+        # Center of fixture should be occupied
+        self.assertFalse(grid.is_free(np.array([0.0, 0.0])))
+        # Far away should be free
+        self.assertTrue(grid.is_free(np.array([1.2, 1.2])))
+
+    def test_find_placement_returns_adjacent_free_cell(self):
+        """Placement should return a position adjacent to the fixture, not on it."""
+        f1 = _make_mock_fixture((0.0, 0.0, 0.0), size=(1.0, 1.0, 0.9))
+        grid = OccupancyGrid({"f1": f1}, cell_size=0.50)
+
+        result = grid.find_placement(f1)
+        self.assertIsNotNone(result)
+        pos_xy, yaw = result
+
+        # Position should be free
+        self.assertTrue(grid.is_free(pos_xy))
+        # Position should be near fixture (within ~1.5 cell sizes)
+        dist = np.linalg.norm(pos_xy - np.array([0.0, 0.0]))
+        self.assertLess(dist, 2.0)
+
+    def test_multi_robot_exclusion(self):
+        """Second robot should get a different cell than the first."""
+        f1 = _make_mock_fixture((0.0, 0.0, 0.0), size=(1.0, 1.0, 0.9))
+        grid = OccupancyGrid({"f1": f1}, cell_size=0.50)
+
+        result1 = grid.find_placement(f1, robot_cells=[])
+        self.assertIsNotNone(result1)
+        pos1, _ = result1
+
+        # Mark first robot's cell
+        cell1 = grid._world_to_grid(pos1)
+        result2 = grid.find_placement(f1, robot_cells=[cell1])
+        self.assertIsNotNone(result2)
+        pos2, _ = result2
+
+        # Positions should differ
+        self.assertFalse(np.allclose(pos1, pos2, atol=0.01),
+                         f"Both robots got same position: {pos1}")
+
+    def test_corner_fixture_only_open_side(self):
+        """A fixture surrounded by walls on 3 sides should only have candidates on the open side."""
+        # Place a fixture at origin, with walls on 3 sides (left, right, back)
+        fixtures = {
+            "target": _make_mock_fixture((0.0, 0.0, 0.0), size=(0.4, 0.4, 0.9)),
+            "wall_left": _make_mock_fixture((-0.5, 0.0, 0.0), size=(0.4, 0.4, 0.9)),
+            "wall_right": _make_mock_fixture((0.5, 0.0, 0.0), size=(0.4, 0.4, 0.9)),
+            "wall_back": _make_mock_fixture((0.0, -0.5, 0.0), size=(0.4, 0.4, 0.9)),
+        }
+        grid = OccupancyGrid(fixtures, cell_size=0.50)
+
+        result = grid.find_placement(fixtures["target"])
+        self.assertIsNotNone(result)
+        pos_xy, _ = result
+
+        # Robot should be placed in the open direction (positive Y)
+        self.assertGreater(pos_xy[1], -0.1,
+                           f"Robot placed behind blocked fixture: y={pos_xy[1]}")
+
+    def test_large_fixture_candidates_surround_footprint(self):
+        """A large fixture spanning multiple cells should have candidates around its full extent."""
+        # Long counter: 2.0m x 0.5m
+        f1 = _make_mock_fixture((0.0, 0.0, 0.0), size=(2.0, 0.5, 0.9))
+        grid = OccupancyGrid({"f1": f1}, cell_size=0.50)
+
+        fixture_cells = grid._get_fixture_cells(f1)
+        # Should span multiple cells in X
+        cols = {c for _, c in fixture_cells}
+        self.assertGreater(len(cols), 1, "Large fixture should span multiple columns")
+
+        # Placement should work
+        result = grid.find_placement(f1)
+        self.assertIsNotNone(result)
+
+    def test_occupy_and_release(self):
+        """occupy() and release() should toggle cell state."""
+        f1 = _make_mock_fixture((0.0, 0.0, 0.0), size=(0.4, 0.4, 0.9))
+        grid = OccupancyGrid({"f1": f1}, cell_size=0.50)
+
+        free_pos = np.array([1.0, 1.0])
+        self.assertTrue(grid.is_free(free_pos))
+
+        grid.occupy(free_pos)
+        self.assertFalse(grid.is_free(free_pos))
+
+        grid.release(free_pos)
+        self.assertTrue(grid.is_free(free_pos))
+
+    def test_ref_object_pos_biases_placement(self):
+        """When ref_object_pos is given, placement should prefer the closer side."""
+        # Long counter
+        f1 = _make_mock_fixture((0.0, 0.0, 0.0), size=(2.0, 0.5, 0.9))
+        grid = OccupancyGrid({"f1": f1}, cell_size=0.50)
+
+        # Object on the left side
+        result_left = grid.find_placement(f1, ref_object_pos=np.array([-0.8, 0.5]))
+        self.assertIsNotNone(result_left)
+        pos_left, _ = result_left
+
+        # Object on the right side
+        result_right = grid.find_placement(f1, ref_object_pos=np.array([0.8, 0.5]))
+        self.assertIsNotNone(result_right)
+        pos_right, _ = result_right
+
+        # Left-biased placement should be further left than right-biased
+        self.assertLess(pos_left[0], pos_right[0],
+                        f"Left ref should produce leftward placement: {pos_left[0]} vs {pos_right[0]}")
+
+    def test_yaw_faces_fixture(self):
+        """Robot yaw should point toward the fixture center."""
+        f1 = _make_mock_fixture((0.0, 0.0, 0.0), size=(0.4, 0.4, 0.9))
+        grid = OccupancyGrid({"f1": f1}, cell_size=0.50)
+
+        result = grid.find_placement(f1)
+        self.assertIsNotNone(result)
+        pos_xy, yaw = result
+
+        # Vector from robot to fixture center
+        to_fixture = np.array([0.0, 0.0]) - pos_xy
+        expected_yaw = np.arctan2(to_fixture[1], to_fixture[0])
+
+        # Yaw should be close to expected (within ~45 degrees for diagonal snap)
+        angle_diff = abs((yaw - expected_yaw + np.pi) % (2 * np.pi) - np.pi)
+        self.assertLess(angle_diff, np.pi / 4 + 0.1,
+                        f"Yaw {yaw:.2f} too far from expected {expected_yaw:.2f}")
+
+    def test_no_placement_outside_bounds(self):
+        """Grid boundary cells should be clamped; no placement outside world bounds."""
+        f1 = _make_mock_fixture((0.0, 0.0, 0.0), size=(0.4, 0.4, 0.9))
+        grid = OccupancyGrid({"f1": f1}, cell_size=0.50)
+
+        result = grid.find_placement(f1)
+        self.assertIsNotNone(result)
+        pos_xy, _ = result
+
+        # Should be within grid bounds (origin to origin + extent)
+        extent_x = grid._cols * grid.cell_size
+        extent_y = grid._rows * grid.cell_size
+        self.assertGreaterEqual(pos_xy[0], grid._origin[0])
+        self.assertLessEqual(pos_xy[0], grid._origin[0] + extent_x)
+        self.assertGreaterEqual(pos_xy[1], grid._origin[1])
+        self.assertLessEqual(pos_xy[1], grid._origin[1] + extent_y)
+
+    def test_2ring_fallback(self):
+        """When all 1-ring cells are occupied, 2-ring should be used."""
+        f1 = _make_mock_fixture((0.0, 0.0, 0.0), size=(0.4, 0.4, 0.9))
+        # Surround with fixtures to block 1-ring
+        fixtures = {"target": f1}
+        for i, (dx, dy) in enumerate([
+            (-0.5, -0.5), (0.0, -0.5), (0.5, -0.5),
+            (-0.5, 0.0),               (0.5, 0.0),
+            (-0.5, 0.5),  (0.0, 0.5),  (0.5, 0.5),
+        ]):
+            fixtures[f"wall_{i}"] = _make_mock_fixture((dx, dy, 0.0), size=(0.4, 0.4, 0.9))
+
+        grid = OccupancyGrid(fixtures, cell_size=0.50)
+        result = grid.find_placement(f1)
+        # Should still find something in 2-ring
+        self.assertIsNotNone(result)
+
+
+# ---------------------------------------------------------------------------
+# Functional tests (require sim) — run with full environment
+# ---------------------------------------------------------------------------
+
+class TestOccupancyGridFunctional(unittest.TestCase):
+    """Functional tests against a real Kitchen sim environment."""
+
+    _env_cache: dict = {}
+
+    @classmethod
+    def _get_runner(cls, layout: int = 11, style: int = 34, seed: int = 42):
+        """Lazily create and cache a TrajectoryRunner."""
+        key = (layout, style, seed)
+        if key not in cls._env_cache:
+            from robocasa.utils.trajectory_runner import TrajectoryRunner
+            runner = TrajectoryRunner(
+                task_name="HotDogSetup",
+                robots=2,
+                layout=layout,
+                style=style,
+                seed=seed,
+                render_width=160,
+                render_height=128,
+            )
+            cls._env_cache[key] = runner
+        return cls._env_cache[key]
+
+    @classmethod
+    def tearDownClass(cls):
+        for runner in cls._env_cache.values():
+            try:
+                runner.env.close()
+            except Exception:
+                pass
+        cls._env_cache.clear()
+
+    def test_grid_has_occupied_cells(self):
+        """Grid from a real env should have some occupied cells."""
+        runner = self._get_runner()
+        grid = runner._occupancy_grid
+        self.assertTrue(grid._grid.any(), "Grid should have occupied cells from fixtures")
+
+    def test_place_robot_near_counter(self):
+        """Place robot near a counter fixture, verify position is adjacent and yaw faces it."""
+        runner = self._get_runner()
+        # Find a counter fixture
+        counter_id = None
+        for fid, fxtr in runner._fixtures.items():
+            try:
+                from robocasa.models.fixtures import FixtureType
+                from robocasa.models.fixtures.fixture_utils import fixture_is_type
+                if fixture_is_type(fxtr, FixtureType.COUNTER):
+                    counter_id = fid
+                    break
+            except Exception:
+                continue
+
+        if counter_id is None:
+            self.skipTest("No counter fixture found in layout")
+
+        runner._move_robot_near_fixture(0, counter_id)
+        robot_pos = runner._get_robot_position(0)[:2]
+        fxtr_pos = np.array(runner._fixtures[counter_id].pos[:2])
+        dist = float(np.linalg.norm(robot_pos - fxtr_pos))
+        # Robot should be within reasonable distance (< 2m)
+        self.assertLess(dist, 2.0, f"Robot too far from counter: {dist:.2f}m")
+
+    def test_two_robots_same_fixture_no_collision(self):
+        """Place two robots at the same fixture; they should not collide."""
+        runner = self._get_runner()
+        # Find a counter fixture (more reliable than arbitrary first fixture)
+        fixture_id = None
+        from robocasa.models.fixtures import FixtureType
+        from robocasa.models.fixtures.fixture_utils import fixture_is_type
+        for fid, fxtr in runner._fixtures.items():
+            if fixture_is_type(fxtr, FixtureType.COUNTER):
+                fixture_id = fid
+                break
+        if fixture_id is None:
+            self.skipTest("No counter fixture found")
+
+        runner._move_robot_near_fixture(0, fixture_id)
+        runner._move_robot_near_fixture(1, fixture_id)
+
+        # Check they're not too close
+        from robocasa.utils.trajectory_runner import MIN_ROBOT_SEPARATION
+        pos0 = runner._get_robot_position(0)[:2]
+        pos1 = runner._get_robot_position(1)[:2]
+        dist = float(np.linalg.norm(pos0 - pos1))
+        # They should either be far enough apart or the offset correction should have helped
+        # (We allow a small tolerance since the grid cell size is 0.5m)
+        self.assertGreater(dist, MIN_ROBOT_SEPARATION * 0.8,
+                           f"Robots too close: {dist:.2f}m (min={MIN_ROBOT_SEPARATION}m)")
+
+    def test_place_robot_with_ref_object(self):
+        """Place robot with ref_object_pos — should stand on the object's side."""
+        runner = self._get_runner()
+        # Find a fixture and an object
+        fixture_id = None
+        for fid, fxtr in runner._fixtures.items():
+            from robocasa.models.fixtures import FixtureType
+            from robocasa.models.fixtures.fixture_utils import fixture_is_type
+            if fixture_is_type(fxtr, FixtureType.COUNTER):
+                fixture_id = fid
+                break
+
+        if fixture_id is None:
+            self.skipTest("No counter fixture found")
+
+        # Find an object
+        ref_obj = None
+        if hasattr(runner.env, "obj_body_id"):
+            for obj_id in runner.env.obj_body_id:
+                ref_obj = obj_id
+                break
+
+        if ref_obj is None:
+            self.skipTest("No objects found in environment")
+
+        runner._move_robot_near_fixture(0, fixture_id, ref_object_id=ref_obj)
+        robot_pos = runner._get_robot_position(0)[:2]
+        fxtr_pos = np.array(runner._fixtures[fixture_id].pos[:2])
+        dist = float(np.linalg.norm(robot_pos - fxtr_pos))
+        self.assertLess(dist, 2.5, f"Robot too far from fixture: {dist:.2f}m")
+
+
+if __name__ == "__main__":
+    unittest.main()

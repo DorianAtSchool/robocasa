@@ -19,9 +19,10 @@ class TestSimToolSpecs(unittest.TestCase):
             "open_sliding_part",
             "pick_up_object",
             "place_in_receptacle",
+            "place_next_to",
             "place_on_object",
             "place_on_surface",
-            "place_under_dispenser",
+            "place_under",
             "press_button",
             "press_lever",
             "set_rotary_control",
@@ -29,6 +30,10 @@ class TestSimToolSpecs(unittest.TestCase):
         }
         self.assertEqual({spec["name"] for spec in SIM_TOOL_SPECS}, expected_names)
         self.assertEqual(set(SIM_TOOL_SPEC_BY_NAME.keys()), expected_names)
+
+    def test_no_duplicate_tool_names(self):
+        names = [spec["name"] for spec in SIM_TOOL_SPECS]
+        self.assertEqual(len(names), len(set(names)))
 
     def test_required_parameter_names_match(self):
         expected_parameters = {
@@ -40,9 +45,10 @@ class TestSimToolSpecs(unittest.TestCase):
             "open_sliding_part": ["target_id", "part_id"],
             "pick_up_object": ["object_id", "source_id"],
             "place_in_receptacle": ["object_id", "receptacle_id"],
+            "place_next_to": ["object_id", "reference_object_id"],
             "place_on_object": ["object_id", "support_object_id", "anchor_fixture_id"],
             "place_on_surface": ["object_id", "support_id"],
-            "place_under_dispenser": ["object_id", "dispenser_id"],
+            "place_under": ["object_id", "reference_fixture_id"],
             "press_button": ["target_id", "control_id"],
             "press_lever": ["target_id", "control_id"],
             "set_rotary_control": ["target_id", "control_id", "goal"],
@@ -68,6 +74,17 @@ class TestSimToolSpecs(unittest.TestCase):
             SIM_TOOL_SPEC_BY_NAME["navigate_to_fixture"]["parameters"][0]["name"],
             "fixture_id",
         )
+
+    def test_executor_has_method_for_every_tool(self):
+        """Every tool in the spec registry must have a matching method on SimToolExecutor."""
+        from robocasa.utils.sim_tool_executor import SimToolExecutor
+
+        for tool_name in SIM_TOOL_SPEC_BY_NAME:
+            self.assertTrue(
+                hasattr(SimToolExecutor, tool_name),
+                f"SimToolExecutor missing method for {tool_name!r}",
+            )
+            self.assertTrue(callable(getattr(SimToolExecutor, tool_name)))
 
 
 if __name__ == "__main__":

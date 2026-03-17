@@ -77,6 +77,12 @@ SIM_TOOL_SPECS: list[dict[str, Any]] = [
         "receptacle_id",
     ),
     _build_tool_spec(
+        "place_next_to",
+        "Place an object adjacent to another object on the same surface.",
+        "object_id",
+        "reference_object_id",
+    ),
+    _build_tool_spec(
         "place_on_object",
         "Place an object on top of another movable support object.",
         "object_id",
@@ -90,10 +96,13 @@ SIM_TOOL_SPECS: list[dict[str, Any]] = [
         "support_id",
     ),
     _build_tool_spec(
-        "place_under_dispenser",
-        "Place an object under a machine dispenser target.",
+        "place_under",
+        "Place an object directly beneath a reference fixture. For dispensers "
+        "(e.g. coffee machine nozzle, sink faucet) the object is positioned at "
+        "the dispenser output site; for other fixtures (e.g. wall cabinet) the "
+        "object is placed on the nearest surface below.",
         "object_id",
-        "dispenser_id",
+        "reference_fixture_id",
     ),
     _build_tool_spec(
         "press_button",
@@ -113,6 +122,11 @@ SIM_TOOL_SPECS: list[dict[str, Any]] = [
         "target_id",
         "control_id",
         "goal",
+    ),
+    _build_tool_spec(
+        "give_space",
+        "Move away from a fixture so another robot can access it.",
+        "fixture_id",
     ),
     _build_tool_spec(
         "wait",

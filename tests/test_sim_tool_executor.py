@@ -1,14 +1,12 @@
 import json
-import os
 from pathlib import Path
 import tempfile
 import unittest
 
+import numpy as np
 import robosuite.utils.transform_utils as T
 
-os.environ.setdefault("MUJOCO_GL", "osmesa")
-
-from robocasa.scripts.generate_llm_task_descriptions import (  # noqa: E402
+from robocasa.scripts.generate_llm_task_descriptions import (
     build_compact_task_context,
     render_llm_prompt,
 )
@@ -26,7 +24,6 @@ class TestSimToolExecutor(unittest.TestCase):
             seed=42,
             render_width=160,
             render_height=128,
-            gl_backend="osmesa",
         )
         try:
             for tool_name in SIM_TOOL_SPEC_BY_NAME:
@@ -43,7 +40,6 @@ class TestSimToolExecutor(unittest.TestCase):
             seed=42,
             width=160,
             height=128,
-            gl_backend="osmesa",
         )
         self.assertEqual(context["task_name"], "HotDogSetup")
         self.assertIn("instruction", context)
@@ -69,7 +65,6 @@ class TestSimToolExecutor(unittest.TestCase):
             seed=42,
             render_width=160,
             render_height=128,
-            gl_backend="osmesa",
         )
         try:
             plan = executor.build_demo_plan("cooperative_hotdog_setup")
@@ -122,7 +117,6 @@ class TestSimToolExecutor(unittest.TestCase):
             seed=42,
             render_width=160,
             render_height=128,
-            gl_backend="osmesa",
         )
         try:
             plan = executor.build_demo_plan("cooperative_hotdog_setup")
@@ -147,7 +141,6 @@ class TestSimToolExecutor(unittest.TestCase):
             seed=42,
             render_width=160,
             render_height=128,
-            gl_backend="osmesa",
         )
         executor_b = SimToolExecutor(
             task_name="HotDogSetup",
@@ -157,7 +150,6 @@ class TestSimToolExecutor(unittest.TestCase):
             seed=42,
             render_width=160,
             render_height=128,
-            gl_backend="osmesa",
         )
         try:
             template_a = executor_a.build_demo_plan_template("cooperative_hotdog_setup")
@@ -203,7 +195,6 @@ class TestSimToolExecutor(unittest.TestCase):
             seed=42,
             render_width=160,
             render_height=128,
-            gl_backend="osmesa",
         )
         executor_object = SimToolExecutor(
             task_name="HotDogSetup",
@@ -213,7 +204,6 @@ class TestSimToolExecutor(unittest.TestCase):
             seed=42,
             render_width=160,
             render_height=128,
-            gl_backend="osmesa",
         )
         try:
             plate_body_id = executor_fixture.env.obj_body_id["plate"]
@@ -238,6 +228,272 @@ class TestSimToolExecutor(unittest.TestCase):
         finally:
             executor_fixture.close()
             executor_object.close()
+
+
+class TestToolsFunctional(unittest.TestCase):
+    """Functional tests that call individual tools against a live simulation."""
+
+    _executor = None
+
+    @classmethod
+    def setUpClass(cls):
+        cls._executor = SimToolExecutor(
+            task_name="HotDogSetup",
+            robots=2,
+            layout=11,
+            style=34,
+            seed=42,
+            render_width=160,
+            render_height=128,
+        )
+        cls._scene = cls._executor.get_scene_description()
+
+    @classmethod
+    def tearDownClass(cls):
+        if cls._executor is not None:
+            cls._executor.close()
+
+    # -- helpers --
+
+    def _object_pos(self, object_id):
+        pos, _ = self._executor._get_object_pose(object_id)
+        return pos.copy()
+
+    def _fixture_pos(self, fixture_id):
+        return np.array(
+            self._scene["fixtures"][fixture_id]["position"], dtype=float
+        )
+
+    def _robot_pos(self, robot_idx=0):
+        return self._executor.runner._get_robot_position(robot_idx)
+
+    # -- navigate_to_fixture --
+
+    def test_navigate_moves_robot_near_fixture(self):
+        # Pick any fixture from the scene
+        fixture_id = next(iter(self._scene["fixtures"]))
+        result = self._executor.navigate_to_fixture(fixture_id, robot_idx=0)
+        self.assertTrue(result.success)
+        robot_xy = self._robot_pos(0)[:2]
+        fixture_xy = self._fixture_pos(fixture_id)[:2]
+        dist = float(np.linalg.norm(robot_xy - fixture_xy))
+        self.assertLess(dist, 2.0, "Robot should be within 2m of fixture")
+
+    # -- pick_up_object --
+
+    def test_pick_up_marks_object_as_held(self):
+        scene = self._executor.get_scene_description()
+        obj_id = "hotdog_bun"
+        source = scene["objects"][obj_id]["location"]
+        result = self._executor.pick_up_object(obj_id, source, robot_idx=0)
+        self.assertTrue(result.success)
+        self.assertEqual(self._executor._held_objects.get(0), obj_id)
+
+    # -- place_on_surface --
+
+    def test_place_on_surface_moves_object(self):
+        obj_id = "hotdog_bun"
+        # Ensure it's picked up first
+        scene = self._executor.get_scene_description()
+        source = scene["objects"][obj_id]["location"]
+        self._executor.pick_up_object(obj_id, source, robot_idx=0)
+
+        # Find a counter to place on
+        target_fixture = None
+        for fid, info in self._scene["fixtures"].items():
+            if info.get("can_place_objects") and "counter" in info.get("fixture_type", ""):
+                target_fixture = fid
+                break
+        self.assertIsNotNone(target_fixture)
+
+        result = self._executor.place_on_surface(obj_id, target_fixture, robot_idx=0)
+        self.assertTrue(result.success)
+        self.assertNotIn(0, self._executor._held_objects)
+
+    # -- place_on_object --
+
+    def test_place_on_object_stacks(self):
+        # Pick up sausage, place on plate
+        scene = self._executor.get_scene_description()
+        source = scene["objects"]["sausage"]["location"]
+        self._executor.pick_up_object("sausage", source, robot_idx=1)
+
+        plate_pos_before = self._object_pos("plate")
+        result = self._executor.place_on_object("sausage", "plate", robot_idx=1)
+        self.assertTrue(result.success)
+
+        sausage_z = self._object_pos("sausage")[2]
+        plate_z = self._object_pos("plate")[2]
+        self.assertGreater(sausage_z, plate_z - 0.01,
+                           "Sausage should be at or above plate level")
+
+    # -- place_next_to --
+
+    def test_place_next_to_puts_object_nearby(self):
+        scene = self._executor.get_scene_description()
+        source = scene["objects"]["hotdog_bun"]["location"]
+        self._executor.pick_up_object("hotdog_bun", source, robot_idx=0)
+
+        result = self._executor.place_next_to("hotdog_bun", "plate", robot_idx=0)
+        self.assertTrue(result.success)
+
+        bun_xy = self._object_pos("hotdog_bun")[:2]
+        plate_xy = self._object_pos("plate")[:2]
+        dist = float(np.linalg.norm(bun_xy - plate_xy))
+        self.assertLess(dist, 0.5, "Objects should be close together")
+        self.assertGreater(dist, 0.01, "Objects should not overlap exactly")
+
+    # -- place_under (generic / non-dispenser) --
+
+    def test_place_under_generic_aligns_xy(self):
+        """place_under a non-dispenser fixture should align XY under it."""
+        scene = self._executor.get_scene_description()
+        # Find any non-placeable, non-dispenser fixture (cabinet, hood, etc.)
+        ref_fixture = None
+        for fid, info in scene["fixtures"].items():
+            ftype = info.get("fixture_type", "")
+            if not info.get("can_place_objects", False) and ftype not in (
+                "coffee_machine", "sink", ""
+            ):
+                ref_fixture = fid
+                break
+
+        if ref_fixture is None:
+            self.skipTest("No non-placeable non-dispenser fixture in this layout")
+
+        obj_id = "hotdog_bun"
+        source = scene["objects"][obj_id]["location"]
+        self._executor.pick_up_object(obj_id, source, robot_idx=0)
+
+        result = self._executor.place_under(obj_id, ref_fixture, robot_idx=0)
+        self.assertTrue(result.success)
+
+        obj_xy = self._object_pos(obj_id)[:2]
+        fixture_xy = self._fixture_pos(ref_fixture)[:2]
+        xy_dist = float(np.linalg.norm(obj_xy - fixture_xy))
+        self.assertLess(xy_dist, 0.05, "Object XY should align under fixture")
+
+    # -- execute dispatch --
+
+    def test_execute_dispatches_to_correct_method(self):
+        result = self._executor.execute("wait", robot_idx=0)
+        self.assertTrue(result.success)
+        self.assertEqual(result.tool_name, "wait")
+
+    def test_execute_rejects_unknown_tool(self):
+        with self.assertRaises(ValueError):
+            self._executor.execute("nonexistent_tool")
+
+    # -- communicate / wait --
+
+    def test_communicate_returns_success(self):
+        result = self._executor.communicate(to="agent_1", message="hello")
+        self.assertTrue(result.success)
+        self.assertEqual(result.details["message"], "hello")
+
+    def test_wait_returns_success(self):
+        result = self._executor.wait(robot_idx=0)
+        self.assertTrue(result.success)
+
+
+class TestPlaceUnderDispenser(unittest.TestCase):
+    """Test place_under with dispenser fixtures (CoffeeMachine, Sink)."""
+
+    def test_place_under_coffee_machine(self):
+        executor = SimToolExecutor(
+            task_name="CoffeeSetupMug",
+            robots=1,
+            layout=11,
+            style=34,
+            seed=42,
+            render_width=160,
+            render_height=128,
+        )
+        try:
+            scene = executor.get_scene_description()
+
+            # Find the coffee machine fixture
+            coffee_fixture = None
+            for fid, info in scene["fixtures"].items():
+                if "coffee" in info.get("fixture_type", "").lower():
+                    coffee_fixture = fid
+                    break
+            self.assertIsNotNone(coffee_fixture, "No coffee machine in scene")
+
+            # Find the mug object
+            mug_id = None
+            for oid in scene["objects"]:
+                if "mug" in oid or oid == "obj":
+                    mug_id = oid
+                    break
+            self.assertIsNotNone(mug_id, "No mug object in scene")
+
+            # Pick up and place under coffee machine
+            source = scene["objects"][mug_id]["location"]
+            executor.pick_up_object(mug_id, source, robot_idx=0)
+            result = executor.place_under(mug_id, coffee_fixture, robot_idx=0)
+            self.assertTrue(result.success)
+
+            # Verify position is at the receptacle_place_site
+            from robocasa.models.fixtures.coffee_machine import CoffeeMachine
+            fixture_obj = executor.runner._fixtures[coffee_fixture]
+            self.assertIsInstance(fixture_obj, CoffeeMachine)
+
+            site_name = f"{fixture_obj.naming_prefix}receptacle_place_site"
+            site_id = executor.env.sim.model.site_name2id(site_name)
+            expected_pos = executor.env.sim.data.site_xpos[site_id].copy()
+
+            actual_pos, _ = executor._get_object_pose(mug_id)
+            dist = float(np.linalg.norm(actual_pos - expected_pos))
+            self.assertLess(dist, 0.01, "Mug should be at dispenser site")
+        finally:
+            executor.close()
+
+    def test_place_under_sink(self):
+        executor = SimToolExecutor(
+            task_name="HotDogSetup",
+            robots=2,
+            layout=11,
+            style=34,
+            seed=42,
+            render_width=160,
+            render_height=128,
+        )
+        try:
+            scene = executor.get_scene_description()
+
+            # Find the sink fixture
+            sink_fixture = None
+            for fid, info in scene["fixtures"].items():
+                if "sink" in info.get("fixture_type", "").lower():
+                    sink_fixture = fid
+                    break
+
+            if sink_fixture is None:
+                self.skipTest("No sink fixture in this layout")
+
+            from robocasa.models.fixtures.sink import Sink
+            fixture_obj = executor.runner._fixtures[sink_fixture]
+            if not isinstance(fixture_obj, Sink):
+                self.skipTest("Sink fixture is not a Sink instance")
+
+            # Pick up an object and place under sink
+            obj_id = "hotdog_bun"
+            source = scene["objects"][obj_id]["location"]
+            executor.pick_up_object(obj_id, source, robot_idx=0)
+            result = executor.place_under(obj_id, sink_fixture, robot_idx=0)
+            self.assertTrue(result.success)
+
+            # Verify position is at the water site
+            water_site_name = fixture_obj.water_site.get("name")
+            site_id = executor.env.sim.model.site_name2id(water_site_name)
+            expected_pos = executor.env.sim.data.site_xpos[site_id].copy()
+
+            actual_pos, _ = executor._get_object_pose(obj_id)
+            dist = float(np.linalg.norm(actual_pos - expected_pos))
+            self.assertLess(dist, 0.01, "Object should be at water site")
+        finally:
+            executor.close()
 
 
 if __name__ == "__main__":

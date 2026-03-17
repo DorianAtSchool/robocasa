@@ -1,0 +1,387 @@
+"""
+2D occupancy grid for robot base placement.
+
+Ground-level fixtures and walls mark cells as occupied.  Placement candidates
+are generated at a fixed standoff distance from each fixture face (same
+approach as ContinuousPlacement), then validated against the grid.
+
+Multi-robot collision is handled by cell exclusion and physical distance
+checks.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+
+from robocasa.models.fixtures.fixture import Fixture
+from robocasa.utils.placement import get_fixture_aabb
+
+# Fixture name substrings that should NOT be rasterized as ground obstacles.
+_SKIP_NAME_PATTERNS = ("floor",)
+
+# Minimum height (z) of the fixture's lowest ext_site point for it to be
+# considered "above ground" and therefore not a ground obstacle.
+_ABOVE_GROUND_Z_THRESHOLD = 0.60
+
+
+def _is_ground_obstacle(name: str, fxtr: Fixture) -> bool:
+    """Return True if *fxtr* is a ground-level physical obstacle."""
+    name_lower = name.lower()
+    for pat in _SKIP_NAME_PATTERNS:
+        if pat in name_lower:
+            return False
+    try:
+        ext = fxtr.get_ext_sites(all_points=True, relative=False)
+        min_z = min(float(np.asarray(p, dtype=float)[2]) for p in ext)
+        if min_z > _ABOVE_GROUND_Z_THRESHOLD:
+            return False
+    except Exception:
+        pass
+    return True
+
+
+class OccupancyGrid:
+    """Grid-based placement planner for robot bases in a kitchen layout."""
+
+    # Minimum physical separation between robots (meters).
+    _MIN_ROBOT_SEPARATION = 0.40
+
+    def __init__(
+        self,
+        fixtures: dict[str, Fixture],
+        cell_size: float = 0.10,
+        align_to_wall: bool = True,
+        standoff: float = 0.40,
+        sample_spacing: float = 0.08,
+    ):
+        self.cell_size = cell_size
+        self._fixtures = fixtures
+        self._standoff = standoff
+        self._sample_spacing = sample_spacing
+
+        # Compute world AABB from ALL fixtures, rasterize ground obstacles.
+        all_points: list[np.ndarray] = []
+        obstacle_names: list[str] = []
+
+        for name, fxtr in fixtures.items():
+            try:
+                ext = fxtr.get_ext_sites(all_points=True, relative=False)
+                for p in ext:
+                    all_points.append(np.asarray(p, dtype=float)[:2])
+            except Exception:
+                if hasattr(fxtr, "pos") and fxtr.pos is not None:
+                    all_points.append(np.asarray(fxtr.pos, dtype=float)[:2])
+
+            if _is_ground_obstacle(name, fxtr):
+                obstacle_names.append(name)
+
+        if not all_points:
+            self._origin = np.array([0.0, 0.0])
+            self._grid = np.zeros((1, 1), dtype=bool)
+            self._rows = 1
+            self._cols = 1
+            return
+
+        pts = np.array(all_points)
+        margin = 1.0
+        self._origin = pts.min(axis=0) - margin
+        top_right = pts.max(axis=0) + margin
+
+        if align_to_wall:
+            import math
+            self._origin[1] = -math.ceil(-self._origin[1] / cell_size) * cell_size
+            self._origin[0] = -math.ceil(-self._origin[0] / cell_size) * cell_size
+
+        extent = top_right - self._origin
+        self._cols = max(1, int(np.ceil(extent[0] / cell_size)))
+        self._rows = max(1, int(np.ceil(extent[1] / cell_size)))
+
+        self._grid = np.zeros((self._rows, self._cols), dtype=bool)
+
+        for name in obstacle_names:
+            self._rasterize_fixture(fixtures[name])
+
+        # Flood-fill from room interior to find reachable free cells.
+        # Any free cell NOT reached is an enclosed pocket → mark occupied.
+        self._seal_unreachable_cells(fixtures)
+
+    # ------------------------------------------------------------------
+    # Reachability
+    # ------------------------------------------------------------------
+
+    def _seal_unreachable_cells(self, fixtures: dict[str, Fixture]):
+        """Mark free cells unreachable from the room interior as occupied.
+
+        Uses BFS flood-fill from the room center.  Enclosed pockets
+        (corners between cabinets, gaps behind fixtures) become occupied,
+        preventing the robot from being placed there.
+        """
+        from collections import deque
+
+        # Find seed: room center from average of fixture positions
+        positions = []
+        for fxtr in fixtures.values():
+            if hasattr(fxtr, "pos") and fxtr.pos is not None:
+                positions.append(np.asarray(fxtr.pos, dtype=float)[:2])
+        if not positions:
+            return
+
+        center = np.mean(positions, axis=0)
+        seed_r, seed_c = self._world_to_grid(center)
+
+        # If center cell is occupied, spiral outward to find a free cell
+        if self._grid[seed_r, seed_c]:
+            found = False
+            for radius in range(1, max(self._rows, self._cols)):
+                for dr in range(-radius, radius + 1):
+                    for dc in range(-radius, radius + 1):
+                        r, c = seed_r + dr, seed_c + dc
+                        if 0 <= r < self._rows and 0 <= c < self._cols:
+                            if not self._grid[r, c]:
+                                seed_r, seed_c = r, c
+                                found = True
+                                break
+                    if found:
+                        break
+                if found:
+                    break
+            if not found:
+                return  # all cells occupied
+
+        # BFS flood-fill from seed
+        reachable = np.zeros_like(self._grid, dtype=bool)
+        queue = deque([(seed_r, seed_c)])
+        reachable[seed_r, seed_c] = True
+
+        while queue:
+            r, c = queue.popleft()
+            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < self._rows and 0 <= nc < self._cols:
+                    if not reachable[nr, nc] and not self._grid[nr, nc]:
+                        reachable[nr, nc] = True
+                        queue.append((nr, nc))
+
+        # Mark unreachable free cells as occupied
+        unreachable_free = ~self._grid & ~reachable
+        self._grid |= unreachable_free
+
+    # ------------------------------------------------------------------
+    # Coordinate conversion
+    # ------------------------------------------------------------------
+
+    def _world_to_grid(self, xy: np.ndarray) -> tuple[int, int]:
+        """Convert world XY to (row, col) grid indices, clamped to bounds."""
+        rel = (np.asarray(xy, dtype=float) - self._origin) / self.cell_size
+        col = int(np.clip(int(np.floor(rel[0])), 0, self._cols - 1))
+        row = int(np.clip(int(np.floor(rel[1])), 0, self._rows - 1))
+        return (row, col)
+
+    def _grid_to_world(self, row: int, col: int) -> np.ndarray:
+        """Return the world-frame center of grid cell (row, col)."""
+        x = self._origin[0] + (col + 0.5) * self.cell_size
+        y = self._origin[1] + (row + 0.5) * self.cell_size
+        return np.array([x, y])
+
+    # ------------------------------------------------------------------
+    # Rasterization
+    # ------------------------------------------------------------------
+
+    def _rasterize_fixture(self, fxtr: Fixture):
+        """Mark grid cells overlapping the fixture's 2D footprint as occupied."""
+        try:
+            ext = fxtr.get_ext_sites(all_points=True, relative=False)
+            pts_3d = [np.asarray(p, dtype=float) for p in ext]
+        except Exception:
+            if hasattr(fxtr, "pos") and fxtr.pos is not None:
+                r, c = self._world_to_grid(np.asarray(fxtr.pos[:2]))
+                if 0 <= r < self._rows and 0 <= c < self._cols:
+                    self._grid[r, c] = True
+            return
+
+        pts_2d = np.array([p[:2] for p in pts_3d])
+        min_xy = pts_2d.min(axis=0)
+        max_xy = pts_2d.max(axis=0)
+
+        r_min, c_min = self._world_to_grid(min_xy)
+        r_max, c_max = self._world_to_grid(max_xy)
+
+        for r in range(r_min, r_max + 1):
+            for c in range(c_min, c_max + 1):
+                if 0 <= r < self._rows and 0 <= c < self._cols:
+                    self._grid[r, c] = True
+
+    # ------------------------------------------------------------------
+    # Queries
+    # ------------------------------------------------------------------
+
+    def is_free(self, xy: np.ndarray) -> bool:
+        """Return True if the cell at world position xy is unoccupied."""
+        r, c = self._world_to_grid(xy)
+        if r < 0 or r >= self._rows or c < 0 or c >= self._cols:
+            return False
+        return not self._grid[r, c]
+
+    def is_standable(self, xy: np.ndarray) -> bool:
+        """Return True if a robot can stand at world position *xy*."""
+        return self.is_free(xy)
+
+    def occupy(self, xy: np.ndarray):
+        """Mark the cell at world position xy as occupied."""
+        r, c = self._world_to_grid(xy)
+        if 0 <= r < self._rows and 0 <= c < self._cols:
+            self._grid[r, c] = True
+
+    def release(self, xy: np.ndarray):
+        """Mark the cell at world position xy as free."""
+        r, c = self._world_to_grid(xy)
+        if 0 <= r < self._rows and 0 <= c < self._cols:
+            self._grid[r, c] = False
+
+    # ------------------------------------------------------------------
+    # Face-based candidate generation
+    # ------------------------------------------------------------------
+
+    def _get_face_order(self, fixture: Fixture) -> list[str]:
+        """Return face keys ordered front -> sides -> back based on fixture.rot."""
+        all_faces = ["neg_y", "pos_y", "neg_x", "pos_x"]
+        if not hasattr(fixture, "rot") or fixture.rot is None:
+            return all_faces
+
+        rot = float(fixture.rot)
+        front_dir = np.array([-np.cos(rot), -np.sin(rot)])
+
+        face_normals = {
+            "neg_y": np.array([0.0, -1.0]),
+            "pos_y": np.array([0.0, 1.0]),
+            "neg_x": np.array([-1.0, 0.0]),
+            "pos_x": np.array([1.0, 0.0]),
+        }
+
+        return sorted(all_faces,
+                       key=lambda f: -float(np.dot(face_normals[f], front_dir)))
+
+    def _sample_face(
+        self,
+        face_key: str,
+        fmin: np.ndarray,
+        fmax: np.ndarray,
+    ) -> list[tuple[np.ndarray, float]]:
+        """Sample (position, yaw) candidates along one AABB face at standoff."""
+        standoff = self._standoff
+        spacing = self._sample_spacing
+
+        # face_key -> (perp_axis, sign, par_axis, par_min, par_max, edge_val, yaw)
+        face_defs = {
+            "neg_y": (1, -1, 0, fmin[0], fmax[0], fmin[1], np.pi / 2),
+            "pos_y": (1, +1, 0, fmin[0], fmax[0], fmax[1], -np.pi / 2),
+            "neg_x": (0, -1, 1, fmin[1], fmax[1], fmin[0], 0.0),
+            "pos_x": (0, +1, 1, fmin[1], fmax[1], fmax[0], np.pi),
+        }
+
+        perp_axis, sign, par_axis, par_min, par_max, edge_val, yaw = face_defs[face_key]
+        perp_val = edge_val + sign * standoff
+        face_len = par_max - par_min
+        candidates: list[tuple[np.ndarray, float]] = []
+
+        if face_len <= 0:
+            pos = np.zeros(2)
+            pos[perp_axis] = perp_val
+            pos[par_axis] = (par_min + par_max) / 2
+            candidates.append((pos, yaw))
+        else:
+            n_samples = max(2, int(np.ceil(face_len / spacing)) + 1)
+            for i in range(n_samples):
+                t = i / max(n_samples - 1, 1)
+                pos = np.zeros(2)
+                pos[perp_axis] = perp_val
+                pos[par_axis] = par_min + t * face_len
+                candidates.append((pos, yaw))
+
+        return candidates
+
+    # ------------------------------------------------------------------
+    # Placement
+    # ------------------------------------------------------------------
+
+    def find_placement(
+        self,
+        fixture: Fixture,
+        robot_cells: list[tuple[int, int]] | None = None,
+        ref_object_pos: np.ndarray | None = None,
+        robot_positions: list[np.ndarray] | None = None,
+        require_front: bool = False,
+    ) -> tuple[np.ndarray, float] | None:
+        """Find a valid position near *fixture* at standoff distance.
+
+        Args:
+            require_front: If True (interactive fixtures like fridge/cabinet),
+                only consider front-face candidates (fall back to sides if
+                none).  If False (surfaces like counters), consider ALL faces
+                and pick the closest valid position.
+
+        Yaw is always axis-aligned (perpendicular to the fixture face).
+        """
+        if robot_cells is None:
+            robot_cells = []
+        robot_cell_set = set(robot_cells)
+        if robot_positions is None:
+            robot_positions = []
+        robot_positions = [np.asarray(rp, dtype=float)[:2] for rp in robot_positions]
+
+        aabb = get_fixture_aabb(fixture)
+        if aabb is None:
+            return None
+        fmin, fmax = aabb
+        fixture_center = np.asarray(fixture.pos[:2], dtype=float)
+
+        def _filter_valid(candidates):
+            valid: list[tuple[np.ndarray, float]] = []
+            for pos, yaw in candidates:
+                # Safety: never place inside the target fixture's AABB
+                if (pos[0] >= fmin[0] and pos[0] <= fmax[0] and
+                        pos[1] >= fmin[1] and pos[1] <= fmax[1]):
+                    continue
+                r, c = self._world_to_grid(pos)
+                if not (0 <= r < self._rows and 0 <= c < self._cols):
+                    continue
+                if self._grid[r, c]:
+                    continue
+                if (r, c) in robot_cell_set:
+                    continue
+                too_close = False
+                for rp in robot_positions:
+                    if float(np.linalg.norm(pos - rp)) < self._MIN_ROBOT_SEPARATION:
+                        too_close = True
+                        break
+                if too_close:
+                    continue
+                valid.append((pos, yaw))
+            return valid
+
+        def _pick_best(valid):
+            if ref_object_pos is not None:
+                ref_2d = np.asarray(ref_object_pos, dtype=float)[:2]
+                valid.sort(key=lambda x: float(np.linalg.norm(x[0] - ref_2d)))
+            else:
+                valid.sort(key=lambda x: float(np.linalg.norm(x[0] - fixture_center)))
+            return (valid[0][0], valid[0][1])
+
+        if require_front:
+            # Interactive fixture: try front face first, then fall back
+            face_order = self._get_face_order(fixture)
+            for face_key in face_order:
+                candidates = self._sample_face(face_key, fmin, fmax)
+                valid = _filter_valid(candidates)
+                if valid:
+                    return _pick_best(valid)
+            return None
+        else:
+            # Surface: all faces, pick closest valid position
+            all_candidates: list[tuple[np.ndarray, float]] = []
+            for face_key in ["neg_y", "pos_y", "neg_x", "pos_x"]:
+                all_candidates.extend(self._sample_face(face_key, fmin, fmax))
+            valid = _filter_valid(all_candidates)
+            if not valid:
+                return None
+            return _pick_best(valid)
