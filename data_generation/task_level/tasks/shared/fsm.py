@@ -637,8 +637,9 @@ class FiniteStateTaskValidator:
 
         reference_object_id = tool_args.get("reference_object_id")
         if isinstance(reference_object_id, str):
-            reference_location = runtime_state.objects.get(reference_object_id, {}).get(
-                "location"
+            reference_location = self._resolve_reference_location(
+                reference_id=reference_object_id,
+                runtime_state=runtime_state,
             )
             if isinstance(reference_location, str):
                 return reference_location
@@ -666,6 +667,28 @@ class FiniteStateTaskValidator:
         raise PlacementDestinationSemanticValidationError(
             "Placement tools must include a symbolic destination."
         )
+
+    def _resolve_reference_location(
+        self,
+        *,
+        reference_id: str,
+        runtime_state: TaskRuntimeState,
+    ) -> str | None:
+        """Resolves the symbolic placement location for an object or fixture reference."""
+
+        reference_location = runtime_state.objects.get(reference_id, {}).get("location")
+        if isinstance(reference_location, str):
+            return reference_location
+
+        fixture_machine_state = runtime_state.machine_state.get(reference_id, {})
+        if not isinstance(fixture_machine_state, dict):
+            return None
+
+        # Some tasks anchor fixture-relative placements to a named nearby surface.
+        adjacent_location_id = fixture_machine_state.get("adjacent_location_id")
+        if isinstance(adjacent_location_id, str):
+            return adjacent_location_id
+        return None
 
     def _set_part_state(
         self,
@@ -797,8 +820,9 @@ class FiniteStateTaskValidator:
             reference_object_id = tool_args.get(arg_name)
             if not isinstance(reference_object_id, str):
                 continue
-            support_location = runtime_state.objects.get(reference_object_id, {}).get(
-                "location"
+            support_location = self._resolve_reference_location(
+                reference_id=reference_object_id,
+                runtime_state=runtime_state,
             )
             if isinstance(support_location, str):
                 return support_location

@@ -55,6 +55,7 @@ from data_generation.task_level.tasks import (
     TrajectoryStructureValidationError,
     TrajectoryValidationError,
     ToolArgumentSemanticValidationError,
+    supported_task_names,
 )
 from data_generation.task_level.tasks.hot_dog_setup import (
     HOT_DOG_SETUP_INITIAL_STATE,
@@ -83,6 +84,7 @@ from data_generation.task_level.generation.raw.cli import (
     run_cli,
 )
 from data_generation.task_level.generation.raw.config import (
+    ALL_COMPOSITE_TASKS_OPTION,
     BATCH_INTERRUPTED_MESSAGE,
     DEFAULT_OUTPUT_DIR,
     INTERRUPTED_EXIT_CODE,
@@ -168,7 +170,7 @@ PREPARE_SANDWICH_STATION_ACTION_SPECS = (
         "place_next_to",
         {
             "object_id": "ingredient_bowl_1",
-            "reference_object_id": "toaster_zone_marker_1",
+            "reference_object_id": "toaster_oven_1",
         },
     ),
     ("navigate_to_fixture", {"fixture_id": "fridge_1"}),
@@ -178,7 +180,7 @@ PREPARE_SANDWICH_STATION_ACTION_SPECS = (
         "place_next_to",
         {
             "object_id": "baguette_1",
-            "reference_object_id": "toaster_zone_marker_1",
+            "reference_object_id": "toaster_oven_1",
         },
     ),
 )
@@ -555,11 +557,15 @@ PLACEMENT_REFERENCE_INITIAL_STATE = {
         "table_1": {"fixture_type": "counter"},
         "shelf_1": {"fixture_type": "counter"},
         "coffee_machine_1": {"fixture_type": "coffee_machine"},
+        "toaster_oven_1": {"fixture_type": "toaster_oven"},
     },
     "machine_state": {
+        "toaster_oven_1": {
+            "adjacent_location_id": "shelf_1",
+        },
         "coffee_machine_1": {
             "dispenser_id": "coffee_machine_dispenser",
-        }
+        },
     },
 }
 
@@ -1065,9 +1071,9 @@ class SubatomicToolCatalogTests(unittest.TestCase):
         self.assertIn("pick_up_object", prompt)
         self.assertIn("place_next_to", prompt)
         self.assertIn("PrepareSandwichStation", prompt)
-        self.assertIn("toaster_zone_marker_1", prompt)
+        self.assertIn("toaster_oven_1", prompt)
         self.assertIn(
-            "Use place_next_to with reference_object_id toaster_zone_marker_1",
+            "Use place_next_to with reference_object_id toaster_oven_1",
             prompt,
         )
         self.assertNotIn('"wait"', prompt)
@@ -1334,6 +1340,24 @@ class DotenvLoadingTests(unittest.TestCase):
             ("PrepareCoffee", "HotDogSetup"),
         )
         self.assertIsNone(runtime_config.summary_path)
+
+    def test_parse_args_accepts_all_tasks_option(self):
+        runtime_config = parse_args(["--tasks", ALL_COMPOSITE_TASKS_OPTION])
+
+        self.assertEqual(runtime_config.composite_task, supported_task_names()[0])
+        self.assertEqual(runtime_config.composite_tasks, supported_task_names())
+        self.assertIsNone(runtime_config.summary_path)
+
+    def test_parse_args_all_tasks_option_is_case_insensitive(self):
+        runtime_config = parse_args(["--tasks", "ALL"])
+
+        self.assertEqual(runtime_config.composite_tasks, supported_task_names())
+
+    def test_parse_args_all_tasks_option_overrides_other_task_entries(self):
+        runtime_config = parse_args(["--tasks", "PrepareCoffee", "all", "HotDogSetup"])
+
+        self.assertEqual(runtime_config.composite_task, supported_task_names()[0])
+        self.assertEqual(runtime_config.composite_tasks, supported_task_names())
 
     def test_runtime_config_for_task_preserves_single_requested_task(self):
         runtime_config = parse_args(["--tasks", "PrepareCoffee", "HotDogSetup"])
@@ -1949,6 +1973,51 @@ class FiniteStateTaskValidatorTests(unittest.TestCase):
             make_toy_action_spec(
                 "place_next_to",
                 {"object_id": "apple_1", "reference_object_id": "mug_1"},
+            ),
+            make_toy_action_spec(
+                "navigate_to_fixture",
+                {"fixture_id": "table_1"},
+            ),
+            make_toy_action_spec(
+                "pick_up_object",
+                {"object_id": "cup_1", "source_id": "table_1"},
+            ),
+            make_toy_action_spec(
+                "navigate_to_fixture",
+                {"fixture_id": "coffee_machine_1"},
+            ),
+            make_toy_action_spec(
+                "place_under",
+                {"object_id": "cup_1", "reference_fixture_id": "coffee_machine_1"},
+            ),
+        )
+
+        validator = PlacementReferenceValidator()
+        validation = validator.validate(make_toy_candidate(actions))
+
+        self.assertTrue(validation["is_valid"])
+        self.assertEqual(
+            validation["final_state"]["objects"]["apple_1"]["location"],
+            "shelf_1",
+        )
+
+    def test_validator_allows_place_next_to_using_reference_fixture_location(self):
+        actions = (
+            make_toy_action_spec(
+                "navigate_to_fixture",
+                {"fixture_id": "table_1"},
+            ),
+            make_toy_action_spec(
+                "pick_up_object",
+                {"object_id": "apple_1", "source_id": "table_1"},
+            ),
+            make_toy_action_spec(
+                "navigate_to_fixture",
+                {"fixture_id": "shelf_1"},
+            ),
+            make_toy_action_spec(
+                "place_next_to",
+                {"object_id": "apple_1", "reference_object_id": "toaster_oven_1"},
             ),
             make_toy_action_spec(
                 "navigate_to_fixture",

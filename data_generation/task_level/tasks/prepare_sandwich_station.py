@@ -45,12 +45,6 @@ PREPARE_SANDWICH_STATION_INITIAL_STATE = {
             "object_type": "baguette",
             "location": "fridge_1",
         },
-        # This fixed marker lets the task encode "near the toaster oven" using
-        # the shared place_next_to primitive without introducing a new tool.
-        "toaster_zone_marker_1": {
-            "object_type": "placement_marker",
-            "location": "counter_1",
-        },
         "tomato_slice_1": {
             "object_type": "tomato_slice",
             "location": "ingredient_bowl_1",
@@ -70,10 +64,13 @@ PREPARE_SANDWICH_STATION_INITIAL_STATE = {
         "toaster_oven_1": {"fixture_type": "toaster_oven"},
     },
     "machine_state": {
+        "toaster_oven_1": {
+            "adjacent_location_id": "counter_1",
+        },
         "prepare_sandwich_station": {
             "ingredient_bowl_staged": False,
             "baguette_staged": False,
-        }
+        },
     },
 }
 
@@ -94,7 +91,7 @@ PREPARE_SANDWICH_STATION_ALLOWED_TOOL_SPECS = build_allowed_tool_specs(
         },
         "place_next_to": {
             "allowed_object_ids": ["ingredient_bowl_1", "baguette_1"],
-            "allowed_reference_object_ids": ["toaster_zone_marker_1"],
+            "allowed_reference_object_ids": ["toaster_oven_1"],
         },
     },
 )
@@ -106,7 +103,7 @@ PREPARE_SANDWICH_STATION_RESPONSE_SCHEMA = build_task_response_schema(
 
 PREPARE_SANDWICH_STATION_TASK_GOAL = (
     "retrieve ingredient_bowl_1 and baguette_1 from fridge_1, then place both "
-    "next to toaster_zone_marker_1 on counter_1 to stage them near toaster_oven_1."
+    "next to toaster_oven_1 on counter_1 to stage them near the toaster oven."
 )
 PREPARE_SANDWICH_STATION_NON_COMMUNICATE_TOOL_NAMES = tuple(
     tool_name
@@ -129,7 +126,7 @@ build_prepare_sandwich_station_prompt = make_task_prompt_builder(
     non_communicate_tool_names=PREPARE_SANDWICH_STATION_NON_COMMUNICATE_TOOL_NAMES,
     extra_execution_rules=(
         "Pick up ingredient_bowl_1 and baguette_1 from fridge_1 before staging them on counter_1.",
-        "Use place_next_to with reference_object_id toaster_zone_marker_1 so both items end up on counter_1 near toaster_oven_1.",
+        "Use place_next_to with reference_object_id toaster_oven_1 so both items end up on counter_1 near the toaster oven.",
         "Keep tomato_slice_1, pickle_slice_1, and turkey_slice_1 inside ingredient_bowl_1 throughout the trajectory.",
     ),
 )
@@ -227,7 +224,7 @@ class PrepareSandwichStationValidator(FiniteStateTaskValidator):
 
         if (
             step["tool"] == "place_next_to"
-            and step["args"]["reference_object_id"] == "toaster_zone_marker_1"
+            and step["args"]["reference_object_id"] == "toaster_oven_1"
         ):
             if step["args"]["object_id"] == "ingredient_bowl_1":
                 runtime_state.machine_state["prepare_sandwich_station"][

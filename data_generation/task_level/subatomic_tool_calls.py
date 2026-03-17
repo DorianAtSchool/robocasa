@@ -111,7 +111,7 @@ SUBATOMIC_TOOL_SPECS: tuple[SubatomicToolSpec, ...] = (
     ),
     _build_tool_spec(
         "place_next_to",
-        "Place an object adjacent to another object on the same surface.",
+        "Place an object adjacent to a reference object or nearby fixture on the same support surface.",
         "object_id",
         "reference_object_id",
     ),
