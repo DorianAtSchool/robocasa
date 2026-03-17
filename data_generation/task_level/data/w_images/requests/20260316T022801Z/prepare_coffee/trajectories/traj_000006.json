@@ -59,15 +59,25 @@
     {
       "step": 0,
       "agent": "agent_0",
-      "tool": "get_image",
+      "tool": "get_env_image",
       "args": {
-        "camera_view": "top_view"
+        "view": "top_view"
       },
       "reasoning": "I need an initial top-view image before the task begins.",
-      "image_path": "trajectories/images/traj_000006/0_top_view_agent_0.png"
+      "image_path": "images/traj_000006/0_get_env_image_top_view_agent_0.png"
     },
     {
       "step": 1,
+      "agent": "agent_0",
+      "tool": "get_env_image",
+      "args": {
+        "view": "room_view"
+      },
+      "reasoning": "I need an initial room-view image before the task begins.",
+      "image_path": "images/traj_000006/1_get_env_image_room_view_agent_0.png"
+    },
+    {
+      "step": 2,
       "agent": "agent_0",
       "tool": "communicate",
       "args": {
@@ -77,7 +87,7 @@
       "reasoning": "Coordinate tasks with agent_1 before starting."
     },
     {
-      "step": 2,
+      "step": 3,
       "agent": "agent_1",
       "tool": "communicate",
       "args": {
@@ -87,17 +97,40 @@
       "reasoning": "Confirm coordination with agent_0."
     },
     {
-      "step": 3,
+      "step": 4,
       "agent": "agent_0",
-      "tool": "get_image",
+      "tool": "get_agent_image",
       "args": {
-        "camera_view": "base_camera"
+        "agent_id": "agent_0",
+        "view": "agentview_center"
       },
-      "reasoning": "I need a base-camera image to observe the current scene before I execute navigate_to_fixture.",
-      "image_path": "trajectories/images/traj_000006/3_base_camera_agent_0.png"
+      "reasoning": "I need a center agent-view image from my perspective before I execute navigate_to_fixture.",
+      "image_path": "images/traj_000006/4_get_agent_image_agentview_center_agent_0.png"
     },
     {
-      "step": 4,
+      "step": 5,
+      "agent": "agent_0",
+      "tool": "get_agent_image",
+      "args": {
+        "agent_id": "agent_0",
+        "view": "agentview_left"
+      },
+      "reasoning": "I need a left agent-view image from my perspective before I execute navigate_to_fixture.",
+      "image_path": "images/traj_000006/5_get_agent_image_agentview_left_agent_0.png"
+    },
+    {
+      "step": 6,
+      "agent": "agent_0",
+      "tool": "get_agent_image",
+      "args": {
+        "agent_id": "agent_0",
+        "view": "agentview_right"
+      },
+      "reasoning": "I need a right agent-view image from my perspective before I execute navigate_to_fixture.",
+      "image_path": "images/traj_000006/6_get_agent_image_agentview_right_agent_0.png"
+    },
+    {
+      "step": 7,
       "agent": "agent_0",
       "tool": "navigate_to_fixture",
       "args": {
@@ -106,27 +139,62 @@
       "reasoning": "Navigate to the cabinet to retrieve the mug."
     },
     {
-      "step": 5,
+      "step": 8,
       "agent": "agent_0",
-      "tool": "get_image",
+      "tool": "get_agent_image",
       "args": {
-        "camera_view": "base_camera"
+        "agent_id": "agent_0",
+        "view": "agentview_center"
       },
-      "reasoning": "I need a base-camera image to observe the current scene after I executed navigate_to_fixture.",
-      "image_path": "trajectories/images/traj_000006/5_base_camera_agent_0.png"
+      "reasoning": "I need a center agent-view image from my perspective after I executed navigate_to_fixture.",
+      "image_path": "images/traj_000006/8_get_agent_image_agentview_center_agent_0.png"
     },
     {
-      "step": 6,
+      "step": 9,
       "agent": "agent_0",
-      "tool": "get_image",
+      "tool": "get_agent_image",
       "args": {
-        "camera_view": "base_camera"
+        "agent_id": "agent_0",
+        "view": "agentview_left"
       },
-      "reasoning": "I need a base-camera image to observe the current scene before I execute open_hinged_part.",
-      "image_path": "trajectories/images/traj_000006/6_base_camera_agent_0.png"
+      "reasoning": "I need a left agent-view image from my perspective after I executed navigate_to_fixture.",
+      "image_path": "images/traj_000006/9_get_agent_image_agentview_left_agent_0.png"
     },
     {
-      "step": 7,
+      "step": 10,
+      "agent": "agent_0",
+      "tool": "get_agent_image",
+      "args": {
+        "agent_id": "agent_0",
+        "view": "agentview_right"
+      },
+      "reasoning": "I need a right agent-view image from my perspective after I executed navigate_to_fixture.",
+      "image_path": "images/traj_000006/10_get_agent_image_agentview_right_agent_0.png"
+    },
+    {
+      "step": 11,
+      "agent": "agent_0",
+      "tool": "get_agent_image",
+      "args": {
+        "agent_id": "agent_0",
+        "view": "wrist"
+      },
+      "reasoning": "I need a wrist image from my perspective before I execute open_hinged_part.",
+      "image_path": "images/traj_000006/11_get_agent_image_wrist_agent_0.png"
+    },
+    {
+      "step": 12,
+      "agent": "agent_0",
+      "tool": "get_agent_image",
+      "args": {
+        "agent_id": "agent_0",
+        "view": "agentview_center"
+      },
+      "reasoning": "I need a center agent-view image from my perspective before I execute open_hinged_part.",
+      "image_path": "images/traj_000006/12_get_agent_image_agentview_center_agent_0.png"
+    },
+    {
+      "step": 13,
       "agent": "agent_0",
       "tool": "open_hinged_part",
       "args": {
@@ -136,27 +204,51 @@
       "reasoning": "Open the cabinet door to access the mug."
     },
     {
-      "step": 8,
+      "step": 14,
       "agent": "agent_0",
-      "tool": "get_image",
+      "tool": "get_agent_image",
       "args": {
-        "camera_view": "base_camera"
+        "agent_id": "agent_0",
+        "view": "wrist"
       },
-      "reasoning": "I need a base-camera image to observe the current scene after I executed open_hinged_part.",
-      "image_path": "trajectories/images/traj_000006/8_base_camera_agent_0.png"
+      "reasoning": "I need a wrist image from my perspective after I executed open_hinged_part.",
+      "image_path": "images/traj_000006/14_get_agent_image_wrist_agent_0.png"
     },
     {
-      "step": 9,
+      "step": 15,
       "agent": "agent_0",
-      "tool": "get_image",
+      "tool": "get_agent_image",
       "args": {
-        "camera_view": "base_camera"
+        "agent_id": "agent_0",
+        "view": "agentview_center"
       },
-      "reasoning": "I need a base-camera image to observe the current scene before I execute pick_up_object.",
-      "image_path": "trajectories/images/traj_000006/9_base_camera_agent_0.png"
+      "reasoning": "I need a center agent-view image from my perspective after I executed open_hinged_part.",
+      "image_path": "images/traj_000006/15_get_agent_image_agentview_center_agent_0.png"
     },
     {
-      "step": 10,
+      "step": 16,
+      "agent": "agent_0",
+      "tool": "get_agent_image",
+      "args": {
+        "agent_id": "agent_0",
+        "view": "wrist"
+      },
+      "reasoning": "I need a wrist image from my perspective before I execute pick_up_object.",
+      "image_path": "images/traj_000006/16_get_agent_image_wrist_agent_0.png"
+    },
+    {
+      "step": 17,
+      "agent": "agent_0",
+      "tool": "get_agent_image",
+      "args": {
+        "agent_id": "agent_0",
+        "view": "agentview_center"
+      },
+      "reasoning": "I need a center agent-view image from my perspective before I execute pick_up_object.",
+      "image_path": "images/traj_000006/17_get_agent_image_agentview_center_agent_0.png"
+    },
+    {
+      "step": 18,
       "agent": "agent_0",
       "tool": "pick_up_object",
       "args": {
@@ -166,27 +258,62 @@
       "reasoning": "Pick up the mug from the cabinet."
     },
     {
-      "step": 11,
+      "step": 19,
       "agent": "agent_0",
-      "tool": "get_image",
+      "tool": "get_agent_image",
       "args": {
-        "camera_view": "base_camera"
+        "agent_id": "agent_0",
+        "view": "wrist"
       },
-      "reasoning": "I need a base-camera image to observe the current scene after I executed pick_up_object.",
-      "image_path": "trajectories/images/traj_000006/11_base_camera_agent_0.png"
+      "reasoning": "I need a wrist image from my perspective after I executed pick_up_object.",
+      "image_path": "images/traj_000006/19_get_agent_image_wrist_agent_0.png"
     },
     {
-      "step": 12,
+      "step": 20,
       "agent": "agent_0",
-      "tool": "get_image",
+      "tool": "get_agent_image",
       "args": {
-        "camera_view": "base_camera"
+        "agent_id": "agent_0",
+        "view": "agentview_center"
       },
-      "reasoning": "I need a base-camera image to observe the current scene before I execute navigate_to_fixture.",
-      "image_path": "trajectories/images/traj_000006/12_base_camera_agent_0.png"
+      "reasoning": "I need a center agent-view image from my perspective after I executed pick_up_object.",
+      "image_path": "images/traj_000006/20_get_agent_image_agentview_center_agent_0.png"
     },
     {
-      "step": 13,
+      "step": 21,
+      "agent": "agent_0",
+      "tool": "get_agent_image",
+      "args": {
+        "agent_id": "agent_0",
+        "view": "agentview_center"
+      },
+      "reasoning": "I need a center agent-view image from my perspective before I execute navigate_to_fixture.",
+      "image_path": "images/traj_000006/21_get_agent_image_agentview_center_agent_0.png"
+    },
+    {
+      "step": 22,
+      "agent": "agent_0",
+      "tool": "get_agent_image",
+      "args": {
+        "agent_id": "agent_0",
+        "view": "agentview_left"
+      },
+      "reasoning": "I need a left agent-view image from my perspective before I execute navigate_to_fixture.",
+      "image_path": "images/traj_000006/22_get_agent_image_agentview_left_agent_0.png"
+    },
+    {
+      "step": 23,
+      "agent": "agent_0",
+      "tool": "get_agent_image",
+      "args": {
+        "agent_id": "agent_0",
+        "view": "agentview_right"
+      },
+      "reasoning": "I need a right agent-view image from my perspective before I execute navigate_to_fixture.",
+      "image_path": "images/traj_000006/23_get_agent_image_agentview_right_agent_0.png"
+    },
+    {
+      "step": 24,
       "agent": "agent_0",
       "tool": "navigate_to_fixture",
       "args": {
@@ -195,27 +322,62 @@
       "reasoning": "Move to the counter to place the mug."
     },
     {
-      "step": 14,
+      "step": 25,
       "agent": "agent_0",
-      "tool": "get_image",
+      "tool": "get_agent_image",
       "args": {
-        "camera_view": "base_camera"
+        "agent_id": "agent_0",
+        "view": "agentview_center"
       },
-      "reasoning": "I need a base-camera image to observe the current scene after I executed navigate_to_fixture.",
-      "image_path": "trajectories/images/traj_000006/14_base_camera_agent_0.png"
+      "reasoning": "I need a center agent-view image from my perspective after I executed navigate_to_fixture.",
+      "image_path": "images/traj_000006/25_get_agent_image_agentview_center_agent_0.png"
     },
     {
-      "step": 15,
+      "step": 26,
       "agent": "agent_0",
-      "tool": "get_image",
+      "tool": "get_agent_image",
       "args": {
-        "camera_view": "base_camera"
+        "agent_id": "agent_0",
+        "view": "agentview_left"
       },
-      "reasoning": "I need a base-camera image to observe the current scene before I execute place_on_surface.",
-      "image_path": "trajectories/images/traj_000006/15_base_camera_agent_0.png"
+      "reasoning": "I need a left agent-view image from my perspective after I executed navigate_to_fixture.",
+      "image_path": "images/traj_000006/26_get_agent_image_agentview_left_agent_0.png"
     },
     {
-      "step": 16,
+      "step": 27,
+      "agent": "agent_0",
+      "tool": "get_agent_image",
+      "args": {
+        "agent_id": "agent_0",
+        "view": "agentview_right"
+      },
+      "reasoning": "I need a right agent-view image from my perspective after I executed navigate_to_fixture.",
+      "image_path": "images/traj_000006/27_get_agent_image_agentview_right_agent_0.png"
+    },
+    {
+      "step": 28,
+      "agent": "agent_0",
+      "tool": "get_agent_image",
+      "args": {
+        "agent_id": "agent_0",
+        "view": "wrist"
+      },
+      "reasoning": "I need a wrist image from my perspective before I execute place_on_surface.",
+      "image_path": "images/traj_000006/28_get_agent_image_wrist_agent_0.png"
+    },
+    {
+      "step": 29,
+      "agent": "agent_0",
+      "tool": "get_agent_image",
+      "args": {
+        "agent_id": "agent_0",
+        "view": "agentview_center"
+      },
+      "reasoning": "I need a center agent-view image from my perspective before I execute place_on_surface.",
+      "image_path": "images/traj_000006/29_get_agent_image_agentview_center_agent_0.png"
+    },
+    {
+      "step": 30,
       "agent": "agent_0",
       "tool": "place_on_surface",
       "args": {
@@ -225,17 +387,29 @@
       "reasoning": "Place the mug on the counter."
     },
     {
-      "step": 17,
+      "step": 31,
       "agent": "agent_0",
-      "tool": "get_image",
+      "tool": "get_agent_image",
       "args": {
-        "camera_view": "base_camera"
+        "agent_id": "agent_0",
+        "view": "wrist"
       },
-      "reasoning": "I need a base-camera image to observe the current scene after I executed place_on_surface.",
-      "image_path": "trajectories/images/traj_000006/17_base_camera_agent_0.png"
+      "reasoning": "I need a wrist image from my perspective after I executed place_on_surface.",
+      "image_path": "images/traj_000006/31_get_agent_image_wrist_agent_0.png"
     },
     {
-      "step": 18,
+      "step": 32,
+      "agent": "agent_0",
+      "tool": "get_agent_image",
+      "args": {
+        "agent_id": "agent_0",
+        "view": "agentview_center"
+      },
+      "reasoning": "I need a center agent-view image from my perspective after I executed place_on_surface.",
+      "image_path": "images/traj_000006/32_get_agent_image_agentview_center_agent_0.png"
+    },
+    {
+      "step": 33,
       "agent": "agent_0",
       "tool": "communicate",
       "args": {
@@ -245,17 +419,40 @@
       "reasoning": "Inform agent_1 that the mug is ready for the next step."
     },
     {
-      "step": 19,
+      "step": 34,
       "agent": "agent_1",
-      "tool": "get_image",
+      "tool": "get_agent_image",
       "args": {
-        "camera_view": "base_camera"
+        "agent_id": "agent_1",
+        "view": "agentview_center"
       },
-      "reasoning": "I need a base-camera image to observe the current scene before I execute navigate_to_fixture.",
-      "image_path": "trajectories/images/traj_000006/19_base_camera_agent_1.png"
+      "reasoning": "I need a center agent-view image from my perspective before I execute navigate_to_fixture.",
+      "image_path": "images/traj_000006/34_get_agent_image_agentview_center_agent_1.png"
     },
     {
-      "step": 20,
+      "step": 35,
+      "agent": "agent_1",
+      "tool": "get_agent_image",
+      "args": {
+        "agent_id": "agent_1",
+        "view": "agentview_left"
+      },
+      "reasoning": "I need a left agent-view image from my perspective before I execute navigate_to_fixture.",
+      "image_path": "images/traj_000006/35_get_agent_image_agentview_left_agent_1.png"
+    },
+    {
+      "step": 36,
+      "agent": "agent_1",
+      "tool": "get_agent_image",
+      "args": {
+        "agent_id": "agent_1",
+        "view": "agentview_right"
+      },
+      "reasoning": "I need a right agent-view image from my perspective before I execute navigate_to_fixture.",
+      "image_path": "images/traj_000006/36_get_agent_image_agentview_right_agent_1.png"
+    },
+    {
+      "step": 37,
       "agent": "agent_1",
       "tool": "navigate_to_fixture",
       "args": {
@@ -264,27 +461,62 @@
       "reasoning": "Navigate to the coffee machine to prepare for placement."
     },
     {
-      "step": 21,
+      "step": 38,
       "agent": "agent_1",
-      "tool": "get_image",
+      "tool": "get_agent_image",
       "args": {
-        "camera_view": "base_camera"
+        "agent_id": "agent_1",
+        "view": "agentview_center"
       },
-      "reasoning": "I need a base-camera image to observe the current scene after I executed navigate_to_fixture.",
-      "image_path": "trajectories/images/traj_000006/21_base_camera_agent_1.png"
+      "reasoning": "I need a center agent-view image from my perspective after I executed navigate_to_fixture.",
+      "image_path": "images/traj_000006/38_get_agent_image_agentview_center_agent_1.png"
     },
     {
-      "step": 22,
+      "step": 39,
+      "agent": "agent_1",
+      "tool": "get_agent_image",
+      "args": {
+        "agent_id": "agent_1",
+        "view": "agentview_left"
+      },
+      "reasoning": "I need a left agent-view image from my perspective after I executed navigate_to_fixture.",
+      "image_path": "images/traj_000006/39_get_agent_image_agentview_left_agent_1.png"
+    },
+    {
+      "step": 40,
+      "agent": "agent_1",
+      "tool": "get_agent_image",
+      "args": {
+        "agent_id": "agent_1",
+        "view": "agentview_right"
+      },
+      "reasoning": "I need a right agent-view image from my perspective after I executed navigate_to_fixture.",
+      "image_path": "images/traj_000006/40_get_agent_image_agentview_right_agent_1.png"
+    },
+    {
+      "step": 41,
       "agent": "agent_0",
-      "tool": "get_image",
+      "tool": "get_agent_image",
       "args": {
-        "camera_view": "base_camera"
+        "agent_id": "agent_0",
+        "view": "wrist"
       },
-      "reasoning": "I need a base-camera image to observe the current scene before I execute pick_up_object.",
-      "image_path": "trajectories/images/traj_000006/22_base_camera_agent_0.png"
+      "reasoning": "I need a wrist image from my perspective before I execute pick_up_object.",
+      "image_path": "images/traj_000006/41_get_agent_image_wrist_agent_0.png"
     },
     {
-      "step": 23,
+      "step": 42,
+      "agent": "agent_0",
+      "tool": "get_agent_image",
+      "args": {
+        "agent_id": "agent_0",
+        "view": "agentview_center"
+      },
+      "reasoning": "I need a center agent-view image from my perspective before I execute pick_up_object.",
+      "image_path": "images/traj_000006/42_get_agent_image_agentview_center_agent_0.png"
+    },
+    {
+      "step": 43,
       "agent": "agent_0",
       "tool": "pick_up_object",
       "args": {
@@ -294,27 +526,62 @@
       "reasoning": "Pick up the mug from the counter."
     },
     {
-      "step": 24,
+      "step": 44,
       "agent": "agent_0",
-      "tool": "get_image",
+      "tool": "get_agent_image",
       "args": {
-        "camera_view": "base_camera"
+        "agent_id": "agent_0",
+        "view": "wrist"
       },
-      "reasoning": "I need a base-camera image to observe the current scene after I executed pick_up_object.",
-      "image_path": "trajectories/images/traj_000006/24_base_camera_agent_0.png"
+      "reasoning": "I need a wrist image from my perspective after I executed pick_up_object.",
+      "image_path": "images/traj_000006/44_get_agent_image_wrist_agent_0.png"
     },
     {
-      "step": 25,
+      "step": 45,
       "agent": "agent_0",
-      "tool": "get_image",
+      "tool": "get_agent_image",
       "args": {
-        "camera_view": "base_camera"
+        "agent_id": "agent_0",
+        "view": "agentview_center"
       },
-      "reasoning": "I need a base-camera image to observe the current scene before I execute navigate_to_fixture.",
-      "image_path": "trajectories/images/traj_000006/25_base_camera_agent_0.png"
+      "reasoning": "I need a center agent-view image from my perspective after I executed pick_up_object.",
+      "image_path": "images/traj_000006/45_get_agent_image_agentview_center_agent_0.png"
     },
     {
-      "step": 26,
+      "step": 46,
+      "agent": "agent_0",
+      "tool": "get_agent_image",
+      "args": {
+        "agent_id": "agent_0",
+        "view": "agentview_center"
+      },
+      "reasoning": "I need a center agent-view image from my perspective before I execute navigate_to_fixture.",
+      "image_path": "images/traj_000006/46_get_agent_image_agentview_center_agent_0.png"
+    },
+    {
+      "step": 47,
+      "agent": "agent_0",
+      "tool": "get_agent_image",
+      "args": {
+        "agent_id": "agent_0",
+        "view": "agentview_left"
+      },
+      "reasoning": "I need a left agent-view image from my perspective before I execute navigate_to_fixture.",
+      "image_path": "images/traj_000006/47_get_agent_image_agentview_left_agent_0.png"
+    },
+    {
+      "step": 48,
+      "agent": "agent_0",
+      "tool": "get_agent_image",
+      "args": {
+        "agent_id": "agent_0",
+        "view": "agentview_right"
+      },
+      "reasoning": "I need a right agent-view image from my perspective before I execute navigate_to_fixture.",
+      "image_path": "images/traj_000006/48_get_agent_image_agentview_right_agent_0.png"
+    },
+    {
+      "step": 49,
       "agent": "agent_0",
       "tool": "navigate_to_fixture",
       "args": {
@@ -323,27 +590,62 @@
       "reasoning": "Carry the mug to the coffee machine."
     },
     {
-      "step": 27,
+      "step": 50,
       "agent": "agent_0",
-      "tool": "get_image",
+      "tool": "get_agent_image",
       "args": {
-        "camera_view": "base_camera"
+        "agent_id": "agent_0",
+        "view": "agentview_center"
       },
-      "reasoning": "I need a base-camera image to observe the current scene after I executed navigate_to_fixture.",
-      "image_path": "trajectories/images/traj_000006/27_base_camera_agent_0.png"
+      "reasoning": "I need a center agent-view image from my perspective after I executed navigate_to_fixture.",
+      "image_path": "images/traj_000006/50_get_agent_image_agentview_center_agent_0.png"
     },
     {
-      "step": 28,
+      "step": 51,
+      "agent": "agent_0",
+      "tool": "get_agent_image",
+      "args": {
+        "agent_id": "agent_0",
+        "view": "agentview_left"
+      },
+      "reasoning": "I need a left agent-view image from my perspective after I executed navigate_to_fixture.",
+      "image_path": "images/traj_000006/51_get_agent_image_agentview_left_agent_0.png"
+    },
+    {
+      "step": 52,
+      "agent": "agent_0",
+      "tool": "get_agent_image",
+      "args": {
+        "agent_id": "agent_0",
+        "view": "agentview_right"
+      },
+      "reasoning": "I need a right agent-view image from my perspective after I executed navigate_to_fixture.",
+      "image_path": "images/traj_000006/52_get_agent_image_agentview_right_agent_0.png"
+    },
+    {
+      "step": 53,
       "agent": "agent_1",
-      "tool": "get_image",
+      "tool": "get_agent_image",
       "args": {
-        "camera_view": "base_camera"
+        "agent_id": "agent_1",
+        "view": "wrist"
       },
-      "reasoning": "I need a base-camera image to observe the current scene before I execute give_space.",
-      "image_path": "trajectories/images/traj_000006/28_base_camera_agent_1.png"
+      "reasoning": "I need a wrist image from my perspective before I execute give_space.",
+      "image_path": "images/traj_000006/53_get_agent_image_wrist_agent_1.png"
     },
     {
-      "step": 29,
+      "step": 54,
+      "agent": "agent_1",
+      "tool": "get_agent_image",
+      "args": {
+        "agent_id": "agent_1",
+        "view": "agentview_center"
+      },
+      "reasoning": "I need a center agent-view image from my perspective before I execute give_space.",
+      "image_path": "images/traj_000006/54_get_agent_image_agentview_center_agent_1.png"
+    },
+    {
+      "step": 55,
       "agent": "agent_1",
       "tool": "give_space",
       "args": {
@@ -352,27 +654,51 @@
       "reasoning": "Yield space at the coffee machine for agent_0."
     },
     {
-      "step": 30,
+      "step": 56,
       "agent": "agent_1",
-      "tool": "get_image",
+      "tool": "get_agent_image",
       "args": {
-        "camera_view": "base_camera"
+        "agent_id": "agent_1",
+        "view": "wrist"
       },
-      "reasoning": "I need a base-camera image to observe the current scene after I executed give_space.",
-      "image_path": "trajectories/images/traj_000006/30_base_camera_agent_1.png"
+      "reasoning": "I need a wrist image from my perspective after I executed give_space.",
+      "image_path": "images/traj_000006/56_get_agent_image_wrist_agent_1.png"
     },
     {
-      "step": 31,
+      "step": 57,
+      "agent": "agent_1",
+      "tool": "get_agent_image",
+      "args": {
+        "agent_id": "agent_1",
+        "view": "agentview_center"
+      },
+      "reasoning": "I need a center agent-view image from my perspective after I executed give_space.",
+      "image_path": "images/traj_000006/57_get_agent_image_agentview_center_agent_1.png"
+    },
+    {
+      "step": 58,
       "agent": "agent_0",
-      "tool": "get_image",
+      "tool": "get_agent_image",
       "args": {
-        "camera_view": "base_camera"
+        "agent_id": "agent_0",
+        "view": "wrist"
       },
-      "reasoning": "I need a base-camera image to observe the current scene before I execute place_under_dispenser.",
-      "image_path": "trajectories/images/traj_000006/31_base_camera_agent_0.png"
+      "reasoning": "I need a wrist image from my perspective before I execute place_under_dispenser.",
+      "image_path": "images/traj_000006/58_get_agent_image_wrist_agent_0.png"
     },
     {
-      "step": 32,
+      "step": 59,
+      "agent": "agent_0",
+      "tool": "get_agent_image",
+      "args": {
+        "agent_id": "agent_0",
+        "view": "agentview_center"
+      },
+      "reasoning": "I need a center agent-view image from my perspective before I execute place_under_dispenser.",
+      "image_path": "images/traj_000006/59_get_agent_image_agentview_center_agent_0.png"
+    },
+    {
+      "step": 60,
       "agent": "agent_0",
       "tool": "place_under_dispenser",
       "args": {
@@ -382,27 +708,51 @@
       "reasoning": "Place the mug under the dispenser."
     },
     {
-      "step": 33,
+      "step": 61,
       "agent": "agent_0",
-      "tool": "get_image",
+      "tool": "get_agent_image",
       "args": {
-        "camera_view": "base_camera"
+        "agent_id": "agent_0",
+        "view": "wrist"
       },
-      "reasoning": "I need a base-camera image to observe the current scene after I executed place_under_dispenser.",
-      "image_path": "trajectories/images/traj_000006/33_base_camera_agent_0.png"
+      "reasoning": "I need a wrist image from my perspective after I executed place_under_dispenser.",
+      "image_path": "images/traj_000006/61_get_agent_image_wrist_agent_0.png"
     },
     {
-      "step": 34,
+      "step": 62,
       "agent": "agent_0",
-      "tool": "get_image",
+      "tool": "get_agent_image",
       "args": {
-        "camera_view": "base_camera"
+        "agent_id": "agent_0",
+        "view": "agentview_center"
       },
-      "reasoning": "I need a base-camera image to observe the current scene before I execute press_button.",
-      "image_path": "trajectories/images/traj_000006/34_base_camera_agent_0.png"
+      "reasoning": "I need a center agent-view image from my perspective after I executed place_under_dispenser.",
+      "image_path": "images/traj_000006/62_get_agent_image_agentview_center_agent_0.png"
     },
     {
-      "step": 35,
+      "step": 63,
+      "agent": "agent_0",
+      "tool": "get_agent_image",
+      "args": {
+        "agent_id": "agent_0",
+        "view": "wrist"
+      },
+      "reasoning": "I need a wrist image from my perspective before I execute press_button.",
+      "image_path": "images/traj_000006/63_get_agent_image_wrist_agent_0.png"
+    },
+    {
+      "step": 64,
+      "agent": "agent_0",
+      "tool": "get_agent_image",
+      "args": {
+        "agent_id": "agent_0",
+        "view": "agentview_center"
+      },
+      "reasoning": "I need a center agent-view image from my perspective before I execute press_button.",
+      "image_path": "images/traj_000006/64_get_agent_image_agentview_center_agent_0.png"
+    },
+    {
+      "step": 65,
       "agent": "agent_0",
       "tool": "press_button",
       "args": {
@@ -412,14 +762,26 @@
       "reasoning": "Press the start button to brew the coffee."
     },
     {
-      "step": 36,
+      "step": 66,
       "agent": "agent_0",
-      "tool": "get_image",
+      "tool": "get_agent_image",
       "args": {
-        "camera_view": "base_camera"
+        "agent_id": "agent_0",
+        "view": "wrist"
       },
-      "reasoning": "I need a base-camera image to observe the current scene after I executed press_button.",
-      "image_path": "trajectories/images/traj_000006/36_base_camera_agent_0.png"
+      "reasoning": "I need a wrist image from my perspective after I executed press_button.",
+      "image_path": "images/traj_000006/66_get_agent_image_wrist_agent_0.png"
+    },
+    {
+      "step": 67,
+      "agent": "agent_0",
+      "tool": "get_agent_image",
+      "args": {
+        "agent_id": "agent_0",
+        "view": "agentview_center"
+      },
+      "reasoning": "I need a center agent-view image from my perspective after I executed press_button.",
+      "image_path": "images/traj_000006/67_get_agent_image_agentview_center_agent_0.png"
     }
   ],
   "validation": {
@@ -429,7 +791,7 @@
     "error_type": "PostProcessingValidationRequired",
     "error": "Trajectory was post-processed after validation and must be revalidated.",
     "step": null,
-    "signature": "54ee94907f992f52f676cecc5558394f15f540e13d9fbe3f81e29b0d72dedfea"
+    "signature": "71c207d87b17c7c8c58d880d11917c61f1aec1839737c713895c6586220372c8"
   },
   "generation_usage": {
     "prompt_tokens": 933,

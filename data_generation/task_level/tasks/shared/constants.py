@@ -15,7 +15,13 @@ RELEASE_TOOL_NAMES = frozenset(
         "place_under_dispenser",
     }
 )
-OBSERVATION_TOOL_NAMES = frozenset({"get_image"})
+OBSERVATION_TOOL_NAMES = frozenset(
+    {
+        "get_image",
+        "get_env_image",
+        "get_agent_image",
+    }
+)
 WAIT_TOOL_NAMES = frozenset({"wait"})
 GIVE_SPACE_TOOL_NAMES = frozenset({"give_space"})
 OPEN_PART_TOOL_NAMES = frozenset({"open_hinged_part", "open_sliding_part"})

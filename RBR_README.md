@@ -23,7 +23,7 @@ This writes a rollout video to `test.mp4` at the repo root.
 The task-level generation code lives under `data_generation/task_level/generation`
 and is isolated from the core RoboCasa task definitions:
 - `data_generation.task_level.generation.raw`: raw trajectory generation
-- `data_generation.task_level.generation.image`: post-processing that inserts canonical `get_image` steps
+- `data_generation.task_level.generation.image`: post-processing that inserts canonical image observation steps
 
 The raw-generation CLI entrypoint is `data_generation.task_level.generation.raw.cli`.
 
@@ -166,21 +166,30 @@ PYTHONPATH=. uv run python -m data_generation.task_level.generation.raw.cli \
 
 ### Adding Images via Post-Processing of Raw Data
 
-After the raw data is generated via LLM, run post-processing to add `get_image` steps and deterministic
-`image_path` fields in a copied dataset tree under `data/w_images/`. The output path mirrors the
+After the raw data is generated via LLM, run post-processing to add versioned image observation
+steps and deterministic `image_path` fields in a copied dataset tree under `data/w_images/`. The output path mirrors the
 source tree after `data/raw/`, so
 `data/raw/requests/{timestamp}/{task}/summary.json` becomes
 `data/w_images/requests/{timestamp}/{task}/summary.json`. The source dataset stays unchanged:
 
 ```bash
 python -m data_generation.task_level.generation.image.cli \
-  --dataset data_generation/task_level/data/raw/requests/{timestamp}/{task}/summary.json
+  --dataset data_generation/task_level/data/raw/requests/{timestamp}/{task}/summary.json \
+  --image-tool-version v1
 ```
+
+Supported post-processing formats:
+- `v1`: preserves the current `get_image` layout with one initial `top_view` step and `base_camera` steps around each non-communication action.
+- `v2`: inserts both `get_env_image(top_view)` and `get_env_image(room_view)` at the beginning, then uses `get_agent_image` around each non-communication action.
+- In `v2`, navigation actions get `agentview_center`, `agentview_left`, and `agentview_right`; non-navigation actions get `wrist` and `agentview_center`.
+
 To post-process every task summary inside one request directory, run directly in CLI:
 
 ```bash
 for summary in data_generation/task_level/data/raw/requests/{timestamp}/*/summary.json; do
-  python -m data_generation.task_level.generation.image.cli --dataset "$summary"
+  python -m data_generation.task_level.generation.image.cli \
+    --dataset "$summary" \
+    --image-tool-version v2
 done
 ```
 
@@ -192,7 +201,7 @@ The raw generator writes artifacts next to the dataset summary:
 - `summary_costs.json`: costs of generation per trajectory
 
 Post-processing keeps those copied artifacts and also prepares:
-- `images/`: sibling image root referenced by inserted `get_image` steps via `image_path`
+- `images/`: sibling image root referenced by inserted observation steps via `image_path`
 
 Sampling notes:
 - `--num-runs` is the number of runs, not always the number of saved trajectories.

@@ -119,7 +119,6 @@ from data_generation.task_level.generation.raw.runtime_support import (
     extract_json_candidate,
 )
 
-
 PREPARE_COFFEE_ACTION_SPECS = (
     ("navigate_to_fixture", {"fixture_id": "cabinet_1"}),
     ("open_hinged_part", {"target_id": "cabinet_1", "part_id": "door"}),
@@ -177,6 +176,28 @@ def make_required_get_image_step(
     }
 
 
+def make_required_v2_image_step(
+    agent_id,
+    *,
+    reasoning,
+    tool_name,
+    view,
+):
+    """Builds a compact `v2` observation step used in shared FSM tests."""
+
+    if tool_name == "get_env_image":
+        args = {"view": view}
+    else:
+        args = {"agent_id": agent_id, "view": view}
+    return {
+        "step": -1,
+        "agent": agent_id,
+        "tool": tool_name,
+        "args": args,
+        "reasoning": reasoning,
+    }
+
+
 def frame_action_steps_with_get_images(action_steps):
     """Places the required get_image calls before and after task actions."""
 
@@ -230,9 +251,7 @@ def make_valid_candidate(
     if len(action_agents) == 3:
         # Expand the original three-phase fixture into the shared subatomic steps.
         expanded_action_agents = (
-            (action_agents[0],) * 5
-            + (action_agents[1],) * 4
-            + (action_agents[2],)
+            (action_agents[0],) * 5 + (action_agents[1],) * 4 + (action_agents[2],)
         )
     else:
         expanded_action_agents = tuple(action_agents)
@@ -298,10 +317,7 @@ def make_valid_candidate(
 def make_valid_hot_dog_setup_candidate(*, include_agents=True):
     """Builds a valid HotDogSetup candidate trajectory for validator tests."""
 
-    action_agents = (
-        ("agent_0",) * 4
-        + ("agent_1",) * 8
-    )
+    action_agents = ("agent_0",) * 4 + ("agent_1",) * 8
     action_reasoning = (
         ("The bun starts on the counter.",) * 4
         + ("The condiment should be moved beside the plate.",) * 4
@@ -534,11 +550,11 @@ def make_toy_candidate(
 
     return renumber_candidate_steps(
         {
-        "agents": [
-            {"agent": "agent_0"},
-            {"agent": "agent_1"},
-        ],
-        "steps": steps,
+            "agents": [
+                {"agent": "agent_0"},
+                {"agent": "agent_1"},
+            ],
+            "steps": steps,
         }
     )
 
@@ -688,7 +704,9 @@ def make_batch_output_row(
                         {
                             "text": build_prepare_coffee_prompt(
                                 variation_key,
-                                task_instance=PREPARE_COFFEE_TASK.build_task_instance(run_index),
+                                task_instance=PREPARE_COFFEE_TASK.build_task_instance(
+                                    run_index
+                                ),
                             )
                         }
                     ],
@@ -750,7 +768,9 @@ def make_prepare_coffee_task_instance(run_index=0):
     return PREPARE_COFFEE_TASK.build_task_instance(run_index)
 
 
-def build_prepare_coffee_prompt_for_run(variation_key, *, run_index=0, retry_feedback=None):
+def build_prepare_coffee_prompt_for_run(
+    variation_key, *, run_index=0, retry_feedback=None
+):
     """Builds the exact runtime prompt for one PrepareCoffee run."""
 
     return build_prepare_coffee_prompt(
@@ -954,7 +974,9 @@ class PrepareCoffeeTaskInstanceTests(unittest.TestCase):
     def test_task_instance_samples_start_positions_from_existing_fixtures(self):
         task_instance = make_prepare_coffee_task_instance(0)
         allowed_fixture_ids = set(
-            PREPARE_COFFEE_ALLOWED_TOOL_SPECS["navigate_to_fixture"]["allowed_fixture_ids"]
+            PREPARE_COFFEE_ALLOWED_TOOL_SPECS["navigate_to_fixture"][
+                "allowed_fixture_ids"
+            ]
         )
 
         for agent_id in ("agent_0", "agent_1"):
@@ -967,7 +989,9 @@ class PrepareCoffeeTaskInstanceTests(unittest.TestCase):
         first_task_instance = make_prepare_coffee_task_instance(0)
         second_task_instance = make_prepare_coffee_task_instance(0)
 
-        self.assertEqual(first_task_instance.initial_state, second_task_instance.initial_state)
+        self.assertEqual(
+            first_task_instance.initial_state, second_task_instance.initial_state
+        )
 
     def test_runtime_prompt_uses_sampled_initial_positions(self):
         task_instance = make_prepare_coffee_task_instance(0)
@@ -990,7 +1014,9 @@ class PrepareCoffeeTaskInstanceTests(unittest.TestCase):
         initial_state["agents"]["agent_1"]["location"] = "counter_1"
         validator = PrepareCoffeeValidator(TaskInstance(initial_state=initial_state))
         candidate = make_valid_candidate()
-        candidate["steps"].pop(find_step_index(candidate, "navigate_to_fixture", occurrence=0))
+        candidate["steps"].pop(
+            find_step_index(candidate, "navigate_to_fixture", occurrence=0)
+        )
         renumber_candidate_steps(candidate)
 
         validation = validator.validate(candidate)
@@ -1039,7 +1065,9 @@ class HotDogSetupTaskTests(unittest.TestCase):
             "plate_1",
         )
         self.assertTrue(
-            validation["final_state"]["machine_state"]["hot_dog_setup"]["condiment_placed_next_to_plate"]
+            validation["final_state"]["machine_state"]["hot_dog_setup"][
+                "condiment_placed_next_to_plate"
+            ]
         )
 
     def test_hot_dog_setup_validator_requires_condiment_next_to_plate(self):
@@ -1128,9 +1156,7 @@ class DotenvLoadingTests(unittest.TestCase):
         self.assertEqual(underscored_runtime_config.num_runs, 9)
 
     def test_parse_args_accepts_sampling_flags(self):
-        runtime_config = parse_args(
-            ["--sampling", "verbalized", "--verbalized-k", "3"]
-        )
+        runtime_config = parse_args(["--sampling", "verbalized", "--verbalized-k", "3"])
 
         self.assertEqual(runtime_config.sampling, "verbalized")
         self.assertEqual(runtime_config.verbalized_k, 3)
@@ -1209,10 +1235,7 @@ class DotenvLoadingTests(unittest.TestCase):
 
         self.assertEqual(
             resolved,
-            DEFAULT_OUTPUT_DIR
-            / "prepare_coffee"
-            / "20260310T123456Z"
-            / "summary.json",
+            DEFAULT_OUTPUT_DIR / "prepare_coffee" / "20260310T123456Z" / "summary.json",
         )
 
     def test_default_output_dir_points_to_repo_task_level_data_directory(self):
@@ -1240,10 +1263,7 @@ class DotenvLoadingTests(unittest.TestCase):
 
         self.assertEqual(
             resolved,
-            output_root
-            / "prepare_coffee"
-            / "20260310T123456Z"
-            / "summary.json",
+            output_root / "prepare_coffee" / "20260310T123456Z" / "summary.json",
         )
 
     def test_resolve_request_output_path_uses_patched_default_output_dir(self):
@@ -1261,10 +1281,7 @@ class DotenvLoadingTests(unittest.TestCase):
 
         self.assertEqual(
             resolved,
-            output_root
-            / REQUEST_DIRECTORY_NAME
-            / "20260310T123456Z"
-            / "summary.json",
+            output_root / REQUEST_DIRECTORY_NAME / "20260310T123456Z" / "summary.json",
         )
 
     def test_resolve_trajectory_output_dir_uses_sibling_trajectories_directory(self):
@@ -1348,13 +1365,17 @@ class DotenvLoadingTests(unittest.TestCase):
                 with mock.patch(
                     "data_generation.task_level.runtime.client.validate_google_auth"
                 ) as validate_auth:
-                    client = GoogleGenAIClient(project="demo-project", location="global")
+                    client = GoogleGenAIClient(
+                        project="demo-project", location="global"
+                    )
 
         validate_auth.assert_called_once_with("demo-project")
         self.assertEqual(set(client._client.kwargs), {"http_options"})
         self.assertEqual(client._client.kwargs["http_options"].api_version, "v1")
 
-    def test_google_genai_client_raises_clear_error_for_missing_vertex_permissions(self):
+    def test_google_genai_client_raises_clear_error_for_missing_vertex_permissions(
+        self,
+    ):
         class FakeModels:
             def generate_content(self, **kwargs):
                 raise FakeGoogleGenAIClientError(
@@ -1389,7 +1410,9 @@ class DotenvLoadingTests(unittest.TestCase):
                 with mock.patch(
                     "data_generation.task_level.runtime.client.validate_google_auth"
                 ):
-                    client = GoogleGenAIClient(project="demo-project", location="global")
+                    client = GoogleGenAIClient(
+                        project="demo-project", location="global"
+                    )
 
         with self.assertRaises(TrajectoryGenerationError) as context:
             client.generate(
@@ -1434,7 +1457,9 @@ class DotenvLoadingTests(unittest.TestCase):
                 with mock.patch(
                     "data_generation.task_level.runtime.client.validate_google_auth"
                 ):
-                    client = GoogleGenAIClient(project="demo-project", location="global")
+                    client = GoogleGenAIClient(
+                        project="demo-project", location="global"
+                    )
 
         client.generate(
             model="gemini-3.1-flash-lite-preview",
@@ -1489,7 +1514,9 @@ class DotenvLoadingTests(unittest.TestCase):
                 with mock.patch(
                     "data_generation.task_level.runtime.client.validate_google_auth"
                 ):
-                    client = GoogleGenAIClient(project="demo-project", location="global")
+                    client = GoogleGenAIClient(
+                        project="demo-project", location="global"
+                    )
 
         with self.assertRaises(TrajectoryGenerationError) as context:
             client.generate(
@@ -1929,6 +1956,106 @@ class FiniteStateTaskValidatorTests(unittest.TestCase):
 
         self.assertTrue(validation["is_valid"])
 
+    def test_validator_accepts_v2_observation_tools(self):
+        actions = (
+            make_toy_action_spec(
+                "navigate_to_fixture",
+                {"fixture_id": "table_1"},
+            ),
+            make_toy_action_spec(
+                "pick_up_object",
+                {"object_id": "apple_1", "source_id": "table_1"},
+            ),
+            make_toy_action_spec(
+                "navigate_to_fixture",
+                {"fixture_id": "shelf_1"},
+            ),
+            make_toy_action_spec(
+                "place_on_surface",
+                {"object_id": "apple_1", "support_id": "shelf_1"},
+            ),
+        )
+        candidate = make_toy_candidate(actions)
+        action_steps = [
+            step
+            for step in candidate["steps"]
+            if step["tool"] not in {"communicate", "get_image"}
+        ]
+        candidate["steps"] = [
+            candidate["steps"][0],
+            candidate["steps"][1],
+            make_required_v2_image_step(
+                "agent_0",
+                tool_name="get_env_image",
+                view="top_view",
+                reasoning="I should inspect the full scene before the task begins.",
+            ),
+            make_required_v2_image_step(
+                "agent_0",
+                tool_name="get_env_image",
+                view="room_view",
+                reasoning="I should inspect the room view before the task begins.",
+            ),
+            make_required_v2_image_step(
+                "agent_0",
+                tool_name="get_agent_image",
+                view="agentview_center",
+                reasoning="I should inspect the path before navigation.",
+            ),
+            action_steps[0],
+            make_required_v2_image_step(
+                "agent_0",
+                tool_name="get_agent_image",
+                view="agentview_center",
+                reasoning="I should confirm the navigation result.",
+            ),
+            make_required_v2_image_step(
+                "agent_0",
+                tool_name="get_agent_image",
+                view="wrist",
+                reasoning="I should inspect the object before grasping it.",
+            ),
+            action_steps[1],
+            make_required_v2_image_step(
+                "agent_0",
+                tool_name="get_agent_image",
+                view="agentview_center",
+                reasoning="I should confirm the grasp result.",
+            ),
+            make_required_v2_image_step(
+                "agent_0",
+                tool_name="get_agent_image",
+                view="agentview_center",
+                reasoning="I should inspect the next navigation target.",
+            ),
+            action_steps[2],
+            make_required_v2_image_step(
+                "agent_0",
+                tool_name="get_agent_image",
+                view="agentview_center",
+                reasoning="I should confirm the navigation result at the shelf.",
+            ),
+            make_required_v2_image_step(
+                "agent_0",
+                tool_name="get_agent_image",
+                view="wrist",
+                reasoning="I should inspect the placement target.",
+            ),
+            action_steps[3],
+            make_required_v2_image_step(
+                "agent_0",
+                tool_name="get_agent_image",
+                view="agentview_center",
+                reasoning="I should capture the completed setup.",
+            ),
+        ]
+        renumber_candidate_steps(candidate)
+
+        validator = ToyFiniteStateValidator()
+        validation = validator.validate(candidate)
+
+        self.assertTrue(validation["is_valid"])
+
     def test_validator_rejects_missing_get_image_before_task_action(self):
         actions = (
             make_toy_action_spec(
@@ -1957,8 +2084,13 @@ class FiniteStateTaskValidatorTests(unittest.TestCase):
         with self.assertRaises(TaskSemanticValidationError) as raised:
             validator.validate(candidate)
 
-        self.assertIsInstance(raised.exception, ObservationSequenceSemanticValidationError)
-        self.assertIn("must be immediately preceded by get_image", str(raised.exception))
+        self.assertIsInstance(
+            raised.exception, ObservationSequenceSemanticValidationError
+        )
+        self.assertIn(
+            "must be immediately preceded by an observation step",
+            str(raised.exception),
+        )
 
     def test_validator_rejects_missing_get_image_after_task_action(self):
         actions = (
@@ -1988,8 +2120,13 @@ class FiniteStateTaskValidatorTests(unittest.TestCase):
         with self.assertRaises(TaskSemanticValidationError) as raised:
             validator.validate(candidate)
 
-        self.assertIsInstance(raised.exception, ObservationSequenceSemanticValidationError)
-        self.assertIn("must be immediately followed by get_image", str(raised.exception))
+        self.assertIsInstance(
+            raised.exception, ObservationSequenceSemanticValidationError
+        )
+        self.assertIn(
+            "must be immediately followed by an observation step",
+            str(raised.exception),
+        )
 
     def test_validator_rejects_second_pickup_while_holding(self):
         actions = (
@@ -2085,7 +2222,9 @@ class FiniteStateTaskValidatorTests(unittest.TestCase):
             validator.validate(make_toy_candidate(actions))
 
         self.assertIsInstance(raised.exception, NavigationSemanticValidationError)
-        self.assertIn("must use navigate_to_fixture to reach cabinet_1", str(raised.exception))
+        self.assertIn(
+            "must use navigate_to_fixture to reach cabinet_1", str(raised.exception)
+        )
 
     def test_validator_rejects_missing_initial_communication(self):
         actions = (
@@ -2104,7 +2243,9 @@ class FiniteStateTaskValidatorTests(unittest.TestCase):
         with self.assertRaises(TaskSemanticValidationError) as raised:
             validator.validate(candidate)
 
-        self.assertIsInstance(raised.exception, MissingInitialCommunicationSemanticValidationError)
+        self.assertIsInstance(
+            raised.exception, MissingInitialCommunicationSemanticValidationError
+        )
         self.assertIn(
             "Both agents must coordinate via communication before the first task action.",
             str(raised.exception),
@@ -2221,7 +2362,9 @@ class PrepareCoffeeValidatorTests(unittest.TestCase):
 
     def test_validator_rejects_missing_navigation_before_interaction(self):
         candidate = make_valid_candidate()
-        candidate["steps"].pop(find_step_index(candidate, "navigate_to_fixture", occurrence=2))
+        candidate["steps"].pop(
+            find_step_index(candidate, "navigate_to_fixture", occurrence=2)
+        )
         renumber_candidate_steps(candidate)
 
         with self.assertRaises(TaskSemanticValidationError) as raised:
@@ -2231,7 +2374,9 @@ class PrepareCoffeeValidatorTests(unittest.TestCase):
 
     def test_validator_rejects_missing_cabinet_open_before_pickup(self):
         candidate = make_valid_candidate()
-        candidate["steps"].pop(find_step_index(candidate, "open_hinged_part", occurrence=0))
+        candidate["steps"].pop(
+            find_step_index(candidate, "open_hinged_part", occurrence=0)
+        )
         renumber_candidate_steps(candidate)
 
         with self.assertRaises(TaskSemanticValidationError) as raised:
@@ -2241,9 +2386,9 @@ class PrepareCoffeeValidatorTests(unittest.TestCase):
 
     def test_validator_rejects_invalid_hold_place_ordering(self):
         candidate = make_valid_candidate()
-        candidate["steps"][find_step_index(candidate, "place_on_surface", occurrence=0)][
-            "agent"
-        ] = "agent_1"
+        candidate["steps"][
+            find_step_index(candidate, "place_on_surface", occurrence=0)
+        ]["agent"] = "agent_1"
 
         with self.assertRaises(TaskSemanticValidationError):
             self.validator.validate(candidate)
@@ -2253,9 +2398,9 @@ class PrepareCoffeeValidatorTests(unittest.TestCase):
         candidate["steps"][find_step_index(candidate, "pick_up_object", occurrence=0)][
             "tool"
         ] = "unsupported_tool"
-        candidate["steps"][find_step_index(candidate, "unsupported_tool", occurrence=0)][
-            "args"
-        ] = {
+        candidate["steps"][
+            find_step_index(candidate, "unsupported_tool", occurrence=0)
+        ]["args"] = {
             "object_id": "mug_1",
         }
 
@@ -2276,9 +2421,9 @@ class PrepareCoffeeValidatorTests(unittest.TestCase):
 
     def test_validator_rejects_missing_reasoning(self):
         candidate = make_valid_candidate()
-        candidate["steps"][find_step_index(candidate, "navigate_to_fixture", occurrence=0)][
-            "reasoning"
-        ] = ""
+        candidate["steps"][
+            find_step_index(candidate, "navigate_to_fixture", occurrence=0)
+        ]["reasoning"] = ""
 
         with self.assertRaises(TrajectoryStructureValidationError) as raised:
             self.validator.validate(candidate)
@@ -2287,7 +2432,9 @@ class PrepareCoffeeValidatorTests(unittest.TestCase):
 
     def test_validator_rejects_missing_navigation_with_step_number(self):
         candidate = make_valid_candidate()
-        candidate["steps"].pop(find_step_index(candidate, "navigate_to_fixture", occurrence=2))
+        candidate["steps"].pop(
+            find_step_index(candidate, "navigate_to_fixture", occurrence=2)
+        )
         renumber_candidate_steps(candidate)
 
         with self.assertRaises(TaskSemanticValidationError) as raised:
@@ -2296,10 +2443,14 @@ class PrepareCoffeeValidatorTests(unittest.TestCase):
         self.assertIsInstance(raised.exception, NavigationSemanticValidationError)
         self.assertEqual(raised.exception.step, 7)
         self.assertIn("Step 7 (pick_up_object):", str(raised.exception))
-        self.assertIn("must use navigate_to_fixture to reach counter_1", str(raised.exception))
+        self.assertIn(
+            "must use navigate_to_fixture to reach counter_1", str(raised.exception)
+        )
         self.assertIn("before using pick_up_object", str(raised.exception))
 
-    def test_extract_json_candidate_uses_response_format_error_for_invalid_payload(self):
+    def test_extract_json_candidate_uses_response_format_error_for_invalid_payload(
+        self,
+    ):
         with self.assertRaises(ResponseFormatValidationError):
             extract_json_candidate("not json")
 
@@ -2325,7 +2476,9 @@ class PrepareCoffeeValidatorTests(unittest.TestCase):
 
         second_validation = alternate_validator.validate(make_valid_candidate())
 
-        self.assertNotEqual(first_validation["signature"], second_validation["signature"])
+        self.assertNotEqual(
+            first_validation["signature"], second_validation["signature"]
+        )
 
     def test_base_sampling_strategy_preserves_task_prompt(self):
         strategy = BaseSamplingStrategy()
@@ -2644,14 +2797,16 @@ class GenerationTests(unittest.TestCase):
         )
         self.assertEqual(len(batch_storage.upload_calls), 1)
         self.assertIn(
-            "\"variation_key\": \"traj-000000-attempt-00\"",
+            '"variation_key": "traj-000000-attempt-00"',
             batch_storage.upload_calls[0]["text"],
         )
         self.assertIn(
-            "\"variation_key\": \"traj-000001-attempt-00\"",
+            '"variation_key": "traj-000001-attempt-00"',
             batch_storage.upload_calls[0]["text"],
         )
-        self.assertEqual(batch_service.create_calls[0]["output_prefix"], round_output_prefix)
+        self.assertEqual(
+            batch_service.create_calls[0]["output_prefix"], round_output_prefix
+        )
 
     def test_batch_request_payload_includes_optional_thinking_level(self):
         runtime_config = RuntimeConfig(
@@ -2770,11 +2925,11 @@ class GenerationTests(unittest.TestCase):
             2,
         )
         self.assertIn(
-            "\"variation_key\": \"traj-000001-attempt-01\"",
+            '"variation_key": "traj-000001-attempt-01"',
             batch_storage.upload_calls[1]["text"],
         )
         self.assertNotIn(
-            "\"variation_key\": \"traj-000000-attempt-01\"",
+            '"variation_key": "traj-000000-attempt-01"',
             batch_storage.upload_calls[1]["text"],
         )
 
@@ -3071,10 +3226,15 @@ class GenerationTests(unittest.TestCase):
         )
 
         self.assertTrue(
-            all(step["tool"] != "get_image" for step in payload["trajectories"][0]["steps"])
+            all(
+                step["tool"] != "get_image"
+                for step in payload["trajectories"][0]["steps"]
+            )
         )
         self.assertTrue(
-            all("image_path" not in step for step in payload["trajectories"][0]["steps"])
+            all(
+                "image_path" not in step for step in payload["trajectories"][0]["steps"]
+            )
         )
 
     def test_generated_payload_includes_prompt_files(self):
@@ -3166,7 +3326,9 @@ class GenerationTests(unittest.TestCase):
             payload["attempt_prompts"][1]["prompt"],
         )
 
-    def test_verbalized_on_demand_retries_only_failed_run_and_fills_remaining_slots(self):
+    def test_verbalized_on_demand_retries_only_failed_run_and_fills_remaining_slots(
+        self,
+    ):
         runtime_config = RuntimeConfig(
             composite_task="PrepareCoffee",
             num_runs=3,
@@ -3414,7 +3576,10 @@ class GenerationTests(unittest.TestCase):
             ["traj_000000", "traj_000001"],
         )
         self.assertEqual(
-            [trajectory["sampling_metadata"]["probability"] for trajectory in payload["trajectories"]],
+            [
+                trajectory["sampling_metadata"]["probability"]
+                for trajectory in payload["trajectories"]
+            ],
             [0.65, 0.35],
         )
         self.assertEqual(
@@ -3481,7 +3646,10 @@ class GenerationTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            [trajectory["generation_usage"]["total_tokens"] for trajectory in payload["trajectories"]],
+            [
+                trajectory["generation_usage"]["total_tokens"]
+                for trajectory in payload["trajectories"]
+            ],
             [3, 0],
         )
         for trajectory in payload["trajectories"]:
@@ -3561,7 +3729,10 @@ class GenerationTests(unittest.TestCase):
             ["traj_000000", "traj_000001"],
         )
         self.assertEqual(
-            [trajectory["sampling_metadata"]["probability"] for trajectory in payload["trajectories"]],
+            [
+                trajectory["sampling_metadata"]["probability"]
+                for trajectory in payload["trajectories"]
+            ],
             [0.8, 0.2],
         )
 
@@ -3718,7 +3889,10 @@ class GenerationTests(unittest.TestCase):
                 sampling="verbalized",
                 verbalized_k=3,
                 thinking_level="low",
-                summary_path=output_root / "prepare_coffee" / "20260315T010000Z" / "summary.json",
+                summary_path=output_root
+                / "prepare_coffee"
+                / "20260315T010000Z"
+                / "summary.json",
             )
 
             with mock.patch(
@@ -4143,7 +4317,9 @@ class GenerationTests(unittest.TestCase):
         self.assertTrue(status_updates[-1].startswith("done attempts=2/2 total=$"))
         self.assertTrue(status_updates[-1].endswith(" calls=12"))
 
-    def test_generate_single_trajectory_feeds_validation_feedback_into_retry_prompt(self):
+    def test_generate_single_trajectory_feeds_validation_feedback_into_retry_prompt(
+        self,
+    ):
         runtime_config = RuntimeConfig(
             composite_task="PrepareCoffee",
             num_runs=1,
@@ -4182,7 +4358,9 @@ class GenerationTests(unittest.TestCase):
         self.assertIn("Local bad example:", client.prompts[1])
         self.assertIn("Regenerate the full trajectory from step 0.", client.prompts[1])
 
-    def test_generate_single_trajectory_keeps_attempt_counts_in_done_status_when_validation_disabled(self):
+    def test_generate_single_trajectory_keeps_attempt_counts_in_done_status_when_validation_disabled(
+        self,
+    ):
         runtime_config = RuntimeConfig(
             composite_task="PrepareCoffee",
             num_runs=1,
@@ -4275,7 +4453,9 @@ class GenerationTests(unittest.TestCase):
         self.assertIn('"step": 9', feedback)
         self.assertIn("Regenerate the full trajectory from step 0.", feedback)
 
-    def test_generate_single_trajectory_reports_total_and_average_cost_for_verbalized_sampling(self):
+    def test_generate_single_trajectory_reports_total_and_average_cost_for_verbalized_sampling(
+        self,
+    ):
         runtime_config = RuntimeConfig(
             composite_task="PrepareCoffee",
             num_runs=1,
@@ -4323,7 +4503,9 @@ class GenerationTests(unittest.TestCase):
             "done attempts=1/3 total=$0.0014 avg=$0.0007 success=2/2 avg_calls=12.5",
         )
 
-    def test_generate_single_trajectory_retry_status_includes_verbalized_invalid_error(self):
+    def test_generate_single_trajectory_retry_status_includes_verbalized_invalid_error(
+        self,
+    ):
         runtime_config = RuntimeConfig(
             composite_task="PrepareCoffee",
             num_runs=1,
@@ -4401,7 +4583,9 @@ class GenerationTests(unittest.TestCase):
             resumed_generation_status,
         )
 
-    def test_generate_single_trajectory_raises_specific_error_for_insufficient_verbalized_results(self):
+    def test_generate_single_trajectory_raises_specific_error_for_insufficient_verbalized_results(
+        self,
+    ):
         runtime_config = RuntimeConfig(
             composite_task="PrepareCoffee",
             num_runs=1,
@@ -4452,7 +4636,9 @@ class GenerationTests(unittest.TestCase):
             str(raised.exception),
         )
 
-    def test_generate_single_trajectory_raises_duplicate_specific_error_for_insufficient_verbalized_results(self):
+    def test_generate_single_trajectory_raises_duplicate_specific_error_for_insufficient_verbalized_results(
+        self,
+    ):
         runtime_config = RuntimeConfig(
             composite_task="PrepareCoffee",
             num_runs=1,
@@ -4513,7 +4699,9 @@ class GenerationTests(unittest.TestCase):
             str(raised.exception),
         )
 
-    def test_generate_single_trajectory_raises_mixed_specific_error_for_insufficient_verbalized_results(self):
+    def test_generate_single_trajectory_raises_mixed_specific_error_for_insufficient_verbalized_results(
+        self,
+    ):
         runtime_config = RuntimeConfig(
             composite_task="PrepareCoffee",
             num_runs=1,
@@ -4570,7 +4758,9 @@ class GenerationTests(unittest.TestCase):
             str(raised.exception),
         )
 
-    def test_generate_single_trajectory_returns_all_records_for_verbalized_sampling(self):
+    def test_generate_single_trajectory_returns_all_records_for_verbalized_sampling(
+        self,
+    ):
         runtime_config = RuntimeConfig(
             composite_task="PrepareCoffee",
             num_runs=1,
@@ -4617,11 +4807,16 @@ class GenerationTests(unittest.TestCase):
             ["traj_000000", "traj_000001"],
         )
         self.assertEqual(
-            [trajectory["sampling_metadata"]["probability"] for trajectory in trajectories],
+            [
+                trajectory["sampling_metadata"]["probability"]
+                for trajectory in trajectories
+            ],
             [0.6, 0.4],
         )
 
-    def test_generate_single_trajectory_reports_success_fraction_for_mixed_verbalized_run(self):
+    def test_generate_single_trajectory_reports_success_fraction_for_mixed_verbalized_run(
+        self,
+    ):
         runtime_config = RuntimeConfig(
             composite_task="PrepareCoffee",
             num_runs=1,
@@ -4722,13 +4917,17 @@ class GenerationTests(unittest.TestCase):
                                     display = RichProgressDisplay(runtime_config)
 
         console_cls.assert_called_once_with(stderr=True)
-        self.assertEqual(rich_progress.call_args.kwargs["console"], mock.sentinel.console)
+        self.assertEqual(
+            rich_progress.call_args.kwargs["console"], mock.sentinel.console
+        )
         self.assertFalse(rich_progress.call_args.kwargs["expand"])
         fake_progress.start.assert_called_once()
         self.assertEqual(fake_progress.add_task.call_count, 3)
         self.assertIn("run 000000", fake_progress.add_task.call_args_list[1].args[0])
         self.assertIn("run 000001", fake_progress.add_task.call_args_list[2].args[0])
-        self.assertEqual(fake_progress.add_task.call_args_list[0].kwargs.get("start"), None)
+        self.assertEqual(
+            fake_progress.add_task.call_args_list[0].kwargs.get("start"), None
+        )
         self.assertEqual(fake_progress.add_task.call_args_list[1].kwargs["start"], True)
         self.assertEqual(fake_progress.add_task.call_args_list[2].kwargs["start"], True)
         display.close()
@@ -4869,7 +5068,9 @@ class GenerationTests(unittest.TestCase):
                                     display = RichBatchProgressDisplay(runtime_config)
 
         console_cls.assert_called_once_with(stderr=True)
-        self.assertEqual(rich_progress.call_args.kwargs["console"], mock.sentinel.console)
+        self.assertEqual(
+            rich_progress.call_args.kwargs["console"], mock.sentinel.console
+        )
         self.assertFalse(rich_progress.call_args.kwargs["expand"])
         fake_progress.start.assert_called_once()
         fake_progress.add_task.assert_called_once_with(
@@ -5232,7 +5433,9 @@ class GenerationTests(unittest.TestCase):
             payload["trajectories"][1]["validation"]["error"],
         )
 
-    def test_disable_validation_logs_single_projected_cost_without_attempt_details(self):
+    def test_disable_validation_logs_single_projected_cost_without_attempt_details(
+        self,
+    ):
         runtime_config = RuntimeConfig(
             composite_task="PrepareCoffee",
             num_runs=1,
@@ -5317,7 +5520,9 @@ class GenerationTests(unittest.TestCase):
             "TaskSemanticValidationError",
         )
         self.assertEqual(
-            cost_payload["trajectory_costs"][0]["generation_usage"]["observed_cost_usd"],
+            cost_payload["trajectory_costs"][0]["generation_usage"][
+                "observed_cost_usd"
+            ],
             payload["trajectories"][0]["generation_usage"]["observed_cost_usd"],
         )
 
@@ -5776,7 +5981,10 @@ class GenerationTests(unittest.TestCase):
                 )
             )
             self.assertFalse(
-                any(message.startswith("Estimated cost ") for message in printed_messages)
+                any(
+                    message.startswith("Estimated cost ")
+                    for message in printed_messages
+                )
             )
 
     def test_main_writes_combined_summary_for_multiple_tasks(self):
@@ -5876,12 +6084,18 @@ class GenerationTests(unittest.TestCase):
                     )
             self.assertEqual(exit_code, 0)
             self.assertTrue(request_summary_path.exists())
-            combined_summary = json.loads(request_summary_path.read_text(encoding="utf-8"))
+            combined_summary = json.loads(
+                request_summary_path.read_text(encoding="utf-8")
+            )
             combined_cost = json.loads(
-                resolve_cost_output_path(request_summary_path).read_text(encoding="utf-8")
+                resolve_cost_output_path(request_summary_path).read_text(
+                    encoding="utf-8"
+                )
             )
             combined_errors = json.loads(
-                resolve_error_output_path(request_summary_path).read_text(encoding="utf-8")
+                resolve_error_output_path(request_summary_path).read_text(
+                    encoding="utf-8"
+                )
             )
             self.assertEqual(
                 combined_summary["composite_tasks"],
@@ -5895,10 +6109,14 @@ class GenerationTests(unittest.TestCase):
             self.assertEqual(combined_cost["cost_summary"]["total_cost_usd"], 0.008)
             self.assertEqual(combined_errors["total_errors"], 0)
             self.assertTrue(
-                (request_summary_path.parent / "prepare_coffee" / "summary.json").exists()
+                (
+                    request_summary_path.parent / "prepare_coffee" / "summary.json"
+                ).exists()
             )
             self.assertTrue(
-                (request_summary_path.parent / "hot_dog_setup" / "summary.json").exists()
+                (
+                    request_summary_path.parent / "hot_dog_setup" / "summary.json"
+                ).exists()
             )
 
     def test_run_cli_exits_immediately_on_keyboard_interrupt(self):

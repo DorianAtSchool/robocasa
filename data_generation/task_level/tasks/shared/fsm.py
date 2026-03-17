@@ -147,7 +147,11 @@ class FiniteStateTaskValidator:
                         },
                     )
 
-                if step["tool"] not in self.allowed_tool_specs:
+                if step[
+                    "tool"
+                ] not in self.allowed_tool_specs and not self._is_allowed_observation_tool(
+                    step["tool"]
+                ):
                     raise UnsupportedToolSemanticValidationError(
                         f"Tool {step['tool']} is not allowed for {self.composite_task}.",
                         details={
@@ -370,7 +374,7 @@ class FiniteStateTaskValidator:
         steps: Sequence[dict[str, Any]],
         step_index: int,
     ) -> None:
-        """Requires each non-communication action to be bracketed by get_image."""
+        """Requires each non-communication action to be bracketed by observation steps."""
 
         step = steps[step_index]
         if step["tool"] == "communicate" or step["tool"] in OBSERVATION_TOOL_NAMES:
@@ -381,7 +385,7 @@ class FiniteStateTaskValidator:
             or steps[step_index - 1]["tool"] not in OBSERVATION_TOOL_NAMES
         ):
             raise ObservationSequenceSemanticValidationError(
-                f"{step['tool']} at step {step['step']} must be immediately preceded by get_image.",
+                f"{step['tool']} at step {step['step']} must be immediately preceded by an observation step.",
                 details={
                     "tool": step["tool"],
                     "step": step["step"],
@@ -393,7 +397,7 @@ class FiniteStateTaskValidator:
             or steps[step_index + 1]["tool"] not in OBSERVATION_TOOL_NAMES
         ):
             raise ObservationSequenceSemanticValidationError(
-                f"{step['tool']} at step {step['step']} must be immediately followed by get_image.",
+                f"{step['tool']} at step {step['step']} must be immediately followed by an observation step.",
                 details={
                     "tool": step["tool"],
                     "step": step["step"],
@@ -500,8 +504,18 @@ class FiniteStateTaskValidator:
                 expected_location=required_fixture,
             )
 
+    def _is_allowed_observation_tool(self, tool_name: str) -> bool:
+        """Accepts post-processed observation tools when a task supports observation steps."""
+
+        return self._requires_observation_steps and tool_name in OBSERVATION_TOOL_NAMES
+
     def _validate_task_local_symbolic_constraints(self, step: dict[str, Any]) -> None:
         """Rejects symbolic IDs that violate the task-local allowed_* tool overrides."""
+
+        if self._is_allowed_observation_tool(step["tool"]) and (
+            step["tool"] not in self.allowed_tool_specs
+        ):
+            return
 
         tool_spec = self.allowed_tool_specs[step["tool"]]
         tool_args = step["args"]
@@ -619,9 +633,9 @@ class FiniteStateTaskValidator:
         if tool_name in RELEASE_TOOL_NAMES:
             object_id = tool_args["object_id"]
             agent_state.held_object = None
-            runtime_state.objects.setdefault(object_id, {})[
-                "location"
-            ] = self._resolve_release_location(step, runtime_state)
+            runtime_state.objects.setdefault(object_id, {})["location"] = (
+                self._resolve_release_location(step, runtime_state)
+            )
 
     def _resolve_release_location(
         self,

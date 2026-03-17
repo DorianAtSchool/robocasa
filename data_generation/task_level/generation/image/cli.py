@@ -8,11 +8,12 @@ import sys
 from pathlib import Path
 
 from data_generation.task_level.generation.image.processor import (
+    IMAGE_TOOL_VERSION_V1,
+    SUPPORTED_IMAGE_TOOL_VERSIONS,
     POST_PROCESS_ERROR_EXIT_CODE,
     post_process_dataset,
     resolve_output_dataset_path,
 )
-
 
 INTERRUPTED_EXIT_CODE = 130
 INTERRUPTED_MESSAGE = "Interrupted image post-processing."
@@ -33,8 +34,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     parser = argparse.ArgumentParser(
         description=(
-            "Insert get_image steps into trajectories referenced by a dataset JSON "
-            "and write the results to a copied output tree."
+            "Insert versioned image observation steps into trajectories referenced "
+            "by a dataset JSON and write the results to a copied output tree."
         )
     )
     parser.add_argument(
@@ -44,6 +45,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "Path to the source dataset summary JSON or inline dataset JSON to "
             "copy and post-process."
+        ),
+    )
+    parser.add_argument(
+        "--image-tool-version",
+        required=True,
+        choices=SUPPORTED_IMAGE_TOOL_VERSIONS,
+        help=(
+            "Observation-step format version to emit. Use "
+            f"{IMAGE_TOOL_VERSION_V1} for the legacy get_image layout or v2 for "
+            "the split get_env_image/get_agent_image layout."
         ),
     )
     parser.add_argument(
@@ -76,6 +87,7 @@ def main(argv: list[str] | None = None) -> int:
             args.dataset,
             output_dataset_path=output_dataset_path,
             disable_progress=args.disable_progress,
+            image_tool_version=args.image_tool_version,
         )
     except Exception as exc:
         print(f"Failed to post-process trajectories: {exc}", file=sys.stderr)

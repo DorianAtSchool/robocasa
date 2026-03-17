@@ -1,4 +1,4 @@
-"""Post-process saved task-level trajectories by inserting canonical get_image steps."""
+"""Post-process saved task-level trajectories by inserting observation steps."""
 
 from __future__ import annotations
 
@@ -8,19 +8,44 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from data_generation.task_level.tasks.shared.constants import NAVIGATION_TOOL_NAMES
 from data_generation.task_level.generation.raw.progress import (
     _close_progress_handles,
     _create_progress_handles,
 )
 from data_generation.utils import stable_json_sha256, write_json_output
 
+IMAGE_TOOL_VERSION_V1 = "v1"
+IMAGE_TOOL_VERSION_V2 = "v2"
+SUPPORTED_IMAGE_TOOL_VERSIONS = (
+    IMAGE_TOOL_VERSION_V1,
+    IMAGE_TOOL_VERSION_V2,
+)
 GET_IMAGE_TOOL_NAME = "get_image"
+GET_ENV_IMAGE_TOOL_NAME = "get_env_image"
+GET_AGENT_IMAGE_TOOL_NAME = "get_agent_image"
 COMMUNICATE_TOOL_NAME = "communicate"
 BASE_CAMERA_VIEW = "base_camera"
 TOP_VIEW_CAMERA = "top_view"
+ROOM_VIEW_CAMERA = "room_view"
+WRIST_CAMERA = "wrist"
+AGENT_VIEW_CENTER_CAMERA = "agentview_center"
+AGENT_VIEW_LEFT_CAMERA = "agentview_left"
+AGENT_VIEW_RIGHT_CAMERA = "agentview_right"
+INSERTED_OBSERVATION_TOOL_NAMES = frozenset(
+    {
+        GET_IMAGE_TOOL_NAME,
+        GET_ENV_IMAGE_TOOL_NAME,
+        GET_AGENT_IMAGE_TOOL_NAME,
+    }
+)
 POST_PROCESS_ERROR_EXIT_CODE = 1
 INITIAL_GET_IMAGE_REASONING_BY_CAMERA = {
     TOP_VIEW_CAMERA: "I need an initial top-view image before the task begins.",
+}
+INITIAL_ENV_IMAGE_REASONING_BY_VIEW = {
+    TOP_VIEW_CAMERA: "I need an initial top-view image before the task begins.",
+    ROOM_VIEW_CAMERA: "I need an initial room-view image before the task begins.",
 }
 BASE_CAMERA_REASONING_TEMPLATES = {
     "before": (
@@ -30,6 +55,20 @@ BASE_CAMERA_REASONING_TEMPLATES = {
     "after": (
         "I need a base-camera image to observe the current scene after I executed "
         "{tool}."
+    ),
+}
+AGENT_VIEW_REASONING_LABELS = {
+    WRIST_CAMERA: "wrist",
+    AGENT_VIEW_CENTER_CAMERA: "center agent-view",
+    AGENT_VIEW_LEFT_CAMERA: "left agent-view",
+    AGENT_VIEW_RIGHT_CAMERA: "right agent-view",
+}
+AGENT_IMAGE_REASONING_TEMPLATES = {
+    "before": (
+        "I need a {view_label} image from my perspective before I execute " "{tool}."
+    ),
+    "after": (
+        "I need a {view_label} image from my perspective after I executed " "{tool}."
     ),
 }
 POST_PROCESS_VALIDATION_ERROR_TYPE = "PostProcessingValidationRequired"
@@ -50,11 +89,16 @@ def build_step_image_path(
     trajectory_id: str,
     step_index: int,
     agent_id: str,
-    camera_view: str,
+    view_name: str,
+    *,
+    tool_name: str = GET_IMAGE_TOOL_NAME,
 ) -> str:
-    """Builds the deterministic relative image path for one inserted get_image step."""
+    """Builds the deterministic relative image path for one inserted image step."""
 
-    filename = f"{step_index}_{camera_view}_{agent_id}.png"
+    if tool_name == GET_IMAGE_TOOL_NAME:
+        filename = f"{step_index}_{view_name}_{agent_id}.png"
+    else:
+        filename = f"{step_index}_{tool_name}_{view_name}_{agent_id}.png"
     return (Path("images") / trajectory_id / filename).as_posix()
 
 
@@ -75,14 +119,31 @@ def _build_base_camera_reasoning(tool_name: str, *, timing: str) -> str:
     return template.format(tool=tool_name)
 
 
-def _build_get_image_step(
+def _build_agent_image_reasoning(
+    tool_name: str,
+    *,
+    timing: str,
+    view_name: str,
+) -> str:
+    """Builds direction-aware reasoning for inserted agent-view snapshots."""
+
+    template = AGENT_IMAGE_REASONING_TEMPLATES.get(timing)
+    if template is None:
+        raise ValueError(f"Unsupported agent-image timing: {timing}")
+    view_label = AGENT_VIEW_REASONING_LABELS.get(view_name)
+    if view_label is None:
+        raise ValueError(f"Unsupported agent-image view: {view_name}")
+    return template.format(tool=tool_name, view_label=view_label)
+
+
+def _build_v1_get_image_step(
     agent_id: str,
     *,
     camera_view: str,
     wrapped_tool_name: str | None = None,
     timing: str | None = None,
 ) -> dict[str, Any]:
-    """Builds one synthetic get_image step inserted around action tool calls."""
+    """Builds one synthetic `v1` get_image step inserted around action tool calls."""
 
     if camera_view == BASE_CAMERA_VIEW:
         if not wrapped_tool_name:
@@ -102,26 +163,159 @@ def _build_get_image_step(
     }
 
 
-def rebuild_steps_with_get_image(
+def _build_env_image_step(
+    agent_id: str,
+    *,
+    view_name: str,
+) -> dict[str, Any]:
+    """Builds one synthetic `v2` environment image step."""
+
+    return {
+        "step": -1,
+        "agent": agent_id,
+        "tool": GET_ENV_IMAGE_TOOL_NAME,
+        "args": {"view": view_name},
+        "reasoning": INITIAL_ENV_IMAGE_REASONING_BY_VIEW[view_name],
+    }
+
+
+def _build_agent_image_step(
+    agent_id: str,
+    *,
+    view_name: str,
+    wrapped_tool_name: str,
+    timing: str,
+) -> dict[str, Any]:
+    """Builds one synthetic `v2` agent image step around an action tool call."""
+
+    return {
+        "step": -1,
+        "agent": agent_id,
+        "tool": GET_AGENT_IMAGE_TOOL_NAME,
+        "args": {
+            "agent_id": agent_id,
+            "view": view_name,
+        },
+        "reasoning": _build_agent_image_reasoning(
+            wrapped_tool_name,
+            timing=timing,
+            view_name=view_name,
+        ),
+    }
+
+
+def _normalize_image_tool_version(image_tool_version: str) -> str:
+    """Validates and normalizes the requested image-tool version string."""
+
+    if image_tool_version not in SUPPORTED_IMAGE_TOOL_VERSIONS:
+        supported_versions = ", ".join(SUPPORTED_IMAGE_TOOL_VERSIONS)
+        raise ValueError(
+            f"Unsupported image tool version {image_tool_version!r}. "
+            f"Expected one of: {supported_versions}."
+        )
+    return image_tool_version
+
+
+def _build_initial_observation_steps(
+    agent_id: str,
+    *,
+    image_tool_version: str,
+) -> list[dict[str, Any]]:
+    """Builds the initial synthetic observation steps for one trajectory."""
+
+    if image_tool_version == IMAGE_TOOL_VERSION_V1:
+        return [
+            _build_v1_get_image_step(
+                agent_id,
+                camera_view=TOP_VIEW_CAMERA,
+            )
+        ]
+    return [
+        _build_env_image_step(
+            agent_id,
+            view_name=TOP_VIEW_CAMERA,
+        ),
+        _build_env_image_step(
+            agent_id,
+            view_name=ROOM_VIEW_CAMERA,
+        ),
+    ]
+
+
+def _resolve_v2_action_views(tool_name: str) -> tuple[str, ...]:
+    """Chooses the `v2` inserted views for one wrapped action tool."""
+
+    if tool_name in NAVIGATION_TOOL_NAMES:
+        return (
+            AGENT_VIEW_CENTER_CAMERA,
+            AGENT_VIEW_LEFT_CAMERA,
+            AGENT_VIEW_RIGHT_CAMERA,
+        )
+    return (
+        WRIST_CAMERA,
+        AGENT_VIEW_CENTER_CAMERA,
+    )
+
+
+def _build_action_observation_steps(
+    agent_id: str,
+    *,
+    tool_name: str,
+    timing: str,
+    image_tool_version: str,
+) -> list[dict[str, Any]]:
+    """Builds synthetic observation steps around one action for the chosen version."""
+
+    if image_tool_version == IMAGE_TOOL_VERSION_V1:
+        return [
+            _build_v1_get_image_step(
+                agent_id,
+                camera_view=BASE_CAMERA_VIEW,
+                wrapped_tool_name=tool_name,
+                timing=timing,
+            )
+        ]
+
+    return [
+        _build_agent_image_step(
+            agent_id,
+            view_name=view_name,
+            wrapped_tool_name=tool_name,
+            timing=timing,
+        )
+        for view_name in _resolve_v2_action_views(tool_name)
+    ]
+
+
+def _resolve_observation_step_view_name(step: dict[str, Any]) -> str:
+    """Extracts the stable view identifier used for the generated image filename."""
+
+    if step["tool"] == GET_IMAGE_TOOL_NAME:
+        return step["args"]["camera_view"]
+    return step["args"]["view"]
+
+
+def rebuild_steps_with_image_observations(
     steps: list[dict[str, Any]],
     *,
     initial_image_agent_id: str,
     trajectory_id: str,
+    image_tool_version: str = IMAGE_TOOL_VERSION_V1,
 ) -> list[dict[str, Any]]:
-    """Rebuilds one step list so every non-communicate action is bracketed by get_image."""
+    """Rebuilds one step list with deterministic inserted observation steps."""
 
-    # Seed each rewritten trajectory with one shared scene snapshot before any
+    image_tool_version = _normalize_image_tool_version(image_tool_version)
+
+    # Seed each rewritten trajectory with shared scene snapshots before any
     # agent starts acting.
-    rebuilt_steps: list[dict[str, Any]] = [
-        _build_get_image_step(
-            initial_image_agent_id,
-            camera_view=TOP_VIEW_CAMERA,
-        )
-    ]
+    rebuilt_steps = _build_initial_observation_steps(
+        initial_image_agent_id,
+        image_tool_version=image_tool_version,
+    )
     for step in steps:
         tool_name = step.get("tool")
-        if tool_name == GET_IMAGE_TOOL_NAME:
-            # Drop existing get_image steps so reruns stay idempotent.
+        if tool_name in INSERTED_OBSERVATION_TOOL_NAMES:
+            # Drop existing inserted observation steps so reruns stay idempotent.
             continue
 
         copied_step = _copy_step_without_generated_fields(step)
@@ -135,21 +329,21 @@ def rebuild_steps_with_get_image(
                 "Every non-communicate step must contain a non-empty agent."
             )
 
-        rebuilt_steps.append(
-            _build_get_image_step(
+        rebuilt_steps.extend(
+            _build_action_observation_steps(
                 agent_id,
-                camera_view=BASE_CAMERA_VIEW,
-                wrapped_tool_name=tool_name,
+                tool_name=tool_name,
                 timing="before",
+                image_tool_version=image_tool_version,
             )
         )
         rebuilt_steps.append(copied_step)
-        rebuilt_steps.append(
-            _build_get_image_step(
+        rebuilt_steps.extend(
+            _build_action_observation_steps(
                 agent_id,
-                camera_view=BASE_CAMERA_VIEW,
-                wrapped_tool_name=tool_name,
+                tool_name=tool_name,
                 timing="after",
+                image_tool_version=image_tool_version,
             )
         )
 
@@ -157,12 +351,13 @@ def rebuild_steps_with_get_image(
     # deterministic regardless of the input shape.
     for step_index, step in enumerate(rebuilt_steps):
         step["step"] = step_index
-        if step["tool"] == GET_IMAGE_TOOL_NAME:
+        if step["tool"] in INSERTED_OBSERVATION_TOOL_NAMES:
             step["image_path"] = build_step_image_path(
                 trajectory_id,
                 step["step"],
                 step["agent"],
-                step["args"]["camera_view"],
+                _resolve_observation_step_view_name(step),
+                tool_name=step["tool"],
             )
         else:
             step.pop("image_path", None)
@@ -175,7 +370,7 @@ def _resolve_initial_image_agent_id(trajectory: dict[str, Any]) -> str:
     for step in trajectory.get("steps", ()):
         tool_name = step.get("tool")
         agent_id = step.get("agent")
-        if tool_name == GET_IMAGE_TOOL_NAME:
+        if tool_name in INSERTED_OBSERVATION_TOOL_NAMES:
             continue
         if isinstance(agent_id, str) and agent_id:
             return agent_id
@@ -220,8 +415,12 @@ def _replace_validation_with_post_process_status(trajectory: dict[str, Any]) -> 
     }
 
 
-def post_process_trajectory(trajectory: dict[str, Any]) -> dict[str, Any]:
-    """Returns one rewritten trajectory record with inserted get_image steps."""
+def post_process_trajectory(
+    trajectory: dict[str, Any],
+    *,
+    image_tool_version: str = IMAGE_TOOL_VERSION_V1,
+) -> dict[str, Any]:
+    """Returns one rewritten trajectory record with inserted observation steps."""
 
     if not isinstance(trajectory.get("steps"), list):
         raise ValueError("Trajectory records must contain a steps list.")
@@ -230,10 +429,11 @@ def post_process_trajectory(trajectory: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("Trajectory records must contain a non-empty trajectory_id.")
 
     updated_trajectory = dict(trajectory)
-    updated_trajectory["steps"] = rebuild_steps_with_get_image(
+    updated_trajectory["steps"] = rebuild_steps_with_image_observations(
         updated_trajectory["steps"],
         initial_image_agent_id=_resolve_initial_image_agent_id(updated_trajectory),
         trajectory_id=trajectory_id,
+        image_tool_version=image_tool_version,
     )
     _replace_validation_with_post_process_status(updated_trajectory)
     return updated_trajectory
@@ -265,7 +465,7 @@ def resolve_output_dataset_path(dataset_path: Path) -> Path:
 
 
 def _resolve_output_image_dir(output_dataset_path: Path) -> Path:
-    """Resolves the sibling image directory referenced by inserted get_image steps."""
+    """Resolves the sibling image directory referenced by inserted image steps."""
 
     return output_dataset_path.parent / "images"
 
@@ -295,6 +495,7 @@ def _post_process_summary_dataset(
     *,
     output_dataset_path: Path,
     disable_progress: bool,
+    image_tool_version: str,
 ) -> int:
     """Writes a copied summary dataset tree and post-processes its trajectories."""
 
@@ -321,7 +522,10 @@ def _post_process_summary_dataset(
             trajectory_progress = progress_handles.trajectory_progress_bars[index]
             trajectory_progress.set_postfix_str("processing")
             trajectory = _load_json_file(trajectory_path)
-            updated_trajectory = post_process_trajectory(trajectory)
+            updated_trajectory = post_process_trajectory(
+                trajectory,
+                image_tool_version=image_tool_version,
+            )
             write_json_output(updated_trajectory, trajectory_path)
             trajectory_progress.update(1)
             trajectory_progress.set_postfix_str(
@@ -340,6 +544,7 @@ def _post_process_payload_dataset(
     *,
     output_dataset_path: Path,
     disable_progress: bool,
+    image_tool_version: str,
 ) -> int:
     """Writes a copied inline dataset payload with post-processed trajectories."""
 
@@ -356,12 +561,17 @@ def _post_process_payload_dataset(
     try:
         # Keep inline-dataset outputs aligned with the summary-dataset layout so
         # downstream image rendering can use the same sibling image directory.
-        _resolve_output_image_dir(output_dataset_path).mkdir(parents=True, exist_ok=True)
+        _resolve_output_image_dir(output_dataset_path).mkdir(
+            parents=True, exist_ok=True
+        )
         updated_trajectories: list[dict[str, Any]] = []
         for index, trajectory in enumerate(trajectories):
             trajectory_progress = progress_handles.trajectory_progress_bars[index]
             trajectory_progress.set_postfix_str("processing")
-            updated_trajectory = post_process_trajectory(trajectory)
+            updated_trajectory = post_process_trajectory(
+                trajectory,
+                image_tool_version=image_tool_version,
+            )
             updated_trajectories.append(updated_trajectory)
             trajectory_progress.update(1)
             trajectory_progress.set_postfix_str(
@@ -380,9 +590,11 @@ def post_process_dataset(
     *,
     output_dataset_path: Path | None = None,
     disable_progress: bool = False,
+    image_tool_version: str = IMAGE_TOOL_VERSION_V1,
 ) -> int:
     """Post-processes one dataset into a copied output JSON and returns the count."""
 
+    image_tool_version = _normalize_image_tool_version(image_tool_version)
     output_dataset_path = output_dataset_path or resolve_output_dataset_path(
         dataset_path
     )
@@ -393,10 +605,12 @@ def post_process_dataset(
             payload,
             output_dataset_path=output_dataset_path,
             disable_progress=disable_progress,
+            image_tool_version=image_tool_version,
         )
     return _post_process_payload_dataset(
         dataset_path,
         payload,
         output_dataset_path=output_dataset_path,
         disable_progress=disable_progress,
+        image_tool_version=image_tool_version,
     )
