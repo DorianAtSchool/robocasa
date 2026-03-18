@@ -26,7 +26,6 @@ from pathlib import Path
 import imageio
 import numpy as np
 
-import robocasa.utils.camera_utils as CamUtils
 import robocasa.utils.env_utils as EnvUtils
 import robocasa.utils.lerobot_utils as LU
 from robocasa.utils.dataset_registry_utils import get_ds_path
@@ -211,20 +210,51 @@ def _get_demo_dataset_path(task_name: str) -> tuple[Path, str]:
 
 
 def compute_top_cam_config(env, room_cam_config):
-    """Derive an overhead camera config (copied from two_robot_video_sample.py)."""
-    bbox_xy_points = []
-    for fixture in env.fixtures.values():
-        if not hasattr(fixture, "get_bbox_points"):
-            continue
-        try:
-            bbox_points = np.asarray(fixture.get_bbox_points(), dtype=float)
-        except Exception:
-            continue
-        if bbox_points.ndim != 2 or bbox_points.shape[1] < 2:
-            continue
-        bbox_xy_points.append(bbox_points[:, :2])
+    """Derive an overhead camera config focused on the active kitchen room."""
+    focus_centers_xy = []
 
-    if not bbox_xy_points:
+    if hasattr(env, "obj_body_id"):
+        for body_id in env.obj_body_id.values():
+            try:
+                obj_pos = env.sim.data.body_xpos[body_id].copy()
+            except Exception:
+                continue
+            focus_centers_xy.append(np.asarray(obj_pos[:2], dtype=float))
+
+    robot_idx = 0
+    while True:
+        body_name = f"mobilebase{robot_idx}_base"
+        try:
+            body_id = env.sim.model.body_name2id(body_name)
+        except Exception:
+            break
+        focus_centers_xy.append(np.asarray(env.sim.data.body_xpos[body_id][:2], dtype=float))
+        robot_idx += 1
+
+    fixture_xy_points = []
+    for fixture in env.fixtures.values():
+        if not hasattr(fixture, "pos") or fixture.pos is None:
+            continue
+        fixture_xy = np.asarray(fixture.pos[:2], dtype=float)
+        if focus_centers_xy and not any(
+            float(np.linalg.norm(fixture_xy - center_xy)) <= 1.35
+            for center_xy in focus_centers_xy
+        ):
+            continue
+        if hasattr(fixture, "get_bbox_points"):
+            try:
+                bbox_points = np.asarray(fixture.get_bbox_points(), dtype=float)
+            except Exception:
+                bbox_points = None
+            if bbox_points is not None and bbox_points.ndim == 2 and bbox_points.shape[1] >= 2:
+                fixture_xy_points.append(bbox_points[:, :2])
+                continue
+        fixture_xy_points.append(fixture_xy.reshape(1, 2))
+
+    if focus_centers_xy:
+        fixture_xy_points.append(np.asarray(focus_centers_xy, dtype=float))
+
+    if not fixture_xy_points:
         return dict(
             lookat=list(room_cam_config["lookat"]),
             distance=max(room_cam_config["distance"] * 1.8, 8.0),
@@ -232,7 +262,7 @@ def compute_top_cam_config(env, room_cam_config):
             elevation=-89.0,
         )
 
-    xy_points = np.concatenate(bbox_xy_points, axis=0)
+    xy_points = np.concatenate(fixture_xy_points, axis=0)
     min_xy = np.min(xy_points, axis=0)
     max_xy = np.max(xy_points, axis=0)
     center_xy = 0.5 * (min_xy + max_xy)
@@ -240,13 +270,13 @@ def compute_top_cam_config(env, room_cam_config):
 
     fovy_deg = float(getattr(env.sim.model.vis.global_, "fovy", 45.0))
     half_fovy_rad = np.deg2rad(np.clip(fovy_deg, 1.0, 89.0) / 2.0)
-    required_distance = (max_radius / np.tan(half_fovy_rad)) * 1.2
+    required_distance = (max_radius / np.tan(half_fovy_rad)) * 1.12
 
     lookat = np.asarray(room_cam_config["lookat"], dtype=float).copy()
     lookat[:2] = center_xy
     return dict(
         lookat=lookat.tolist(),
-        distance=float(max(8.0, required_distance)),
+        distance=float(max(6.0, required_distance)),
         azimuth=float(room_cam_config["azimuth"]),
         elevation=-89.0,
     )
@@ -295,11 +325,9 @@ class VideoTrajectoryRunner(TrajectoryRunner):
         # Recolour robot1 for visual distinction
         recolor_robot(self.env.sim, robot_idx=1)
 
-        # Camera configs for free cameras
-        self._room_cam_config = CamUtils.LAYOUT_CAMS.get(
-            self.env.layout_id, CamUtils.DEFAULT_LAYOUT_CAM
-        )
-        self._top_cam_config = compute_top_cam_config(self.env, self._room_cam_config)
+        # Keep free-camera framing aligned with TrajectoryRunner so sweep videos
+        # and standalone demo videos use the same room-focused top view.
+        self._top_cam_config = self._compute_top_cam_config(self._room_cam_config)
 
         # Fixed camera mapping (label -> MuJoCo camera name)
         self._fixed_camera_map = {

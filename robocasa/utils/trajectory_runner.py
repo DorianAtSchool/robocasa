@@ -87,13 +87,16 @@ _AGENT_CAMERA_SUFFIXES = [
 ]
 
 # Room-view framing parameters. These are intentionally separate from top-view
-# framing so we can keep the oblique room camera tighter around the active task
-# workspace while preserving enough margin to avoid accidental cropping.
+# distance tuning so we can keep the oblique room camera tighter around the
+# active task workspace while preserving enough margin to avoid accidental
+# cropping.
 ROOM_VIEW_FIXTURE_RADIUS = 1.35
 ROOM_VIEW_XY_MARGIN = 1.10
 ROOM_VIEW_Z_LOOKAT_FRACTION = 0.45
 ROOM_VIEW_BASE_DISTANCE_SCALE = 0.80
 ROOM_VIEW_MIN_DISTANCE = 4.0
+TOP_VIEW_XY_MARGIN = 1.12
+TOP_VIEW_MIN_DISTANCE = 6.0
 
 
 def _classify_fixture(fixture: Fixture) -> str | None:
@@ -479,8 +482,8 @@ class TrajectoryRunner:
             return np.zeros((0, 3), dtype=float)
         return np.concatenate(points, axis=0)
 
-    def _collect_room_view_points(self) -> np.ndarray:
-        """Collect a tighter set of points around the active task workspace."""
+    def _collect_focus_points(self, fixture_radius: float) -> np.ndarray:
+        """Collect points around fixtures near the current task workspace."""
         focus_fixture_ids: set[str] = set()
         focus_centers_xy = []
 
@@ -503,7 +506,7 @@ class TrajectoryRunner:
                 continue
             fixture_xy = np.asarray(fixture.pos[:2], dtype=float)
             if any(
-                float(np.linalg.norm(fixture_xy - center_xy)) <= ROOM_VIEW_FIXTURE_RADIUS
+                float(np.linalg.norm(fixture_xy - center_xy)) <= fixture_radius
                 for center_xy in focus_centers_xy
             ):
                 focus_fixture_ids.add(fixture_id)
@@ -516,6 +519,18 @@ class TrajectoryRunner:
             include_robots=True,
             fixture_ids=focus_fixture_ids,
         )
+
+    def _collect_room_view_points(self) -> np.ndarray:
+        """Collect a tighter set of points around the active task workspace."""
+        return self._collect_focus_points(ROOM_VIEW_FIXTURE_RADIUS)
+
+    def _collect_top_view_points(self) -> np.ndarray:
+        """Collect the same focused kitchen footprint used by room_view.
+
+        A broader fixture radius tends to pull in adjacent rooms / hallways on
+        larger layouts, which makes the overhead camera zoom out too far.
+        """
+        return self._collect_room_view_points()
 
     def _compute_room_cam_config(self, base_cam_config: dict) -> dict:
         """Derive an oblique room camera from the current scene footprint."""
@@ -582,8 +597,10 @@ class TrajectoryRunner:
         )
 
     def _compute_top_cam_config(self, room_cam_config: dict) -> dict:
-        """Derive an overhead camera that keeps the full kitchen footprint in frame."""
-        scene_points = self._collect_scene_points(include_objects=True, include_robots=True)
+        """Derive an overhead camera that keeps the active kitchen room in frame."""
+        scene_points = self._collect_top_view_points()
+        if scene_points.size == 0:
+            scene_points = self._collect_scene_points(include_objects=True, include_robots=True)
         if scene_points.size == 0:
             return dict(
                 lookat=list(room_cam_config["lookat"]),
@@ -600,13 +617,13 @@ class TrajectoryRunner:
 
         fovy_deg = float(getattr(self.env.sim.model.vis.global_, "fovy", 45.0))
         half_fovy_rad = np.deg2rad(np.clip(fovy_deg, 1.0, 89.0) / 2.0)
-        required_distance = (max_radius / np.tan(half_fovy_rad)) * 1.05
+        required_distance = (max_radius / np.tan(half_fovy_rad)) * TOP_VIEW_XY_MARGIN
 
         lookat = np.asarray(room_cam_config["lookat"], dtype=float).copy()
         lookat[:2] = center_xy
         return dict(
             lookat=lookat.tolist(),
-            distance=float(max(6.0, required_distance)),
+            distance=float(max(TOP_VIEW_MIN_DISTANCE, required_distance)),
             azimuth=float(room_cam_config["azimuth"]),
             elevation=-89.0,
         )
@@ -633,7 +650,7 @@ class TrajectoryRunner:
         return self._render_free_camera(self._room_cam_config)
 
     def _render_top_view(self) -> np.ndarray:
-        """Render an overhead free camera that captures the full layout."""
+        """Render an overhead free camera focused on the active kitchen room."""
         return self._render_free_camera(self._top_cam_config)
 
     # ------------------------------------------------------------------
