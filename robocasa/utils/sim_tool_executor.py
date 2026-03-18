@@ -87,10 +87,11 @@ class SimToolExecutor:
         layout: int | None = None,
         style: int | None = None,
         seed: int | None = None,
+        camera_names: list[str] | None = None,
         render_width: int = 512,
         render_height: int = 512,
         gl_backend: str = "osmesa",
-        placement: str = "continuous",
+        placement: str = "grid",
         cell_size: float = 0.10,
         align_to_wall: bool = True,
         standoff: float = 0.40,
@@ -104,6 +105,7 @@ class SimToolExecutor:
             layout=layout,
             style=style,
             seed=seed,
+            camera_names=camera_names,
             render_width=render_width,
             render_height=render_height,
             gl_backend=gl_backend,
@@ -175,6 +177,139 @@ class SimToolExecutor:
             imageio.imwrite(path, image)
             saved[camera_name] = path
         return saved
+
+    def _parse_agent_idx(self, agent_id: str | int) -> int:
+        if isinstance(agent_id, int):
+            return agent_id
+        agent_str = str(agent_id)
+        if agent_str.startswith("agent_"):
+            return int(agent_str.replace("agent_", ""))
+        return int(agent_str)
+
+    def _render_camera(self, camera_name: str) -> np.ndarray:
+        if camera_name == "room_view":
+            return self.runner._render_room_view()
+        if camera_name == "top_view":
+            return self.runner._render_top_view()
+        return self.env.sim.render(
+            height=self.runner.render_height,
+            width=self.runner.render_width,
+            camera_name=camera_name,
+        )[::-1]
+
+    def _save_image(self, image: np.ndarray, image_path: str | Path) -> Path:
+        path = Path(image_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        imageio.imwrite(path, image)
+        return path
+
+    def _camera_name_for_agent_view(self, agent_id: str | int, view: str) -> tuple[int, str]:
+        robot_idx = self._parse_agent_idx(agent_id)
+        view_name = str(view).strip().lower()
+        view_aliases = {
+            "wrist": "eye_in_hand",
+            "eye_in_hand": "eye_in_hand",
+            "agentview_center": "agentview_center",
+            "agentview_left": "agentview_left",
+            "agentview_right": "agentview_right",
+            "robotview": "robotview",
+        }
+        suffix = view_aliases.get(view_name, view_name)
+        if suffix.startswith("robot"):
+            return robot_idx, suffix
+        return robot_idx, f"robot{robot_idx}_{suffix}"
+
+    def _set_fixture_machine_state(self, fixture_id: str, started: bool):
+        fixture = self._require_fixture(fixture_id)
+        started = bool(started)
+        if isinstance(fixture, (CoffeeMachine, Microwave)):
+            fixture._turned_on = started
+        elif isinstance(fixture, ElectricKettle):
+            fixture.set_power_state(self.env, power_on=started)
+        else:
+            return
+        self.env.sim.forward()
+
+    def load_initial_state(self, initial_state: dict[str, Any] | None) -> dict[str, Any]:
+        """Apply a normalized initial state to the live simulator."""
+        if not initial_state:
+            return {"loaded": False}
+
+        fixtures = initial_state.get("fixtures", {})
+        objects = initial_state.get("objects", {})
+        agents = initial_state.get("agents", {})
+        machine_state = initial_state.get("machine_state", {})
+        held_assignments: dict[int, str] = {}
+
+        self._held_objects.clear()
+
+        for fixture_id, fixture_state in fixtures.items():
+            for part_id, part_state in fixture_state.get("parts", {}).items():
+                generic_part_id = part_id
+                part_type = str(part_state.get("part_type", "")).lower()
+                if "hinged" in part_type:
+                    generic_part_id = "hinged"
+                elif "sliding" in part_type:
+                    generic_part_id = "sliding"
+                state = str(part_state.get("state", "")).lower()
+                if state == "open":
+                    if generic_part_id == "sliding":
+                        self.open_sliding_part(fixture_id, generic_part_id)
+                    else:
+                        self.open_hinged_part(fixture_id, generic_part_id)
+                elif state == "closed":
+                    if generic_part_id == "sliding":
+                        self.close_sliding_part(fixture_id, generic_part_id)
+                    else:
+                        self.close_hinged_part(fixture_id, generic_part_id)
+
+        for fixture_id, machine_cfg in machine_state.items():
+            if "started" in machine_cfg:
+                self._set_fixture_machine_state(fixture_id, bool(machine_cfg["started"]))
+
+        held_object_ids = set()
+        for agent_id, agent_state in agents.items():
+            held_object = agent_state.get("held_object")
+            if held_object is None:
+                continue
+            robot_idx = self._parse_agent_idx(agent_id)
+            held_assignments[robot_idx] = held_object
+            held_object_ids.add(held_object)
+
+        for object_id, object_state in objects.items():
+            if object_id in held_object_ids:
+                continue
+            location = object_state.get("location")
+            if isinstance(location, str):
+                self.runner.move_object(object_id, location)
+
+        for agent_id, agent_state in agents.items():
+            location = agent_state.get("location")
+            if not isinstance(location, str):
+                continue
+            robot_idx = self._parse_agent_idx(agent_id)
+            self.navigate_to_fixture(location, robot_idx=robot_idx)
+
+        for robot_idx, object_id in held_assignments.items():
+            self._require_object(object_id)
+            self._held_objects[robot_idx] = object_id
+            self._sync_held_object(robot_idx)
+            agent_key = f"agent_{robot_idx}"
+            agent_state = agents.get(agent_key, {})
+            location = agent_state.get("location")
+            if isinstance(location, str) and location in self.runner._fixtures:
+                self.runner._set_object_location(object_id, location)
+
+        return {
+            "loaded": True,
+            "agents": sorted(agents.keys()),
+            "objects": sorted(objects.keys()),
+            "fixtures": sorted(fixtures.keys()),
+            "held_objects": {
+                f"robot{robot_idx}": object_id
+                for robot_idx, object_id in sorted(self._held_objects.items())
+            },
+        }
 
     def run_tool_plan(
         self,
@@ -1161,6 +1296,47 @@ class SimToolExecutor:
     # Primitive tools
     # ------------------------------------------------------------------
 
+    def get_env_image(
+        self,
+        view: str,
+        image_path: str,
+        robot_idx: int = 0,
+    ) -> ToolResult:
+        camera_name = str(view)
+        image = self._render_camera(camera_name)
+        saved_path = self._save_image(image, image_path)
+        return ToolResult(
+            "get_env_image",
+            True,
+            {
+                "robot_idx": robot_idx,
+                "view": view,
+                "camera_name": camera_name,
+                "image_path": str(saved_path),
+            },
+        )
+
+    def get_agent_image(
+        self,
+        agent_id: str,
+        view: str,
+        image_path: str,
+        robot_idx: int = 0,
+    ) -> ToolResult:
+        resolved_robot_idx, camera_name = self._camera_name_for_agent_view(agent_id, view)
+        image = self._render_camera(camera_name)
+        saved_path = self._save_image(image, image_path)
+        return ToolResult(
+            "get_agent_image",
+            True,
+            {
+                "robot_idx": resolved_robot_idx,
+                "view": view,
+                "camera_name": camera_name,
+                "image_path": str(saved_path),
+            },
+        )
+
     def navigate_to_fixture(self, fixture_id: str, robot_idx: int = 0) -> ToolResult:
         fixture = self._require_fixture(fixture_id)
         front = _is_approach_center(fixture)
@@ -1827,7 +2003,16 @@ def _main():
         default=None,
         help=(
             "Name of a built-in tool plan. Available: cooperative_hotdog_setup, sandwich_station. "
-            "Mutually exclusive with --plan."
+            "Mutually exclusive with --plan and --trajectory."
+        ),
+    )
+    parser.add_argument(
+        "--trajectory",
+        type=str,
+        default=None,
+        help=(
+            "Path to a full external trajectory JSON. Mutually exclusive with "
+            "--plan and --demo-plan."
         ),
     )
     parser.add_argument("--fps", type=int, default=2)
@@ -1835,7 +2020,7 @@ def _main():
     parser.add_argument(
         "--placement",
         choices=["grid", "continuous"],
-        default="continuous",
+        default="grid",
         help="Robot placement strategy: grid (occupancy grid) or continuous (AABB-based).",
     )
     parser.add_argument(
@@ -1870,8 +2055,14 @@ def _main():
     )
     args = parser.parse_args()
 
-    if args.plan is not None and args.demo_plan is not None:
-        parser.error("Use either --plan or --demo-plan, not both.")
+    provided_inputs = [args.plan is not None, args.demo_plan is not None, args.trajectory is not None]
+    if sum(provided_inputs) > 1:
+        parser.error("Use only one of --plan, --demo-plan, or --trajectory.")
+
+    trajectory_payload = None
+    if args.trajectory is not None:
+        with open(args.trajectory, "r") as f:
+            trajectory_payload = json.load(f)
 
     if args.task is None:
         if args.demo_plan is not None:
@@ -1881,6 +2072,8 @@ def _main():
                 parser.error(
                     "Unknown demo plan. Available: cooperative_hotdog_setup, sandwich_station"
                 )
+        elif trajectory_payload is not None and trajectory_payload.get("composite_task") is not None:
+            task_name = trajectory_payload["composite_task"]
         else:
             task_name = "MicrowaveThawing"
     else:
@@ -1908,20 +2101,33 @@ def _main():
         map_path = executor.save_placement_map(args.output_dir, prefix="initial")
         print(f"Placement map: {map_path}")
 
-        if args.plan is None and args.demo_plan is None:
+        if args.plan is None and args.demo_plan is None and args.trajectory is None:
             saved = executor.save_scene_frames(args.output_dir, prefix="initial")
             print(json.dumps({k: str(v) for k, v in saved.items()}, indent=2))
         else:
-            if args.demo_plan is not None:
+            if args.trajectory is not None:
+                from robocasa.utils.trajectory_adapter import execute_trajectory
+
+                metadata = execute_trajectory(
+                    executor=executor,
+                    trajectory=trajectory_payload,
+                    output_dir=args.output_dir,
+                )
+            elif args.demo_plan is not None:
                 tool_calls = executor.build_demo_plan(args.demo_plan)
+                metadata = executor.run_tool_plan(
+                    tool_calls=tool_calls,
+                    output_dir=args.output_dir,
+                    fps=args.fps,
+                )
             else:
                 with open(args.plan, "r") as f:
                     tool_calls = json.load(f)
-            metadata = executor.run_tool_plan(
-                tool_calls=tool_calls,
-                output_dir=args.output_dir,
-                fps=args.fps,
-            )
+                metadata = executor.run_tool_plan(
+                    tool_calls=tool_calls,
+                    output_dir=args.output_dir,
+                    fps=args.fps,
+                )
             print(json.dumps(metadata, indent=2))
     finally:
         executor.close()

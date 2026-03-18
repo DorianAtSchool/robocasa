@@ -83,6 +83,7 @@ _PLACEABLE_FIXTURE_TYPES: set[int] = {
 _AGENT_CAMERA_SUFFIXES = [
     "agentview_center",
     "agentview_left",
+    "agentview_right",
     "eye_in_hand",
 ]
 
