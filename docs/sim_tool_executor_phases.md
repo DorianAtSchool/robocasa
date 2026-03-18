@@ -52,6 +52,8 @@ This grid replaces the current fixture-relative fallback in `_move_robot_near_fi
 
 ## Phase 3: Collision-Aware Object Placement
 
+Implementation summary: see [sim_tool_executor_phase_3.md](/Users/dorian/Documents/robocasa/docs/sim_tool_executor_phase_3.md).
+
 **Goal:** Place objects on surfaces without colliding with other objects or appliances.
 
 Given a target surface region (from Phase 1 spatial resolution or direct fixture placement):
@@ -70,6 +72,8 @@ Note: `place_under` for non-dispenser fixtures (the generic surface-projection p
 - `robocasa/utils/sim_tool_executor.py` — pass collision context to placement
 
 ## Phase 4: Receptacle Carry Semantics
+
+Status: implemented in the current executor / runner stack and tightened during the Phase 3 pass.
 
 **Goal:** When a receptacle (bowl, basket) is moved, its contents move with it.
 

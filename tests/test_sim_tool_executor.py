@@ -1,8 +1,9 @@
 import json
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import robosuite.utils.transform_utils as T
@@ -11,6 +12,7 @@ from robocasa.scripts.generate_llm_task_descriptions import (
     build_compact_task_context,
     render_llm_prompt,
 )
+import robocasa.utils.object_utils as OU
 from robocasa.utils.placement import (  # noqa: E402
     MAX_FRONT_WORKING_LATERAL_OFFSET,
     get_face_center,
@@ -21,6 +23,21 @@ from robocasa.utils.placement import (  # noqa: E402
 from robocasa.utils.sim_tool_executor import SimToolExecutor  # noqa: E402
 from robocasa.utils.sim_tool_executor import _is_approach_center  # noqa: E402
 from robocasa.utils.sim_tool_specs import SIM_TOOL_SPEC_BY_NAME  # noqa: E402
+
+
+def _objects_intersect(executor: SimToolExecutor, object_a: str, object_b: str) -> bool:
+    obj_a = executor._require_object(object_a)
+    obj_b = executor._require_object(object_b)
+    pos_a, quat_a_wxyz = executor._get_object_pose(object_a)
+    pos_b, quat_b_wxyz = executor._get_object_pose(object_b)
+    return OU.objs_intersect(
+        obj_a,
+        pos_a,
+        T.convert_quat(quat_a_wxyz, to="xyzw"),
+        obj_b,
+        pos_b,
+        T.convert_quat(quat_b_wxyz, to="xyzw"),
+    )
 
 
 class TestSimToolExecutor(unittest.TestCase):
@@ -604,7 +621,212 @@ class TestEnclosingFixtureFrontAlignment(unittest.TestCase):
             executor.close()
 
 
+class TestCollisionAwareObjectPlacement(unittest.TestCase):
+    def _make_executor(self):
+        return SimToolExecutor(
+            task_name="HotDogSetup",
+            robots=2,
+            layout=11,
+            style=34,
+            seed=42,
+            render_width=160,
+            render_height=128,
+        )
+
+    def test_place_on_surface_avoids_existing_object_on_support(self):
+        executor = self._make_executor()
+        try:
+            scene = executor.get_scene_description()
+            support_id = scene["objects"]["plate"]["location"]
+            executor.runner.move_object("plate", support_id)
+
+            bun_source = scene["objects"]["hotdog_bun"]["location"]
+            executor.pick_up_object("hotdog_bun", bun_source, robot_idx=0)
+            result = executor.place_on_surface("hotdog_bun", support_id, robot_idx=0)
+
+            self.assertTrue(result.success)
+            self.assertEqual(executor._get_scene_object_location("hotdog_bun"), support_id)
+            self.assertFalse(
+                _objects_intersect(executor, "hotdog_bun", "plate"),
+                "Collision-aware surface placement should avoid the existing plate",
+            )
+        finally:
+            executor.close()
+
+    def test_place_under_generic_avoids_blocker(self):
+        executor = self._make_executor()
+        try:
+            scene = executor.get_scene_description()
+            reference_fixture_id = None
+            for fixture_id, info in scene["fixtures"].items():
+                fixture_type = info.get("fixture_type", "")
+                if not info.get("can_place_objects", False) and fixture_type not in (
+                    "coffee_machine",
+                    "sink",
+                    "",
+                ):
+                    reference_fixture_id = fixture_id
+                    break
+
+            if reference_fixture_id is None:
+                self.skipTest("No generic reference fixture for place_under test")
+
+            support_fixture_id = executor._find_placeable_surface_near_fixture(reference_fixture_id)
+            reference_xy = np.asarray(
+                scene["fixtures"][reference_fixture_id]["position"][:2],
+                dtype=float,
+            )
+            blocker_target = executor.runner._compute_object_target_pos(
+                executor.runner._fixtures[support_fixture_id],
+                object_id="plate",
+                preferred_xy=reference_xy,
+            )
+            plate_quat = executor._get_object_pose("plate")[1]
+            executor._set_object_pose("plate", blocker_target, plate_quat)
+            executor.runner._set_object_location("plate", support_fixture_id)
+
+            bun_source = scene["objects"]["hotdog_bun"]["location"]
+            executor.pick_up_object("hotdog_bun", bun_source, robot_idx=0)
+            result = executor.place_under("hotdog_bun", reference_fixture_id, robot_idx=0)
+
+            self.assertTrue(result.success)
+            self.assertEqual(executor._get_scene_object_location("hotdog_bun"), support_fixture_id)
+            self.assertFalse(
+                _objects_intersect(executor, "hotdog_bun", "plate"),
+                "Generic place_under should slide to a nearby free pose when center is blocked",
+            )
+
+            bun_xy = executor._get_object_pose("hotdog_bun")[0][:2]
+            self.assertLess(
+                float(np.linalg.norm(bun_xy - reference_xy)),
+                0.35,
+                "place_under should stay near the reference fixture even after collision avoidance",
+            )
+        finally:
+            executor.close()
+
+
+class TestReceptacleCarrySemantics(unittest.TestCase):
+    def _make_executor(self):
+        return SimToolExecutor(
+            task_name="HotDogSetup",
+            robots=2,
+            layout=11,
+            style=34,
+            seed=42,
+            render_width=160,
+            render_height=128,
+        )
+
+    def _stage_sausage_on_plate(self, executor: SimToolExecutor):
+        scene = executor.get_scene_description()
+        sausage_source = scene["objects"]["sausage"]["location"]
+        executor.pick_up_object("sausage", sausage_source, robot_idx=1)
+        result = executor.place_on_object("sausage", "plate", robot_idx=1)
+        self.assertTrue(result.success)
+
+    def test_pick_up_plate_carries_contents(self):
+        executor = self._make_executor()
+        try:
+            self._stage_sausage_on_plate(executor)
+            plate_before = executor._get_object_pose("plate")[0].copy()
+            sausage_before = executor._get_object_pose("sausage")[0].copy()
+
+            plate_source = executor._get_scene_object_location("plate")
+            result = executor.pick_up_object("plate", plate_source, robot_idx=0)
+
+            self.assertTrue(result.success)
+            plate_after = executor._get_object_pose("plate")[0].copy()
+            sausage_after = executor._get_object_pose("sausage")[0].copy()
+            self.assertTrue(
+                np.allclose(
+                    sausage_after - sausage_before,
+                    plate_after - plate_before,
+                    atol=2e-2,
+                ),
+                "Picking up a receptacle should move its contents with it",
+            )
+        finally:
+            executor.close()
+
+    def test_runner_move_object_carries_contents(self):
+        executor = self._make_executor()
+        try:
+            self._stage_sausage_on_plate(executor)
+            scene = executor.get_scene_description()
+            plate_source = executor._get_scene_object_location("plate")
+            target_fixture_id = None
+            for fixture_id, info in scene["fixtures"].items():
+                if fixture_id == plate_source or not info.get("can_place_objects", False):
+                    continue
+                if "counter" in info.get("fixture_type", "") or "island" in info.get("fixture_type", ""):
+                    target_fixture_id = fixture_id
+                    break
+
+            self.assertIsNotNone(target_fixture_id)
+
+            plate_before = executor._get_object_pose("plate")[0].copy()
+            sausage_before = executor._get_object_pose("sausage")[0].copy()
+            executor.runner.move_object("plate", target_fixture_id)
+            plate_after = executor._get_object_pose("plate")[0].copy()
+            sausage_after = executor._get_object_pose("sausage")[0].copy()
+
+            self.assertTrue(
+                np.allclose(
+                    sausage_after - sausage_before,
+                    plate_after - plate_before,
+                    atol=2e-2,
+                ),
+                "Runner-level receptacle moves should carry contained contents",
+            )
+            self.assertEqual(executor._get_scene_object_location("plate"), target_fixture_id)
+            self.assertEqual(executor._get_scene_object_location("sausage"), target_fixture_id)
+        finally:
+            executor.close()
+
+
 class TestFrontRetryUnit(unittest.TestCase):
+    def test_safe_compute_object_target_pos_falls_back_to_legacy_sampling(self):
+        executor = SimToolExecutor.__new__(SimToolExecutor)
+        executor.runner = MagicMock()
+        executor.runner._fixtures = {"island": object()}
+        executor.runner._compute_object_target_pos = MagicMock(
+            side_effect=[AssertionError(), np.array([1.0, 2.0, 3.0])]
+        )
+
+        target = executor._safe_compute_object_target_pos(
+            "island",
+            "condiment",
+            preferred_xy=np.array([9.0, 8.0]),
+        )
+
+        self.assertTrue(np.allclose(target, np.array([9.0, 8.0, 3.0])))
+        self.assertEqual(executor.runner._compute_object_target_pos.call_count, 2)
+
+    @patch("robocasa.utils.sim_tool_executor.get_front_alignment_metrics")
+    @patch("robocasa.utils.sim_tool_executor._is_approach_center")
+    def test_robot_near_fixture_requires_bounded_front_gap(
+        self,
+        mock_is_approach_center,
+        mock_get_front_alignment_metrics,
+    ):
+        executor = SimToolExecutor.__new__(SimToolExecutor)
+        fixture = SimpleNamespace(pos=np.array([0.0, 0.0, 0.0]))
+        executor.runner = MagicMock()
+        executor.runner._fixtures = {"fridge": fixture}
+        executor.runner._get_robot_position.return_value = np.array([0.0, 0.0, 0.0])
+        executor.runner._get_fixture_front_target_xy.return_value = np.array([0.0, 0.0])
+
+        mock_is_approach_center.return_value = True
+        mock_get_front_alignment_metrics.return_value = {
+            "on_front_face": True,
+            "within_span": True,
+            "lateral_offset": 0.0,
+            "front_gap": 1.2,
+        }
+
+        self.assertFalse(executor._robot_near_fixture(0, "fridge"))
+
     def test_front_retry_retries_after_clearing_blockers(self):
         executor = SimToolExecutor.__new__(SimToolExecutor)
         executor.runner = MagicMock()

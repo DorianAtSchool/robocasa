@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
+import robosuite.utils.transform_utils as T
 from robosuite.controllers import load_composite_controller_config
 from robosuite.environments.base import make
 
@@ -46,6 +47,9 @@ from robocasa.utils.placement import ContinuousPlacement
 # Minimum 2-D distance between robots; used as a safety check.
 # Two robots side-by-side need ~0.40 m (0.18 radius × 2 + margin).
 MIN_ROBOT_SEPARATION = 0.40
+_OBJECT_PLACEMENT_MARGIN = 0.01
+_OBJECT_PLACEMENT_STEP = 0.08
+_OBJECT_PLACEMENT_MAX_AXIS_SAMPLES = 7
 
 
 # ---------------------------------------------------------------------------
@@ -1341,6 +1345,15 @@ class TrajectoryRunner:
                 best_name = name
         return best_name
 
+    def _set_object_location(self, object_id: str, fixture_id: str):
+        """Update cached fixture grounding for an object."""
+        self._object_locations[object_id] = fixture_id
+        if self._scene is None:
+            return
+        object_info = self._scene.get("objects", {}).get(object_id)
+        if isinstance(object_info, dict):
+            object_info["location"] = fixture_id
+
     # ------------------------------------------------------------------
     # Rendering
     # ------------------------------------------------------------------
@@ -1370,43 +1383,343 @@ class TrajectoryRunner:
     # Primitives
     # ------------------------------------------------------------------
 
-    def _compute_object_target_pos(
-        self, target_fxtr: Fixture, rng_offset: np.ndarray | None = None,
+    def _fixture_local_to_world(
+        self,
+        target_fxtr: Fixture,
+        local_offset: np.ndarray,
     ) -> np.ndarray:
-        """Compute a world position on *target_fxtr*'s surface.
-
-        Args:
-            target_fxtr: the fixture to place the object on.
-            rng_offset: optional small (x, y) jitter added *before* the
-                fixture-local → world rotation so that retries explore
-                different spots on the same surface.
-        """
-        try:
-            region = target_fxtr.sample_reset_region(env=self.env)
-        except Exception:
-            region = {"offset": (0.0, 0.0, 0.0), "size": (0.1, 0.1)}
-
-        fxtr_pos = target_fxtr.pos
-        offset = np.array(region["offset"], dtype=float)
-
-        if rng_offset is not None:
-            offset[0] += rng_offset[0]
-            offset[1] += rng_offset[1]
-
+        """Convert a fixture-local offset into a world position."""
+        offset = np.asarray(local_offset, dtype=float)
         if hasattr(target_fxtr, "rot") and target_fxtr.rot is not None:
-            angle = target_fxtr.rot
+            angle = float(target_fxtr.rot)
             cos_a, sin_a = np.cos(angle), np.sin(angle)
-            rot_offset = np.array([
-                cos_a * offset[0] - sin_a * offset[1],
-                sin_a * offset[0] + cos_a * offset[1],
-                offset[2],
-            ])
+            rot_offset = np.array(
+                [
+                    cos_a * offset[0] - sin_a * offset[1],
+                    sin_a * offset[0] + cos_a * offset[1],
+                    offset[2],
+                ],
+                dtype=float,
+            )
         else:
             rot_offset = offset
+        return np.asarray(target_fxtr.pos, dtype=float) + rot_offset
 
-        target_pos = fxtr_pos + rot_offset
-        target_pos[2] += 0.02
-        return target_pos
+    def _world_to_fixture_local(
+        self,
+        target_fxtr: Fixture,
+        world_xy: np.ndarray,
+    ) -> np.ndarray:
+        """Project a world XY position into a fixture's local frame."""
+        world_xy = np.asarray(world_xy, dtype=float)
+        offset = world_xy - np.asarray(target_fxtr.pos[:2], dtype=float)
+        if not hasattr(target_fxtr, "rot") or target_fxtr.rot is None:
+            return offset
+        angle = float(target_fxtr.rot)
+        cos_a, sin_a = np.cos(angle), np.sin(angle)
+        return np.array(
+            [
+                cos_a * offset[0] + sin_a * offset[1],
+                -sin_a * offset[0] + cos_a * offset[1],
+            ],
+            dtype=float,
+        )
+
+    def _sample_axis_values(self, center: float, half_span: float) -> np.ndarray:
+        """Sample positions along one fixture-local axis."""
+        if half_span <= 1e-6:
+            return np.array([center], dtype=float)
+
+        axis_min = center - half_span
+        axis_max = center + half_span
+        span = axis_max - axis_min
+        approx_count = int(np.floor(span / _OBJECT_PLACEMENT_STEP)) + 1
+        count = min(_OBJECT_PLACEMENT_MAX_AXIS_SAMPLES, max(2, approx_count))
+        return np.linspace(axis_min, axis_max, num=count, dtype=float)
+
+    def _get_object_placement_metadata(self, object_id: str) -> dict[str, np.ndarray | float]:
+        """Return bbox-derived placement metadata for an object."""
+        obj = self.env.objects[object_id]
+        qpos = self.env.sim.data.get_joint_qpos(obj.joints[0]).copy()
+        quat_wxyz = qpos[3:7]
+        quat_xyzw = T.convert_quat(quat_wxyz, to="xyzw")
+        bbox_points = np.asarray(
+            obj.get_bbox_points(trans=np.zeros(3, dtype=float), rot=quat_xyzw),
+            dtype=float,
+        )
+        span = np.max(bbox_points, axis=0) - np.min(bbox_points, axis=0)
+        try:
+            xy_radius = float(obj.horizontal_radius)
+        except Exception:
+            xy_radius = 0.5 * float(max(span[0], span[1]))
+        return {
+            "quat_wxyz": quat_wxyz,
+            "quat_xyzw": quat_xyzw,
+            "size": span,
+            "xy_radius": max(xy_radius, 0.5 * float(max(span[0], span[1]))),
+        }
+
+    def _get_fixture_reset_regions(
+        self,
+        target_fxtr: Fixture,
+        min_size: np.ndarray | None = None,
+    ) -> list[dict]:
+        """Return placement regions for a fixture, filtered by minimum size."""
+        regions: list[dict] = []
+        try:
+            all_regions = target_fxtr.get_reset_regions(env=self.env)
+        except Exception:
+            all_regions = None
+
+        if isinstance(all_regions, dict):
+            for region_name, region in all_regions.items():
+                region_size = np.asarray(region.get("size", (0.1, 0.1)), dtype=float)
+                region_height = region.get("height")
+                if min_size is not None:
+                    if min_size[0] > max(region_size) and min_size[1] > max(region_size):
+                        continue
+                    if (
+                        region_height is not None
+                        and len(min_size) == 3
+                        and min_size[2] > float(region_height)
+                    ):
+                        continue
+                region_dict = dict(region)
+                region_dict["name"] = region_name
+                regions.append(region_dict)
+
+        if regions:
+            return regions
+
+        try:
+            fallback = target_fxtr.sample_reset_region(env=self.env, min_size=min_size)
+        except Exception:
+            fallback = {"offset": (0.0, 0.0, 0.0), "size": (0.1, 0.1)}
+        fallback_region = dict(fallback)
+        fallback_region.setdefault("name", "fallback")
+        return [fallback_region]
+
+    def _iter_object_target_candidates(
+        self,
+        target_fxtr: Fixture,
+        object_id: str,
+        preferred_xy: np.ndarray | None = None,
+        rng_offset: np.ndarray | None = None,
+    ) -> list[np.ndarray]:
+        """Generate candidate world positions for placing an object on a fixture."""
+        metadata = self._get_object_placement_metadata(object_id)
+        object_size = np.asarray(metadata["size"], dtype=float)
+        min_size = object_size + 2.0 * _OBJECT_PLACEMENT_MARGIN
+        xy_radius = float(metadata["xy_radius"])
+        preferred_local = None
+        if preferred_xy is not None:
+            preferred_local = self._world_to_fixture_local(target_fxtr, preferred_xy)
+
+        candidates: list[np.ndarray] = []
+        seen: set[tuple[float, float, float]] = set()
+
+        for region in self._get_fixture_reset_regions(target_fxtr, min_size=min_size):
+            offset = np.asarray(region.get("offset", (0.0, 0.0, 0.0)), dtype=float)
+            size = np.asarray(region.get("size", (0.1, 0.1)), dtype=float)
+            usable_half = 0.5 * size - (xy_radius + _OBJECT_PLACEMENT_MARGIN)
+            if np.any(usable_half < -1e-6):
+                continue
+            usable_half = np.maximum(usable_half, 0.0)
+
+            local_candidates = [offset.copy()]
+
+            if rng_offset is not None:
+                jittered = offset.copy()
+                jittered[:2] += np.asarray(rng_offset[:2], dtype=float)
+                if np.all(np.abs(jittered[:2] - offset[:2]) <= usable_half + 1e-6):
+                    local_candidates.append(jittered)
+
+            if preferred_local is not None:
+                projected = offset.copy()
+                projected[0] = float(np.clip(
+                    preferred_local[0],
+                    offset[0] - usable_half[0],
+                    offset[0] + usable_half[0],
+                ))
+                projected[1] = float(np.clip(
+                    preferred_local[1],
+                    offset[1] - usable_half[1],
+                    offset[1] + usable_half[1],
+                ))
+                local_candidates.append(projected)
+
+            x_values = self._sample_axis_values(float(offset[0]), float(usable_half[0]))
+            y_values = self._sample_axis_values(float(offset[1]), float(usable_half[1]))
+            for x in x_values:
+                for y in y_values:
+                    local = offset.copy()
+                    local[0] = float(x)
+                    local[1] = float(y)
+                    local_candidates.append(local)
+
+            for local in local_candidates:
+                key = tuple(np.round(local, 4))
+                if key in seen:
+                    continue
+                seen.add(key)
+                world = self._fixture_local_to_world(target_fxtr, local)
+                world[2] += 0.02
+                candidates.append(world)
+
+        if candidates:
+            return candidates
+
+        fallback = self._fixture_local_to_world(
+            target_fxtr,
+            np.array([0.0, 0.0, 0.0], dtype=float),
+        )
+        fallback[2] += 0.02
+        return [fallback]
+
+    def _build_object_collision_context(
+        self,
+        object_id: str,
+        target_fixture_id: str,
+        ignored_object_ids: set[str] | None = None,
+    ) -> dict:
+        """Pre-compute static scene geometry used during one placement search."""
+        metadata = self._get_object_placement_metadata(object_id)
+        obj = self.env.objects[object_id]
+        ignored = set() if ignored_object_ids is None else set(ignored_object_ids)
+
+        object_obstacles = []
+        for other_id, other_obj in self.env.objects.items():
+            if other_id == object_id or other_id in ignored:
+                continue
+            other_qpos = self.env.sim.data.get_joint_qpos(other_obj.joints[0]).copy()
+            other_pos = other_qpos[:3]
+            try:
+                other_radius = float(other_obj.horizontal_radius)
+            except Exception:
+                other_radius = 0.0
+            object_obstacles.append(
+                (
+                    other_obj,
+                    other_pos,
+                    T.convert_quat(other_qpos[3:7], to="xyzw"),
+                    other_radius,
+                )
+            )
+
+        fixture_obstacles = []
+        for fixture_id, fixture in self._fixtures.items():
+            if fixture_id == target_fixture_id:
+                continue
+            fixture_pos = np.asarray(fixture.pos, dtype=float)
+            try:
+                fixture_radius = float(fixture.horizontal_radius)
+            except Exception:
+                fixture_radius = 0.0
+            fixture_obstacles.append((fixture, fixture_pos, fixture_radius))
+
+        return {
+            "object": obj,
+            "obj_quat": metadata["quat_xyzw"],
+            "obj_radius": float(metadata["xy_radius"]),
+            "object_obstacles": object_obstacles,
+            "fixture_obstacles": fixture_obstacles,
+        }
+
+    def _candidate_overlaps_scene(
+        self,
+        candidate_pos: np.ndarray,
+        collision_context: dict,
+    ) -> bool:
+        """Return True if the candidate intersects precomputed scene geometry."""
+        obj = collision_context["object"]
+        obj_quat = collision_context["obj_quat"]
+        obj_radius = float(collision_context["obj_radius"])
+
+        for other_obj, other_pos, other_quat, other_radius in collision_context["object_obstacles"]:
+            if np.linalg.norm(other_pos[:2] - candidate_pos[:2]) > obj_radius + other_radius + 0.30:
+                continue
+            try:
+                if OU.objs_intersect(
+                    obj,
+                    candidate_pos,
+                    obj_quat,
+                    other_obj,
+                    other_pos,
+                    other_quat,
+                ):
+                    return True
+            except Exception:
+                continue
+
+        for fixture, fixture_pos, fixture_radius in collision_context["fixture_obstacles"]:
+            if np.linalg.norm(fixture_pos[:2] - candidate_pos[:2]) > obj_radius + fixture_radius + 0.30:
+                continue
+            try:
+                if OU.objs_intersect(
+                    obj,
+                    candidate_pos,
+                    obj_quat,
+                    fixture,
+                    fixture_pos,
+                    None,
+                ):
+                    return True
+            except Exception:
+                continue
+
+        return False
+
+    def _compute_object_target_pos(
+        self,
+        target_fxtr: Fixture,
+        rng_offset: np.ndarray | None = None,
+        object_id: str | None = None,
+        preferred_xy: np.ndarray | None = None,
+        ignored_object_ids: set[str] | None = None,
+    ) -> np.ndarray:
+        """Compute a collision-aware world position on *target_fxtr*'s surface."""
+        if object_id is None:
+            try:
+                region = target_fxtr.sample_reset_region(env=self.env)
+            except Exception:
+                region = {"offset": (0.0, 0.0, 0.0), "size": (0.1, 0.1)}
+
+            offset = np.array(region["offset"], dtype=float)
+            if rng_offset is not None:
+                offset[0] += rng_offset[0]
+                offset[1] += rng_offset[1]
+
+            target_pos = self._fixture_local_to_world(target_fxtr, offset)
+            target_pos[2] += 0.02
+            return target_pos
+
+        preferred = None if preferred_xy is None else np.asarray(preferred_xy, dtype=float)[:2]
+        candidates = self._iter_object_target_candidates(
+            target_fxtr,
+            object_id,
+            preferred_xy=preferred,
+            rng_offset=rng_offset,
+        )
+        collision_context = self._build_object_collision_context(
+            object_id,
+            target_fxtr.name,
+            ignored_object_ids=ignored_object_ids,
+        )
+
+        target_xy = preferred if preferred is not None else np.asarray(target_fxtr.pos[:2], dtype=float)
+        valid: list[tuple[float, np.ndarray]] = []
+        for candidate in candidates:
+            if not self._validate_object_on_fixture(candidate, target_fxtr.name):
+                continue
+            if self._candidate_overlaps_scene(candidate, collision_context):
+                continue
+            score = float(np.linalg.norm(candidate[:2] - target_xy))
+            valid.append((score, candidate.copy()))
+
+        if valid:
+            return min(valid, key=lambda item: item[0])[1]
+
+        return candidates[0].copy()
 
     def _validate_object_on_fixture(
         self, obj_pos: np.ndarray, fixture_id: str,
@@ -1420,9 +1733,6 @@ class TrajectoryRunner:
         except Exception:
             # Fallback: accept if within 0.3 m of the fixture centre
             return float(np.linalg.norm(obj_pos[:2] - fxtr.pos[:2])) < 0.3
-
-    # Maximum number of placement retries before accepting best-effort.
-    _PLACE_MAX_RETRIES = 8
 
     def _find_contained_objects(self, container_id: str) -> list[str]:
         """Find objects physically inside/on top of *container_id*."""
@@ -1446,16 +1756,21 @@ class TrajectoryRunner:
                 contained.append(other_id)
         return contained
 
-    def move_object(self, object_id: str, to_fixture: str):
+    def move_object(
+        self,
+        object_id: str,
+        to_fixture: str,
+        target_pos: np.ndarray | None = None,
+        preferred_xy: np.ndarray | None = None,
+    ):
         """Teleport an object to a fixture's surface.
 
         If the object contains other objects (e.g. a bowl with slices),
         those are moved along with it.
 
-        After placement the position is validated: if the object did not
-        land inside the target fixture's bounding box the placement is
-        retried with small random offsets (up to ``_PLACE_MAX_RETRIES``
-        times).  The best attempt (closest to the fixture centre) is kept.
+        Placement is collision-aware: candidates are sampled from fixture
+        reset regions, filtered against existing objects / nearby fixtures,
+        and ranked by distance to ``preferred_xy`` when provided.
         """
         if object_id not in self.env.objects:
             raise ValueError(
@@ -1476,37 +1791,22 @@ class TrajectoryRunner:
 
         # Snapshot contained objects before moving
         contained = self._find_contained_objects(object_id)
-
-        best_pos = None
-        best_dist = float("inf")
-
-        for attempt in range(self._PLACE_MAX_RETRIES):
-            if attempt == 0:
-                jitter = None
-            else:
-                # Small random jitter in fixture-local coords (±10 cm)
-                jitter = np.random.uniform(-0.10, 0.10, size=2)
-
-            target_pos = self._compute_object_target_pos(target_fxtr, jitter)
-
-            # Track closest-to-centre as fallback
-            dist = float(np.linalg.norm(target_pos[:2] - target_fxtr.pos[:2]))
-            if dist < best_dist:
-                best_dist = dist
-                best_pos = target_pos.copy()
-
-            if self._validate_object_on_fixture(target_pos, to_fixture):
-                best_pos = target_pos.copy()
-                break
+        if target_pos is None:
+            target_pos = self._compute_object_target_pos(
+                target_fxtr,
+                object_id=object_id,
+                preferred_xy=preferred_xy,
+                ignored_object_ids=set(contained),
+            )
 
         self.env.sim.data.set_joint_qpos(
             obj.joints[0],
-            np.concatenate([best_pos, current_quat]),
+            np.concatenate([target_pos, current_quat]),
         )
 
         # Move contained objects by the same delta
         if contained:
-            delta = best_pos - old_pos
+            delta = target_pos - old_pos
             for child_id in contained:
                 child_obj = self.env.objects[child_id]
                 child_qpos = self.env.sim.data.get_joint_qpos(child_obj.joints[0])
@@ -1515,7 +1815,9 @@ class TrajectoryRunner:
 
         self.env.sim.forward()
 
-        self._object_locations[object_id] = to_fixture
+        self._set_object_location(object_id, to_fixture)
+        for child_id in contained:
+            self._set_object_location(child_id, to_fixture)
 
     def interact(self, fixture_id: str, action: str):
         """Change a fixture's state: open, close, turn_on, turn_off."""
@@ -1592,6 +1894,7 @@ class TrajectoryRunner:
             agent_id = step.get("agent_id", "agent_0")
             action = step.get("action") or step.get("tool_name", "")
             args = step.get("args") or step.get("tool_args", {})
+            move_target_pos = None
 
             # Parse robot index from agent_id
             robot_idx = int(agent_id.replace("agent_", ""))
@@ -1603,10 +1906,11 @@ class TrajectoryRunner:
             if target_fixture is not None:
                 ref_override = None
                 if action == "move_object" and target_fixture in self._fixtures:
-                    target_pos = self._compute_object_target_pos(
+                    move_target_pos = self._compute_object_target_pos(
                         self._fixtures[target_fixture],
+                        object_id=args["object"],
                     )
-                    ref_override = target_pos[:2]
+                    ref_override = move_target_pos[:2]
                 self._move_robot_near_fixture(
                     robot_idx, target_fixture, ref_pos_override=ref_override,
                 )
@@ -1619,6 +1923,7 @@ class TrajectoryRunner:
                 self.move_object(
                     object_id=args["object"],
                     to_fixture=args["to"],
+                    target_pos=move_target_pos,
                 )
             elif action == "interact":
                 fixture_id = args.get("fixture") or args.get("fixture_id")

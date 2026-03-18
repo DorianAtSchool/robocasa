@@ -54,6 +54,10 @@ _APPROACH_CENTER_TYPES = {
     FixtureType.ELECTRIC_KETTLE, FixtureType.TOP_DRAWER, FixtureType.DRAWER,
 }
 
+_FRONT_READY_MIN_GAP = 0.05
+_FRONT_READY_MAX_GAP = 0.75
+_FRONT_READY_MAX_CENTER_DISTANCE = 1.0
+
 
 def _is_approach_center(fixture) -> bool:
     """Return True if the robot should approach the fixture center, not an object inside it."""
@@ -284,13 +288,22 @@ class SimToolExecutor:
         quat: np.ndarray | list[float] | None = None,
     ):
         obj = self._require_object(object_id)
-        _, current_quat = self._get_object_pose(object_id)
+        old_pos, current_quat = self._get_object_pose(object_id)
+        contained = self._find_contained_objects(object_id)
         quat_arr = current_quat if quat is None else np.asarray(quat, dtype=float)
+        target_pos = np.asarray(pos, dtype=float)
         self.env.sim.data.set_joint_qpos(
             obj.joints[0],
-            np.concatenate([np.asarray(pos, dtype=float), quat_arr]),
+            np.concatenate([target_pos, quat_arr]),
         )
         self.env.sim.forward()
+
+        if contained:
+            delta = target_pos - old_pos
+            if np.linalg.norm(delta) > 1e-9:
+                for child_id in contained:
+                    child_pos, child_quat = self._get_object_pose(child_id)
+                    self._set_object_pose(child_id, child_pos + delta, child_quat)
 
     def _get_robot_eef_pos(self, robot_idx: int) -> np.ndarray:
         site_id = self.env.robots[robot_idx].eef_site_id["right"]
@@ -320,21 +333,10 @@ class SimToolExecutor:
         if object_id is None:
             return
 
-        # Snapshot current container position before moving it
-        old_pos, _ = self._get_object_pose(object_id)
-        contained = self._find_contained_objects(object_id)
-
         eef_pos = self._get_robot_eef_pos(robot_idx)
         held_pos = eef_pos.copy()
         held_pos[2] += self._HELD_Z_OFFSET
         self._set_object_pose(object_id, held_pos)
-
-        # Move contained objects by the same delta
-        if contained:
-            delta = held_pos - old_pos
-            for child_id in contained:
-                child_pos, _ = self._get_object_pose(child_id)
-                self._set_object_pose(child_id, child_pos + delta)
 
     def _held_by_robot(self, object_id: str) -> int | None:
         for robot_idx, held_object in self._held_objects.items():
@@ -393,11 +395,23 @@ class SimToolExecutor:
         raise ValueError(f"Unknown part/control {token!r} for fixture {fixture.name!r}")
 
     def _get_scene_object_location(self, object_id: str) -> str | None:
+        cached_location = self.runner._object_locations.get(object_id)
+        if isinstance(cached_location, str) and cached_location in self.runner._fixtures:
+            return cached_location
+
         scene = self.get_scene_description()
         object_info = scene.get("objects", {}).get(object_id, {})
         location = object_info.get("location")
         if isinstance(location, str) and location in scene.get("fixtures", {}):
             return location
+
+        try:
+            obj_pos, _ = self._get_object_pose(object_id)
+        except Exception:
+            return None
+        inferred = self.runner._find_object_fixture(obj_pos)
+        if inferred in self.runner._fixtures:
+            return inferred
         return None
 
     def _get_task_class_name(self) -> str:
@@ -1255,13 +1269,36 @@ class SimToolExecutor:
             metrics = get_front_alignment_metrics(fxtr, pos, target_xy=target_xy)
             if metrics is None:
                 return False
+            fixture_center = np.asarray(fxtr.pos[:2], dtype=float)
             return bool(
                 metrics["on_front_face"]
                 and metrics["within_span"]
                 and metrics["lateral_offset"] <= MAX_FRONT_WORKING_LATERAL_OFFSET
+                and _FRONT_READY_MIN_GAP <= metrics["front_gap"] <= _FRONT_READY_MAX_GAP
+                and float(np.linalg.norm(pos - fixture_center)) <= _FRONT_READY_MAX_CENTER_DISTANCE
             )
         fxtr_pos = np.asarray(fxtr.pos[:2], dtype=float)
         return float(np.linalg.norm(pos - fxtr_pos)) < threshold
+
+    def _safe_compute_object_target_pos(
+        self,
+        support_id: str,
+        object_id: str,
+        preferred_xy: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Compute a placement target, falling back to legacy sampling on geometry errors."""
+        support_fxtr = self.runner._fixtures[support_id]
+        try:
+            return self.runner._compute_object_target_pos(
+                support_fxtr,
+                object_id=object_id,
+                preferred_xy=preferred_xy,
+            )
+        except Exception:
+            target_pos = self.runner._compute_object_target_pos(support_fxtr)
+            if preferred_xy is not None:
+                target_pos[:2] = np.asarray(preferred_xy, dtype=float)[:2]
+            return target_pos
 
     def _fixture_clearance_radius(self, fixture_id: str) -> float:
         """Return a radius around the fixture where teammates likely block access."""
@@ -1373,13 +1410,11 @@ class SimToolExecutor:
             raise ValueError(f"Object {object_id!r} is held by robot {holder}")
 
         # Pre-compute where the object will land so the robot stands near it.
-        target_pos = self.runner._compute_object_target_pos(
-            self.runner._fixtures[support_id],
-        )
+        target_pos = self._safe_compute_object_target_pos(support_id, object_id)
         self.runner._move_robot_near_fixture(
             robot_idx, support_id, ref_pos_override=target_pos[:2],
         )
-        self.runner.move_object(object_id, support_id)
+        self.runner.move_object(object_id, support_id, target_pos=target_pos)
         self._held_objects.pop(robot_idx, None)
         return ToolResult(
             "place_on_surface",
@@ -1399,16 +1434,20 @@ class SimToolExecutor:
             raise ValueError(f"Object {object_id!r} is held by robot {holder}")
 
         if receptacle_id in self.runner._fixtures:
-            target_pos = self.runner._compute_object_target_pos(
-                self.runner._fixtures[receptacle_id],
-            )
+            target_pos = self._safe_compute_object_target_pos(receptacle_id, object_id)
             self.runner._move_robot_near_fixture(
                 robot_idx, receptacle_id, ref_pos_override=target_pos[:2],
             )
-            self.runner.move_object(object_id, receptacle_id)
+            self.runner.move_object(object_id, receptacle_id, target_pos=target_pos)
         else:
             self._require_object(receptacle_id)
+            contained = self._find_contained_objects(object_id)
             self._place_on_object_center(object_id, receptacle_id)
+            anchor_fixture_id = self._get_scene_object_location(receptacle_id)
+            if anchor_fixture_id is not None:
+                self.runner._set_object_location(object_id, anchor_fixture_id)
+                for child_id in contained:
+                    self.runner._set_object_location(child_id, anchor_fixture_id)
 
         self._held_objects.pop(robot_idx, None)
         return ToolResult(
@@ -1455,16 +1494,29 @@ class SimToolExecutor:
         offset_axis = 0 if ref_extent_x > ref_extent_y else 1
         offset_magnitude = max(ref_extent_x, ref_extent_y) * 0.5 + 0.05
 
-        target_pos = ref_pos.copy()
-        target_pos[offset_axis] += offset_magnitude
+        preferred_positions = []
+        for direction in (1.0, -1.0):
+            preferred_xy = ref_pos[:2].copy()
+            preferred_xy[offset_axis] += direction * offset_magnitude
+            preferred_positions.append(preferred_xy)
 
-        # If that lands off the fixture, try the other side.
-        if not self.runner._validate_object_on_fixture(target_pos, support_fixture_id):
-            target_pos[offset_axis] = ref_pos[offset_axis] - offset_magnitude
+        scored_targets: list[tuple[float, np.ndarray]] = []
+        for preferred_xy in preferred_positions:
+            target_pos = self._safe_compute_object_target_pos(
+                support_fixture_id,
+                object_id,
+                preferred_xy=preferred_xy,
+            )
+            score = float(np.linalg.norm(target_pos[:2] - preferred_xy[:2]))
+            scored_targets.append((score, target_pos))
+        target_pos = min(scored_targets, key=lambda item: item[0])[1]
 
-        obj = self._require_object(object_id)
-        current_quat = self.env.sim.data.get_joint_qpos(obj.joints[0])[3:7]
-        self._set_object_pose(object_id, target_pos, current_quat)
+        self.runner._move_robot_near_fixture(
+            robot_idx,
+            support_fixture_id,
+            ref_pos_override=target_pos[:2],
+        )
+        self.runner.move_object(object_id, support_fixture_id, target_pos=target_pos)
 
         self._held_objects.pop(robot_idx, None)
         return ToolResult(
@@ -1503,24 +1555,39 @@ class SimToolExecutor:
             site_name = f"{fixture.naming_prefix}receptacle_place_site"
             site_id = self.env.sim.model.site_name2id(site_name)
             target_pos = self.env.sim.data.site_xpos[site_id].copy()
+            contained = self._find_contained_objects(object_id)
             self._set_object_pose(object_id, target_pos)
+            support_fixture_id = self._find_placeable_surface_near_fixture(reference_fixture_id)
+            self.runner._set_object_location(object_id, support_fixture_id)
+            for child_id in contained:
+                self.runner._set_object_location(child_id, support_fixture_id)
         elif isinstance(fixture, Sink):
             water_site_name = fixture.water_site.get("name")
             site_id = self.env.sim.model.site_name2id(water_site_name)
             target_pos = self.env.sim.data.site_xpos[site_id].copy()
+            contained = self._find_contained_objects(object_id)
             self._set_object_pose(object_id, target_pos)
+            support_fixture_id = self._find_placeable_surface_near_fixture(reference_fixture_id)
+            self.runner._set_object_location(object_id, support_fixture_id)
+            for child_id in contained:
+                self.runner._set_object_location(child_id, support_fixture_id)
         else:
             # Generic: project fixture XY, find the surface below.
             fxtr_pos = np.asarray(fixture.pos, dtype=float)
             support_fixture_id = self._find_placeable_surface_near_fixture(
                 reference_fixture_id
             )
-            support_fxtr = self.runner._fixtures[support_fixture_id]
-            target_pos = self.runner._compute_object_target_pos(support_fxtr)
-            # Override XY to be directly under the reference fixture.
-            target_pos[0] = fxtr_pos[0]
-            target_pos[1] = fxtr_pos[1]
-            self._set_object_pose(object_id, target_pos)
+            target_pos = self._safe_compute_object_target_pos(
+                support_fixture_id,
+                object_id,
+                preferred_xy=fxtr_pos[:2],
+            )
+            self.runner.move_object(
+                object_id,
+                support_fixture_id,
+                target_pos=target_pos,
+                preferred_xy=fxtr_pos[:2],
+            )
 
         self._held_objects.pop(robot_idx, None)
         return ToolResult(
@@ -1566,7 +1633,11 @@ class SimToolExecutor:
             ref_pos_override=ref_pos,
         )
         self._sync_held_object(robot_idx)
+        contained = self._find_contained_objects(object_id)
         self._place_on_object_center(object_id, support_object_id)
+        self.runner._set_object_location(object_id, anchor_fixture_id)
+        for child_id in contained:
+            self.runner._set_object_location(child_id, anchor_fixture_id)
         self._held_objects.pop(robot_idx, None)
         return ToolResult(
             "place_on_object",
