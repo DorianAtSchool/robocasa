@@ -1,114 +1,126 @@
 # Sim Tool Executor
 
-This document explains how
-[sim_tool_executor.py](/home/dorian/Projects/robocasa/robocasa/utils/sim_tool_executor.py)
-works.
+This document explains the current implementation of
+[sim_tool_executor.py](/Users/dorian/Documents/robocasa/robocasa/utils/sim_tool_executor.py).
 
 It is narrower than
-[sim_tool_layer.md](/home/dorian/Projects/robocasa/docs/sim_tool_layer.md).
-That document describes the planner-facing tool API. This document describes
-the concrete executor that runs those tools inside a live RoboCasa simulation.
+[sim_tool_layer.md](/Users/dorian/Documents/robocasa/docs/sim_tool_layer.md).
+That document describes the planner-facing tool surface. This document focuses
+on the concrete executor that runs those tools inside a live RoboCasa scene.
+
+For implementation history, see:
+
+- [sim_tool_executor_phase_2.md](/Users/dorian/Documents/robocasa/docs/sim_tool_executor_phase_2.md)
+- [sim_tool_executor_phase_3.md](/Users/dorian/Documents/robocasa/docs/sim_tool_executor_phase_3.md)
+- [continuous_vs_grid_placement.md](/Users/dorian/Documents/robocasa/docs/continuous_vs_grid_placement.md)
 
 ## Purpose
 
-`SimToolExecutor` is a pragmatic bridge between:
+`SimToolExecutor` is a pragmatic symbolic-execution layer over a live RoboCasa /
+MuJoCo environment.
 
-- symbolic tool plans such as `pick_up_object(...)` or `place_on_surface(...)`
-- a real RoboCasa / MuJoCo environment
+It bridges:
 
-It is not a policy controller and it is not dataset-faithful action replay.
+- grounded symbolic tool calls such as `pick_up_object(...)` and `place_on_surface(...)`
+- a concrete sampled RoboCasa task instance
+
+It is not:
+
+- a low-level motion controller
+- dataset-faithful demo replay
+- a learned manipulation policy
+
 Instead, it executes symbolic plans by combining:
 
-- robot base teleportation near fixtures or object anchors
-- direct object pose updates in sim state
-- fixture joint / control state updates
-- rendering of per-step frames and videos
+- robot base teleportation to working poses
+- direct object pose updates
+- fixture / control state updates
+- semantic grounding from task-level references to scene ids
+- rendering of stepwise frames and videos
 
-## Teleportation Model
+## Execution Model
 
 The executor is explicitly teleport-based.
 
-It does **not** replay continuous robot actions from RoboCasa demos, and it does
-not use a learned low-level manipulation policy. Instead, it performs symbolic
-state changes in a live environment.
+There are three main state-update paths under the hood.
 
-There are three different teleportation-like mechanisms under the hood:
+### 1. Robot Base Positioning
 
-### 1. Robot Base Repositioning
+Robot motion is delegated to
+[trajectory_runner.py](/Users/dorian/Documents/robocasa/robocasa/utils/trajectory_runner.py),
+primarily through `runner._move_robot_near_fixture(...)`.
 
-Robot motion is handled by teleporting the mobile base near a target fixture or
-object anchor.
+That path no longer relies on a single fixture-relative helper. It now uses the
+Phase 2 placement subsystem:
 
-This path uses RoboCasa placement utilities rather than hard-coded world
-coordinates:
-
-- `EnvUtils.compute_robot_base_placement_pose(...)`
-- `EnvUtils.set_robot_to_position(...)`
-
-Those are called through
-[trajectory_runner.py](/home/dorian/Projects/robocasa/robocasa/utils/trajectory_runner.py)
-when `runner._move_robot_near_fixture(...)` is used.
+- shared face / front-alignment helpers in [placement.py](/Users/dorian/Documents/robocasa/robocasa/utils/placement.py)
+- a grid backend in [occupancy_grid.py](/Users/dorian/Documents/robocasa/robocasa/utils/occupancy_grid.py)
+- a continuous backend in [placement.py](/Users/dorian/Documents/robocasa/robocasa/utils/placement.py)
 
 So for robot placement:
 
-- the target fixture comes from the symbolic plan or semantic grounding
-- the actual placement pose is computed using RoboCasa fixture geometry and
-  layout-aware placement logic
-- then the robot base pose is written into the simulator by RoboCasa helper code
+- the symbolic tool identifies a target fixture or anchor fixture
+- the runner computes a layout-aware working pose
+- the robot base pose is teleported into the simulator
 
-### 2. Object Repositioning
+For enclosing fixtures such as fridges and cabinets, the executor also uses
+front-readiness checks so interaction tools can decide whether a robot is
+already in a usable front working pose.
 
-Object motion is more direct.
+### 2. Object Positioning
 
-For held objects and object-on-object placement, the executor writes object joint
-poses directly with MuJoCo sim state updates:
+Object motion is a mix of runner-side fixture placement and direct pose writes.
 
-- `env.sim.data.set_joint_qpos(...)`
+For fixture placement:
 
-This happens in:
+- `place_on_surface(...)`
+- fixture-target `place_in_receptacle(...)`
+- `place_next_to(...)`
+- generic `place_under(...)`
 
-- `_set_object_pose(...)`
-- `_sync_held_object(...)`
-- `_place_on_object_center(...)`
+all route through the runner's collision-aware fixture-placement logic from
+Phase 3.
 
-For fixture placement, the executor uses the runner's `move_object(...)`, which
-computes a fixture-relative target point and then also writes the object's joint
-qpos directly.
+That path:
 
-So yes: object teleportation ultimately overrides MuJoCo sim data directly.
+- samples candidate poses from fixture reset regions
+- filters candidates against existing objects and nearby fixture geometry
+- prefers poses near a semantic target XY when one exists
+- falls back conservatively if a geometry helper cannot evaluate one case
+
+For direct placement paths such as object-on-object stacking and dispenser-site
+placement, the executor writes object qpos directly with MuJoCo state updates.
 
 ### 3. Fixture / Control State Updates
 
-For doors, drawers, buttons, levers, and knobs, the executor uses a mix of:
+Fixture articulation and controls use a mix of:
 
-- RoboCasa fixture helper methods such as `open_door()` / `close_door()`
+- RoboCasa fixture helpers such as `open_door()` / `close_door()`
 - `fixture.set_joint_state(...)`
-- a few fixture-specific helper methods for appliances
-
-So this part is partly RoboCasa-native and partly direct state mutation.
+- fixture-specific helpers for appliances such as microwaves, coffee machines,
+  kettles, and toasters
 
 ## High-Level Flow
 
 The executor lifecycle is:
 
-1. create a live environment through `TrajectoryRunner`
-2. inspect the current scene
-3. optionally ground a semantic plan template into concrete scene ids
+1. construct a live environment through `TrajectoryRunner`
+2. inspect and cache the current scene description
+3. optionally ground a semantic plan template into concrete ids
 4. execute each tool step
 5. save frames, videos, and metadata
 
 At construction time, `SimToolExecutor(...)` creates a
-[TrajectoryRunner](/home/dorian/Projects/robocasa/robocasa/utils/trajectory_runner.py),
-stores `self.runner`, exposes `self.env`, and initializes a small held-object
-cache:
+[TrajectoryRunner](/Users/dorian/Documents/robocasa/robocasa/utils/trajectory_runner.py),
+stores it as `self.runner`, exposes `self.env`, and initializes:
 
 - `self._held_objects: dict[int, str]`
 
-That held-object cache is how the executor represents grasp state.
+That held-object map is the executor's symbolic grasp state.
 
 ## Core Responsibilities
 
-`SimToolExecutor` does five main jobs:
+`SimToolExecutor` has five main jobs.
 
 ### 1. Scene Access
 
@@ -117,29 +129,28 @@ It exposes scene and rendering helpers:
 - `get_scene_description()`
 - `render()`
 - `save_scene_frames(...)`
+- `save_placement_map(...)`
 
-These are thin wrappers over the underlying `TrajectoryRunner`.
+These are thin wrappers over the underlying runner.
 
 ### 2. Symbol Validation
 
-Before executing actions, the executor validates ids:
+Before executing actions, the executor validates scene ids:
 
 - `_require_fixture(fixture_id)`
 - `_require_object(object_id)`
 
-This keeps plans tied to the actual live scene rather than invented strings.
+This keeps plans tied to the current scene instead of invented strings.
 
 ### 3. Semantic Grounding
 
-The executor now supports semantic plan templates.
-
-The template path is:
+The executor supports semantic plan templates through:
 
 1. `build_demo_plan_template(...)`
 2. `ground_plan_template(...)`
 3. `run_tool_plan(...)`
 
-Templates can contain semantic references like:
+Templates can contain semantic references such as:
 
 ```json
 {
@@ -162,9 +173,7 @@ or:
 
 Those refs are resolved against the current scene at runtime.
 
-This is what makes the hotdog demo transferable across layouts.
-
-### 4. Tool Execution
+### 4. Tool Dispatch
 
 Each tool is implemented as a method on `SimToolExecutor`.
 
@@ -173,7 +182,10 @@ Examples:
 - `navigate_to_fixture(...)`
 - `pick_up_object(...)`
 - `place_on_surface(...)`
+- `place_in_receptacle(...)`
 - `place_on_object(...)`
+- `place_next_to(...)`
+- `place_under(...)`
 - `open_hinged_part(...)`
 - `press_button(...)`
 - `communicate(...)`
@@ -182,312 +194,205 @@ The generic entry point is:
 
 - `execute(tool_name, robot_idx=0, **kwargs)`
 
-### 5. Rendering and Saving Outputs
+### 5. Output Saving
 
-`run_tool_plan(...)` executes a full plan while saving:
+`run_tool_plan(...)` executes a plan while saving:
 
-- before / after PNGs for every step
+- before / after PNGs
 - per-camera MP4 videos
 - `plan.json`
 - `metadata.json`
 
-The saved `plan.json` is the grounded plan that was actually executed, not the
-unresolved semantic template.
-
-The default saved cameras now include:
-
-- per-robot agent views
-- per-robot wrist / eye-in-hand views
-- `room_view`
-- `top_view`
+The saved `plan.json` is the grounded plan that was actually executed.
 
 ## How State Is Represented
 
-The executor mixes symbolic bookkeeping with direct sim state:
+The executor mixes symbolic bookkeeping with direct simulator state edits.
 
 ### Held Objects
 
 When `pick_up_object(...)` runs:
 
-- the robot is moved near the source fixture
-- the object id is recorded in `self._held_objects[robot_idx]`
+- the robot is moved near the source fixture if needed
+- `self._held_objects[robot_idx]` is updated
 - `_sync_held_object(...)` snaps the object near the robot end effector
 
-This is a symbolic grasp representation rather than a physical closed-loop
-gripper controller.
-
-In other words, the robot is not physically grasping through contact dynamics.
-The executor records that a robot is "holding" an object and then keeps the
-object snapped near the end effector by updating its pose directly.
+This is symbolic grasp state, not contact-rich grasp simulation.
 
 ### Object Placement
 
-There are two main placement paths:
+There are three main placement styles:
 
-- fixture placement
-- object-on-object placement
+- fixture placement through runner sampling
+- object-on-object placement through bbox geometry
+- explicit site placement for dispenser-like cases
 
-For fixture placement, the executor uses `TrajectoryRunner.move_object(...)`.
+Runner-side fixture placement is now collision-aware. Direct placement paths
+still exist, but they update support grounding consistently and participate in
+contained-object transport.
 
-For object-on-object placement, the executor computes the support object's bbox
-top and the placed object's bbox bottom, then writes the object pose directly.
+### Receptacle Carry Semantics
+
+If a receptacle-like object is moved, its contents now move with it.
+
+This is implemented through:
+
+- runner-side contained-object transport in `move_object(...)`
+- executor-side contained-object transport in `_set_object_pose(...)`
+- held-object syncing through `_sync_held_object(...)`
+
+So a bowl / plate / receptacle can carry its contents across both held-object
+motion and placement motion.
 
 ### Fixture / Control State
 
-Articulation and control tools use a mix of:
+Articulation and control tools use:
 
-- fixture helpers such as `open_door()` / `close_door()`
-- fixture-specific helpers for microwaves, toasters, kettles, coffee machines
-- direct joint value updates through `set_joint_state(...)`
+- fixture helper methods
+- fixture-specific appliance helpers
+- direct joint value updates
 
-## Grounding Helpers
+depending on the target fixture type.
 
-The grounding logic relies on a few internal helpers:
-
-- `_get_scene_object_location(object_id)`
-- `_find_nearest_fixture_for_object(...)`
-- `_resolve_object_anchor_fixture(...)`
-- `_infer_source_fixture(...)`
-
-These helpers convert object-centric semantic references into concrete fixture
-ids for the current scene.
-
-Two common cases are:
-
-- source fixture for an object
-- placeable anchor fixture near a support object such as a plate
-
-This means the task definition influences teleportation only indirectly.
-
-The task provides:
-
-- which objects exist
-- which fixture roles exist
-- the natural-language goal
-- the sampled scene instance
-
-But the executor itself decides:
-
-- which concrete fixture id to navigate to
-- which anchor fixture to use for support objects
-- where to place the robot base relative to that fixture / object
-- where to write object poses in sim
-
-So teleportation is not coming from prerecorded task actions. It is coming from:
-
-1. the current sampled task scene
-2. semantic grounding logic in the executor
-3. RoboCasa placement helpers
-4. direct MuJoCo state edits
-
-## Robot Positioning
-
-Robot placement itself is delegated to
-[trajectory_runner.py](/home/dorian/Projects/robocasa/robocasa/utils/trajectory_runner.py).
-
-The executor uses:
-
-- `runner._move_robot_near_fixture(...)`
-
-For support-object-centric actions such as `place_on_object(...)`, the executor
-now resolves the support object's anchor fixture and moves the robot relative to
-that object, not just the fixture center.
-
-This is important for cases like a plate near the edge of a dining surface.
-
-## How Individual Tools Work
+## Tool Behavior Overview
 
 ### Navigation
 
 `navigate_to_fixture(...)`
 
 - validates the fixture id
-- teleports the robot near the fixture
+- computes whether the fixture should use front-only semantics
+- teleports the robot to a working pose
 - re-syncs any held object
-
-The teleport itself is computed with RoboCasa placement utilities and then
-applied by setting the robot base pose in sim.
 
 ### Picking
 
 `pick_up_object(...)`
 
 - validates object and source ids
-- moves the robot near the source fixture
+- moves the robot near the source fixture if it is not already in a usable pose
 - marks the object as held
 - snaps it near the end effector
 
-So "pick" is not a physical closing-gripper sequence. It is:
-
-1. robot base teleport
-2. symbolic held-object assignment
-3. direct object pose snapping
+For enclosing fixtures, the readiness check is stricter than simple proximity:
+the robot must be on the correct front face and within a reasonable working
+standoff.
 
 ### Placement on Fixtures
 
 `place_on_surface(...)`
 
-- moves the robot near the support fixture
-- uses the runner to place the object on that fixture
+- computes a collision-aware fixture target
+- moves the robot near that target region
+- places the object through the runner
 - clears held-object state
-
-The runner computes a fixture-relative target position, validates it against the
-fixture region, and then writes the object qpos directly.
 
 ### Placement on Objects
 
 `place_on_object(...)`
 
-- resolves a placeable anchor near the support object
-- uses the explicit `anchor_fixture_id` from the grounded trajectory when available
-- moves the robot near that anchor with the support object as reference
-- places the object on the support object's top surface
+- resolves or uses an explicit anchor fixture for robot approach
+- moves the robot near the support object's anchor area
+- computes the placed pose from support-object top and placed-object bottom bbox geometry
 - clears held-object state
-
-This path is directly geometry-based. The support object's bbox top and the
-placed object's bbox bottom are used to compute the final pose, which is then
-written into MuJoCo state.
 
 ### Receptacles
 
 `place_in_receptacle(...)`
 
-- if the target is a fixture id, it uses fixture placement
-- if the target is an object id, it falls back to object-on-object placement
+- uses fixture placement if the target is a fixture
+- uses object-on-object placement if the target is an object
+
+### Spatial Tools
+
+`place_next_to(...)`
+
+- finds the support fixture of the reference object
+- computes one or more preferred adjacent target XYs
+- asks the runner for the nearest collision-free fixture pose
+
+`place_under(...)`
+
+- uses explicit dispenser sites for coffee machines / sinks
+- otherwise finds the nearest support surface below the reference fixture and
+  places there through the runner
 
 ### Controls
 
 `press_button(...)`, `press_lever(...)`, `set_rotary_control(...)`
 
 - move the robot near the target fixture
-- update fixture state using helper methods or joint writes
+- update fixture state using helper methods or direct joint writes
 
 ### Coordination
 
 `communicate(...)` and `wait()`
 
-These are semantic actions. They do not substantially alter sim state, but they
-are recorded in metadata and useful for multi-agent plans.
+These are semantic coordination actions. They do not materially change physics
+state, but they are recorded in the execution trace.
 
 ## Built-In Demo Plans
 
-The executor supports named built-in demo plans through:
+The executor supports named built-in plans through:
 
 - `build_demo_plan_template(...)`
 - `build_demo_plan(...)`
 
-At the moment the main built-in example is:
+The current built-in demos are:
 
 - `cooperative_hotdog_setup`
+- `sandwich_station`
 
-This demo is authored as a semantic template and grounded at runtime.
+Important clarification:
 
-## CLI Usage
-
-The file is runnable as a module:
-
-```bash
-python -m robocasa.utils.sim_tool_executor --help
-```
-
-It supports:
-
-- saving current-scene frames only
-- executing a JSON plan via `--plan`
-- executing a built-in demo plan via `--demo-plan`
-
-Example:
-
-```bash
-MUJOCO_GL=osmesa python -m robocasa.utils.sim_tool_executor \
-  --task HotDogSetup \
-  --layout 11 \
-  --style 34 \
-  --seed 42 \
-  --demo-plan cooperative_hotdog_setup \
-  --output-dir /tmp/hotdog_demo
-```
+- `cooperative_hotdog_setup` stages bun + sausage on the plate and then places
+  the condiment on the same support surface
+- `sandwich_station` currently places both the ingredient bowl and baguette on
+  the counter near the toaster oven; it does not place the baguette inside the bowl
 
 ## Relation to `TrajectoryRunner`
 
 The split is:
 
 - `TrajectoryRunner`
-  - builds the env
-  - renders cameras
-  - teleports robots near fixtures
-  - places objects on fixtures
-  - manages room / top views
+  - builds the environment
+  - manages cameras and rendering
+  - computes robot working poses
+  - computes collision-aware fixture placement poses
+  - moves objects onto fixtures
 
 - `SimToolExecutor`
-  - validates symbolic tool calls
-  - grounds semantic refs to scene ids
+  - validates tool calls
+  - grounds semantic references
   - tracks held objects
-  - dispatches tool methods
-  - saves plan execution outputs
+  - dispatches symbolic tool methods
+  - records execution outputs
 
 So the executor is a symbolic dispatch layer over the runner.
 
 ## Camera Outputs
 
-The rendered outputs come from `TrajectoryRunner`.
+Rendered outputs come from `TrajectoryRunner`.
 
-The important camera behavior is:
+Important camera behavior:
 
-- robot cameras are discovered from the live env camera list
-- each robot now includes wrist / `eye_in_hand` views when available
-- `room_view` is a free camera, not a fixed MuJoCo named camera
-- `top_view` is another free camera derived from the scene footprint
+- robot cameras are discovered from the live environment
+- wrist / `eye_in_hand` views are included when available
+- `room_view` is a derived free camera
+- `top_view` is another derived free camera based on the scene footprint
 
-The room view is scene-aware rather than purely layout-static:
-
-- it starts from a layout preset azimuth / elevation
-- it re-centers on the current scene footprint
-- it sets distance from the current scene extent and camera FOV
-
-So different layouts, styles, and sampled scenes can change the final room-view
-framing.
-
-## Is It Using RoboCasa Tasks Or Overriding MuJoCo State?
-
-Both, but in different ways.
-
-### It uses RoboCasa tasks for:
-
-- scene construction
-- object sampling
-- fixture sampling
-- task language
-- fixture references such as fridge / cabinet / dining table roles
-
-### It uses RoboCasa helper logic for:
-
-- robot base placement near fixtures
-- some fixture interactions such as opening doors
-- camera setup and scene rendering
-
-### It overrides MuJoCo sim state for:
-
-- object pose teleportation via `set_joint_qpos(...)`
-- held-object snapping
-- object-on-object placement
-- some fixture joint / control state changes
-
-So the executor should be understood as:
-
-- RoboCasa task semantics and scene generation on the front end
-- pragmatic MuJoCo state editing plus RoboCasa placement helpers on the backend
+The room view is scene-aware rather than purely layout-static.
 
 ## Limitations
 
-The executor is intentionally pragmatic and therefore limited:
+The executor is intentionally pragmatic and therefore limited.
 
 - no low-level physical grasp controller
-- no dataset-faithful action replay
-- object locations in the scene description are still heuristic in some cases
-- support-fixture grounding can still fail on ambiguous scenes
-- precise spatial relations such as `next_to` still need richer lowering logic
+- no dataset-faithful demo replay
+- still teleport-based for navigation and manipulation
+- direct object-on-object stacking is geometry-based, not contact-stabilized
+- semantic spatial relations are still lowered by heuristics rather than a full symbolic geometry solver
+- support grounding and relative placement are improved, but ambiguous scenes can still require conservative fallback behavior
 
-This makes the executor useful for symbolic planning, debugging, and visual
-plan rollout, but it should not be mistaken for a physically realistic motion
-policy.
+That makes the executor useful for symbolic planning, debugging, and visual
+rollout, but it should not be mistaken for a physically realistic motion policy.

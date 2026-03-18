@@ -1,9 +1,13 @@
 # Sim Tool Layer
 
-This repository now exposes a symbolic simulator tool layer on top of RoboCasa.
+This repository exposes a symbolic simulator tool layer on top of RoboCasa.
+
 The goal is not to replay dataset actions exactly. The goal is to give planners
-and external LLMs a stable, validated action interface that can be executed in a
-live scene.
+and external LLMs a stable, validated action interface that can be grounded and
+executed in a live scene.
+
+The concrete executor for these tools is documented in
+[sim_tool_executor.md](/Users/dorian/Documents/robocasa/docs/sim_tool_executor.md).
 
 ## Why This Layer Exists
 
@@ -11,17 +15,19 @@ The raw environment is too low-level for planning:
 
 - object and fixture ids are scene-specific
 - part ids and control ids depend on the concrete fixture instance
-- many tasks are easiest to describe semantically, not by direct MuJoCo edits
+- many task instructions are easiest to express semantically, not as direct
+  MuJoCo state edits
 
 The tool layer provides:
 
 - a planner-facing API with explicit semantic intent
 - validation against the live scene
-- a place to separate planning semantics from executor pragmatics
+- a separation between clean planning semantics and pragmatic executor logic
 
 ## Available Tools
 
-The current tool surface is defined in [robocasa/utils/sim_tool_specs.py](/home/dorian/Projects/robocasa/robocasa/utils/sim_tool_specs.py).
+The current tool surface is defined in
+[sim_tool_specs.py](/Users/dorian/Documents/robocasa/robocasa/utils/sim_tool_specs.py).
 
 ### Fixture Articulation
 
@@ -30,13 +36,17 @@ The current tool surface is defined in [robocasa/utils/sim_tool_specs.py](/home/
 - `open_sliding_part(target_id, part_id)`
 - `close_sliding_part(target_id, part_id)`
 
-Use these for cabinets, drawers, fridges, lids, and similar articulated parts.
+Use these for fridges, cabinets, drawers, lids, racks, and similar articulated
+fixture parts.
 
 ### Navigation
 
 - `navigate_to_fixture(fixture_id)`
+- `give_space(fixture_id)`
 
-Moves a robot base to the working pose associated with a fixture.
+`navigate_to_fixture(...)` moves a robot to the working pose associated with a
+fixture. `give_space(...)` is the explicit coordination tool for backing away
+from a fixture so another robot can use it.
 
 ### Object Manipulation
 
@@ -44,12 +54,21 @@ Moves a robot base to the working pose associated with a fixture.
 - `place_in_receptacle(object_id, receptacle_id)`
 - `place_on_object(object_id, support_object_id, anchor_fixture_id)`
 - `place_on_surface(object_id, support_id)`
-- `place_under_dispenser(object_id, dispenser_id)`
+- `place_next_to(object_id, reference_object_id)`
+- `place_under(object_id, reference_fixture_id)`
 
 These are distinct planner-level actions even when some of them share backend
 execution patterns.
 
-### Control / Activation
+Important semantic distinctions:
+
+- `place_on_surface(...)` means "put the object somewhere valid on this support surface"
+- `place_on_object(...)` means "stack on this movable support object"
+- `place_in_receptacle(...)` means "place into a container-like or interior target"
+- `place_next_to(...)` means "place adjacent to another object on the same support surface"
+- `place_under(...)` means "place directly beneath a reference fixture" and is also used for dispenser-like fixtures such as sinks and coffee machines
+
+### Controls / Activation
 
 - `press_button(target_id, control_id)`
 - `press_lever(target_id, control_id)`
@@ -63,12 +82,17 @@ fixture controls.
 - `communicate(to, message)`
 - `wait()`
 
-These are semantic coordination tools. They do not primarily exist to change
-physics state; they exist to structure multi-robot plans.
+These are semantic coordination tools. They primarily structure multi-robot
+plans rather than changing physics state.
 
-## Symbol Types
+## Parameter Types
 
-These ids must come from the current live scene, not from free-form language:
+Some tool parameters must come from the current live scene. Others are small
+planner-provided literals.
+
+### Scene-Bound Symbols
+
+These should come from the current scene description, not from free-form text:
 
 - `object_id`
 - `fixture_id`
@@ -77,39 +101,50 @@ These ids must come from the current live scene, not from free-form language:
 - `receptacle_id`
 - `support_object_id`
 - `anchor_fixture_id`
-- `dispenser_id`
+- `reference_object_id`
+- `reference_fixture_id`
 - `target_id`
 - `part_id`
 - `control_id`
+
+### Planner Literals
+
+These are planner-provided values, not scene ids:
+
+- `goal`
+- `to`
+- `message`
 
 The safest generation flow is:
 
 1. build a live scene
 2. extract its symbol table
-3. give the planner only those valid symbols
+3. give the planner only those valid ids
 4. validate planned actions before execution
 
-## Spatial Qualifiers
+## Spatial Semantics
 
-Primitive tools are not enough to express every task. A more flexible planning
-layer should include spatial qualifiers such as:
+Some spatial relations are now first-class tools instead of implicit lowering rules.
 
-- `on`
-- `in`
-- `under`
+Already represented directly in the tool surface:
+
+- `on` via `place_on_surface(...)`
+- `on_object` via `place_on_object(...)`
+- `in` via `place_in_receptacle(...)`
+- `next_to` via `place_next_to(...)`
+- `under` via `place_under(...)`
+
+Still planner-level / higher-level semantics:
+
 - `near`
-- `next_to`
-- `inside`
-- `at_fixture`
+- `inside` when it is richer than `place_in_receptacle(...)`
+- fixture-selection semantics such as "on the counter near the toaster oven"
 
-Examples:
+Example:
 
-- `place condiment next_to plate`
-- `place mug under coffee_machine dispenser`
-- `put sausage on plate`
-
-These qualifiers should be interpreted by a semantic planner and then lowered to
-primitive sim tools.
+- a planner may still need to resolve "counter near toaster oven" into a
+  concrete `support_id`, but once that support is chosen the executor already
+  has the tool needed for `place_next_to(...)` or `place_on_surface(...)`
 
 ## Task-State Predicates
 
@@ -131,18 +166,18 @@ multi-agent coordination without directly touching MuJoCo state.
 
 ## Planner vs Executor
 
-The planner-facing API and the executor backend are intentionally different:
+The planner-facing API and the executor backend are intentionally different.
 
 - The planner API should stay semantically clean.
-- The executor can be pragmatic and use a mix of RoboCasa helpers and direct sim
-  state edits.
+- The executor can be pragmatic and use teleportation, direct state edits,
+  and geometry heuristics.
 
 This separation matters because multiple tools may share the same low-level
 backend while still representing different planning semantics.
 
 ## Compact LLM Context
 
-Passing the full scene JSON to an external LLM is unnecessary. The compact
+Passing the full scene JSON to an external planner is unnecessary. A compact
 planner context should contain:
 
 - task instruction
@@ -153,26 +188,28 @@ planner context should contain:
 - hard rules that forbid invented ids
 
 The generator for this lives in
-[robocasa/scripts/generate_llm_task_descriptions.py](/home/dorian/Projects/robocasa/robocasa/scripts/generate_llm_task_descriptions.py).
+[generate_llm_task_descriptions.py](/Users/dorian/Documents/robocasa/robocasa/scripts/generate_llm_task_descriptions.py).
 
 ## Current Limits
 
-This approach scales well for symbolic kitchen workflows such as:
+This symbolic layer scales well for:
 
-- open / close fixture parts
-- navigate to fixture
-- pick from fixture
-- place on fixture or support object
-- actuate appliances
-- coordinate between robots
+- opening / closing fixture parts
+- navigating to fixture working poses
+- picking from fixtures and surfaces
+- placing on fixtures, on support objects, next to objects, or under fixtures
+- actuating appliances
+- coordinating between robots
 
 It is weaker for:
 
-- precise relative placement such as `next_to` without a lowering rule
-- liquid and washing processes
-- long temporal appliance state changes
+- long-horizon appliance processes with rich temporal state
+- liquid, washing, and pouring semantics
 - contact-rich insertion or fine manipulation
+- physically realistic grasping / support stability
+- ambiguous spatial relations that require richer scene reasoning than the
+  current semantic refs and lowering helpers provide
 - dataset-faithful replay
 
-Those cases need richer semantics, better state predicates, or a more physical
-controller backend.
+Those cases need richer predicates, richer symbolic lowering, or a more
+physical controller backend.
