@@ -44,7 +44,12 @@ from pathlib import Path
 import imageio
 import numpy as np
 
+from robocasa.utils.placement import (
+    MAX_FRONT_WORKING_LATERAL_OFFSET,
+    get_front_alignment_metrics,
+)
 from robocasa.utils.sim_tool_executor import SimToolExecutor
+from robocasa.utils.sim_tool_executor import _is_approach_center
 
 
 # ---------------------------------------------------------------------------
@@ -55,12 +60,72 @@ _TASK_DEMO_PLANS = {
     "PrepareSandwichStation": "sandwich_station",
 }
 
+_FRONT_TOOL_ARG_BY_NAME = {
+    "navigate_to_fixture": "fixture_id",
+    "open_hinged_part": "target_id",
+    "close_hinged_part": "target_id",
+    "open_sliding_part": "target_id",
+    "close_sliding_part": "target_id",
+    "press_button": "target_id",
+    "press_lever": "target_id",
+    "set_rotary_control": "target_id",
+    "pick_up_object": "source_id",
+}
 
-def _check_invariants(executor, step_tag, verbose=False):
+
+def _get_front_check_fixture_id(tool: str | None, args: dict | None) -> str | None:
+    """Return the fixture id to validate for front-alignment, if any."""
+    if tool is None or args is None:
+        return None
+    arg_name = _FRONT_TOOL_ARG_BY_NAME.get(tool)
+    if arg_name is None:
+        return None
+    fixture_id = args.get(arg_name)
+    if isinstance(fixture_id, str):
+        return fixture_id
+    return None
+
+
+def _check_front_alignment(executor, robot_idx: int, fixture_id: str, step_tag: str):
+    """Return front-alignment violations for one robot / fixture pair."""
+    runner = executor.runner
+    fixture = runner._fixtures.get(fixture_id)
+    if fixture is None or not _is_approach_center(fixture):
+        return []
+
+    pos = runner._get_robot_position(robot_idx)[:2]
+    target_xy = runner._get_fixture_front_target_xy(fixture_id)
+    metrics = get_front_alignment_metrics(fixture, pos, target_xy=target_xy)
+    if metrics is None:
+        return []
+
+    violations = []
+    if not bool(metrics["on_front_face"] and metrics["within_span"]):
+        violations.append(
+            f"[{step_tag}] robot{robot_idx} not on front face of {fixture_id} at "
+            f"({pos[0]:.3f}, {pos[1]:.3f})"
+        )
+    if float(metrics["lateral_offset"]) > MAX_FRONT_WORKING_LATERAL_OFFSET:
+        violations.append(
+            f"[{step_tag}] robot{robot_idx} too far from front working line of {fixture_id}: "
+            f"offset={float(metrics['lateral_offset']):.3f}m"
+        )
+    return violations
+
+
+def _check_invariants(
+    executor,
+    step_tag,
+    verbose=False,
+    tool: str | None = None,
+    args: dict | None = None,
+    robot_idx: int | None = None,
+):
     """Check placement invariants, return list of violations."""
     runner = executor.runner
     violations = []
     positions = {}
+    is_grid_mode = runner._placement_mode != "continuous"
 
     for ridx in range(runner._num_robots):
         pos = runner._get_robot_position(ridx)
@@ -70,14 +135,27 @@ def _check_invariants(executor, step_tag, verbose=False):
 
         pos2d = pos[:2]
 
-        # Room bounds check
-        if runner._continuous is not None:
-            if not runner._continuous.is_standable(pos2d):
+        # Strategy-specific standability check
+        if is_grid_mode:
+            # Grid mode: cell must be free from fixtures.  Flood-fill-sealed
+            # cells are allowed (robot teleports for interactive fixtures).
+            grid = runner._occupancy_grid
+            if grid is not None and not grid.is_free_of_fixtures(pos2d):
                 violations.append(
-                    f"[{step_tag}] robot{ridx} NOT standable at "
+                    f"[{step_tag}] robot{ridx} in fixture-occupied cell at "
                     f"({pos2d[0]:.3f}, {pos2d[1]:.3f})"
                 )
-            # Inside-fixture check: robot must never be inside any fixture AABB
+        else:
+            # Continuous mode: check circle-vs-AABB collision + room bounds
+            if runner._continuous is not None:
+                if not runner._continuous.is_standable(pos2d):
+                    violations.append(
+                        f"[{step_tag}] robot{ridx} NOT standable at "
+                        f"({pos2d[0]:.3f}, {pos2d[1]:.3f})"
+                    )
+
+        # Inside-fixture check (both modes): robot must never be inside any fixture AABB
+        if runner._continuous is not None:
             if runner._continuous.is_inside_any_fixture(pos2d):
                 violations.append(
                     f"[{step_tag}] robot{ridx} INSIDE fixture at "
@@ -207,7 +285,14 @@ def run_single_combo(
 
             # Check invariants after step
             step_tag = f"{combo_tag}_step{step_idx}_{tool}"
-            viols, positions = _check_invariants(executor, step_tag, verbose)
+            viols, positions = _check_invariants(
+                executor,
+                step_tag,
+                verbose,
+                tool=tool,
+                args=args,
+                robot_idx=ridx,
+            )
             result["violations"].extend(viols)
 
             step_info = {

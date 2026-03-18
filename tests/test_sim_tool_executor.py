@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import MagicMock
 
 import numpy as np
 import robosuite.utils.transform_utils as T
@@ -10,7 +11,15 @@ from robocasa.scripts.generate_llm_task_descriptions import (
     build_compact_task_context,
     render_llm_prompt,
 )
+from robocasa.utils.placement import (  # noqa: E402
+    MAX_FRONT_WORKING_LATERAL_OFFSET,
+    get_face_center,
+    get_face_order,
+    get_front_alignment_metrics,
+    get_fixture_aabb,
+)
 from robocasa.utils.sim_tool_executor import SimToolExecutor  # noqa: E402
+from robocasa.utils.sim_tool_executor import _is_approach_center  # noqa: E402
 from robocasa.utils.sim_tool_specs import SIM_TOOL_SPEC_BY_NAME  # noqa: E402
 
 
@@ -494,6 +503,139 @@ class TestPlaceUnderDispenser(unittest.TestCase):
             self.assertLess(dist, 0.01, "Object should be at water site")
         finally:
             executor.close()
+
+
+class TestEnclosingFixtureFrontAlignment(unittest.TestCase):
+    """Front-alignment tests for enclosing fixtures."""
+
+    def _make_executor(self):
+        return SimToolExecutor(
+            task_name="HotDogSetup",
+            robots=2,
+            layout=11,
+            style=34,
+            seed=42,
+            render_width=160,
+            render_height=128,
+        )
+
+    def _assert_front_aligned(self, executor, fixture_id: str, robot_idx: int):
+        fixture = executor.runner._fixtures[fixture_id]
+        pos = executor.runner._get_robot_position(robot_idx)[:2]
+        target_xy = executor.runner._get_fixture_front_target_xy(fixture_id)
+        metrics = get_front_alignment_metrics(fixture, pos, target_xy=target_xy)
+        self.assertIsNotNone(metrics)
+
+        self.assertTrue(
+            bool(metrics["on_front_face"] and metrics["within_span"]),
+            f"Robot not on front working face: pos={pos}",
+        )
+        self.assertLessEqual(
+            float(metrics["lateral_offset"]),
+            MAX_FRONT_WORKING_LATERAL_OFFSET,
+            f"Robot too far from front working line: {pos}",
+        )
+
+    def test_pick_up_object_from_fridge_approaches_front_center(self):
+        executor = self._make_executor()
+        try:
+            scene = executor.get_scene_description()
+            source_id = scene["objects"]["sausage"]["location"]
+            fixture = executor.runner._fixtures[source_id]
+            self.assertTrue(_is_approach_center(fixture))
+
+            result = executor.pick_up_object("sausage", source_id, robot_idx=1)
+
+            self.assertTrue(result.success)
+            self._assert_front_aligned(executor, source_id, robot_idx=1)
+        finally:
+            executor.close()
+
+    def test_object_anchor_helper_uses_front_center_for_enclosing_fixture(self):
+        executor = self._make_executor()
+        try:
+            fixture_id = executor._move_robot_near_object_anchor(
+                0,
+                "sausage",
+                preferred_fixture_types=["fridge"],
+            )
+            fixture = executor.runner._fixtures[fixture_id]
+            self.assertTrue(_is_approach_center(fixture))
+            self._assert_front_aligned(executor, fixture_id, robot_idx=0)
+        finally:
+            executor.close()
+
+    def test_pick_up_object_recenters_off_center_fridge_pose(self):
+        executor = self._make_executor()
+        try:
+            scene = executor.get_scene_description()
+            source_id = scene["objects"]["sausage"]["location"]
+            fixture = executor.runner._fixtures[source_id]
+
+            executor.runner._move_robot_near_fixture(1, source_id, require_front=True)
+            centered_pos = executor.runner._get_robot_position(1)[:2].copy()
+            aabb = get_fixture_aabb(fixture)
+            self.assertIsNotNone(aabb)
+            fmin, fmax = aabb
+            front_face = get_face_order(fixture)[0]
+            front_target = executor.runner._get_fixture_front_target_xy(source_id)
+            if front_target is None:
+                front_target = get_face_center(front_face, fmin, fmax)
+
+            off_center_pos = centered_pos.copy()
+            target_offset = MAX_FRONT_WORKING_LATERAL_OFFSET + 0.08
+            if front_face in {"neg_y", "pos_y"}:
+                off_center_pos[0] = min(front_target[0] + target_offset, fmax[0] - 0.02)
+                if abs(off_center_pos[0] - front_target[0]) <= MAX_FRONT_WORKING_LATERAL_OFFSET:
+                    self.skipTest("Fixture front span too narrow for off-center recenter test")
+            else:
+                off_center_pos[1] = min(front_target[1] + target_offset, fmax[1] - 0.02)
+                if abs(off_center_pos[1] - front_target[1]) <= MAX_FRONT_WORKING_LATERAL_OFFSET:
+                    self.skipTest("Fixture front span too narrow for off-center recenter test")
+
+            executor.runner._set_robot_pose(1, off_center_pos, 0.0)
+            self.assertFalse(executor._robot_near_fixture(1, source_id))
+
+            result = executor.pick_up_object("sausage", source_id, robot_idx=1)
+
+            self.assertTrue(result.success)
+            self._assert_front_aligned(executor, source_id, robot_idx=1)
+        finally:
+            executor.close()
+
+
+class TestFrontRetryUnit(unittest.TestCase):
+    def test_front_retry_retries_after_clearing_blockers(self):
+        executor = SimToolExecutor.__new__(SimToolExecutor)
+        executor.runner = MagicMock()
+        executor.runner._move_robot_near_fixture = MagicMock(side_effect=[False, True])
+        executor._clear_fixture_blockers = MagicMock(return_value=True)
+
+        placed = executor._move_robot_near_fixture_with_retries(
+            1,
+            "fridge",
+            require_front=True,
+        )
+
+        self.assertTrue(placed)
+        executor._clear_fixture_blockers.assert_called_once_with(1, "fridge")
+        self.assertEqual(executor.runner._move_robot_near_fixture.call_count, 2)
+
+    def test_non_front_retry_does_not_clear_blockers(self):
+        executor = SimToolExecutor.__new__(SimToolExecutor)
+        executor.runner = MagicMock()
+        executor.runner._move_robot_near_fixture = MagicMock(return_value=False)
+        executor._clear_fixture_blockers = MagicMock(return_value=True)
+
+        placed = executor._move_robot_near_fixture_with_retries(
+            0,
+            "counter",
+            require_front=False,
+        )
+
+        self.assertFalse(placed)
+        executor._clear_fixture_blockers.assert_not_called()
+        executor.runner._move_robot_near_fixture.assert_called_once()
 
 
 if __name__ == "__main__":

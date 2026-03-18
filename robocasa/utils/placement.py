@@ -52,6 +52,14 @@ _FACE_STANDOFF = 0.40
 # Two robots side-by-side: 0.18 radius × 2 + 0.04 margin.
 _MIN_ROBOT_SEPARATION = 0.40
 
+# Front-working poses for enclosing fixtures should stay close to the center of
+# the front face. Candidates are expanded gradually only along that face.
+_FRONT_WORKING_LATERAL_LIMITS = (0.05, 0.12, 0.20, 0.24)
+MAX_FRONT_WORKING_LATERAL_OFFSET = _FRONT_WORKING_LATERAL_LIMITS[-1]
+_FRONT_WORKING_SIDE_CLEARANCE_RATIO = 0.25
+_FRONT_WORKING_SIDE_CLEARANCE_MIN = 0.10
+_FRONT_WORKING_SIDE_CLEARANCE_MAX = 0.18
+
 
 def is_ground_obstacle(name: str, fxtr: Fixture) -> bool:
     """Return True if *fxtr* is a ground-level physical obstacle."""
@@ -77,6 +85,299 @@ def get_fixture_aabb(fxtr: Fixture) -> tuple[np.ndarray, np.ndarray] | None:
         return pts.min(axis=0), pts.max(axis=0)
     except Exception:
         return None
+
+
+_FACE_NORMALS = {
+    "neg_y": np.array([0.0, -1.0]),
+    "pos_y": np.array([0.0, 1.0]),
+    "neg_x": np.array([-1.0, 0.0]),
+    "pos_x": np.array([1.0, 0.0]),
+}
+
+
+def _get_rot_based_face_order(fixture: Fixture) -> list[str]:
+    """Return face keys ordered front -> sides -> back based on fixture.rot."""
+    all_faces = ["neg_y", "pos_y", "neg_x", "pos_x"]
+    if not hasattr(fixture, "rot") or fixture.rot is None:
+        return all_faces
+
+    rot = float(fixture.rot)
+    front_dir = np.array([-np.cos(rot), -np.sin(rot)])
+    return sorted(all_faces, key=lambda f: -float(np.dot(_FACE_NORMALS[f], front_dir)))
+
+
+def infer_front_face_from_target(
+    fmin: np.ndarray,
+    fmax: np.ndarray,
+    target_xy: np.ndarray,
+) -> str:
+    """Infer the front face from a world-space target on / near the active face."""
+    target = np.asarray(target_xy, dtype=float)[:2]
+    all_faces = ["neg_y", "pos_y", "neg_x", "pos_x"]
+
+    def _projected_distance(face_key: str) -> float:
+        projected = get_face_target_point(
+            face_key,
+            fmin,
+            fmax,
+            target_xy=target,
+            standoff=0.0,
+            side_clearance=0.0,
+        )
+        return float(np.linalg.norm(projected - target))
+
+    return min(all_faces, key=_projected_distance)
+
+
+def get_face_order(
+    fixture: Fixture,
+    front_target_xy: np.ndarray | None = None,
+) -> list[str]:
+    """Return face keys ordered front -> sides -> back.
+
+    If *front_target_xy* is provided, infer the front face from that target and
+    only use fixture rotation to order the remaining faces.
+    """
+    base_order = _get_rot_based_face_order(fixture)
+    if front_target_xy is None:
+        return base_order
+
+    aabb = get_fixture_aabb(fixture)
+    if aabb is None:
+        return base_order
+
+    inferred_front = infer_front_face_from_target(aabb[0], aabb[1], front_target_xy)
+    return [inferred_front, *[face for face in base_order if face != inferred_front]]
+
+
+def get_face_center(
+    face_key: str,
+    fmin: np.ndarray,
+    fmax: np.ndarray,
+    standoff: float = _FACE_STANDOFF,
+) -> np.ndarray:
+    """Return the center point of a fixture face at the given standoff."""
+    center = np.array([(fmin[0] + fmax[0]) / 2, (fmin[1] + fmax[1]) / 2], dtype=float)
+    if face_key == "neg_y":
+        center[1] = fmin[1] - standoff
+    elif face_key == "pos_y":
+        center[1] = fmax[1] + standoff
+    elif face_key == "neg_x":
+        center[0] = fmin[0] - standoff
+    elif face_key == "pos_x":
+        center[0] = fmax[0] + standoff
+    else:
+        raise KeyError(f"Unknown face key: {face_key}")
+    return center
+
+
+def get_face_lateral_axis_and_span(
+    face_key: str,
+    fmin: np.ndarray,
+    fmax: np.ndarray,
+) -> tuple[int, float, float]:
+    """Return the lateral axis and min/max span for a face."""
+    if face_key in {"neg_y", "pos_y"}:
+        return 0, float(fmin[0]), float(fmax[0])
+    if face_key in {"neg_x", "pos_x"}:
+        return 1, float(fmin[1]), float(fmax[1])
+    raise KeyError(f"Unknown face key: {face_key}")
+
+
+def get_front_working_side_clearance(
+    face_key: str,
+    fmin: np.ndarray,
+    fmax: np.ndarray,
+) -> float:
+    """Return the side exclusion margin for a face's working band."""
+    _, lateral_min, lateral_max = get_face_lateral_axis_and_span(face_key, fmin, fmax)
+    span = max(0.0, lateral_max - lateral_min)
+    if span <= 0.0:
+        return 0.0
+    clearance = float(np.clip(
+        span * _FRONT_WORKING_SIDE_CLEARANCE_RATIO,
+        _FRONT_WORKING_SIDE_CLEARANCE_MIN,
+        _FRONT_WORKING_SIDE_CLEARANCE_MAX,
+    ))
+    return min(clearance, max(0.0, span / 2.0 - 1e-3))
+
+
+def get_face_working_lateral_bounds(
+    face_key: str,
+    fmin: np.ndarray,
+    fmax: np.ndarray,
+    side_clearance: float | None = None,
+) -> tuple[int, float, float]:
+    """Return the safe lateral interval for a face's working band."""
+    lateral_axis, lateral_min, lateral_max = get_face_lateral_axis_and_span(face_key, fmin, fmax)
+    clearance = (
+        get_front_working_side_clearance(face_key, fmin, fmax)
+        if side_clearance is None else
+        max(0.0, float(side_clearance))
+    )
+    if lateral_max - lateral_min <= 0.0:
+        return lateral_axis, lateral_min, lateral_max
+
+    safe_min = lateral_min + clearance
+    safe_max = lateral_max - clearance
+    if safe_min > safe_max:
+        center = (lateral_min + lateral_max) / 2.0
+        safe_min = center
+        safe_max = center
+    return lateral_axis, float(safe_min), float(safe_max)
+
+
+def is_within_face_working_band(
+    face_key: str,
+    pos_xy: np.ndarray,
+    fmin: np.ndarray,
+    fmax: np.ndarray,
+    side_clearance: float | None = None,
+    margin: float = 1e-6,
+) -> bool:
+    """Return True if *pos_xy* lies within the face's safe working band."""
+    lateral_axis, safe_min, safe_max = get_face_working_lateral_bounds(
+        face_key,
+        fmin,
+        fmax,
+        side_clearance=side_clearance,
+    )
+    pos = np.asarray(pos_xy, dtype=float)[:2]
+    return bool(safe_min - margin <= pos[lateral_axis] <= safe_max + margin)
+
+
+def get_face_target_point(
+    face_key: str,
+    fmin: np.ndarray,
+    fmax: np.ndarray,
+    target_xy: np.ndarray | None = None,
+    standoff: float = _FACE_STANDOFF,
+    side_clearance: float | None = None,
+) -> np.ndarray:
+    """Project *target_xy* onto the face's working line at the given standoff."""
+    face_target = get_face_center(face_key, fmin, fmax, standoff=standoff)
+    lateral_axis, safe_min, safe_max = (
+        get_face_working_lateral_bounds(face_key, fmin, fmax, side_clearance)
+        if side_clearance is not None else
+        get_face_lateral_axis_and_span(face_key, fmin, fmax)
+    )
+    if target_xy is None:
+        face_target[lateral_axis] = float((safe_min + safe_max) / 2.0)
+        return face_target
+
+    target = np.asarray(target_xy, dtype=float)[:2]
+    face_target[lateral_axis] = float(np.clip(target[lateral_axis], safe_min, safe_max))
+    return face_target
+
+
+def prepend_face_target_candidate(
+    candidates: list[tuple[np.ndarray, float]],
+    face_key: str,
+    fmin: np.ndarray,
+    fmax: np.ndarray,
+    target_xy: np.ndarray | None = None,
+    standoff: float = _FACE_STANDOFF,
+    side_clearance: float | None = None,
+) -> list[tuple[np.ndarray, float]]:
+    """Return candidates with the exact projected face-target candidate first."""
+    target_pos = get_face_target_point(
+        face_key,
+        fmin,
+        fmax,
+        target_xy=target_xy,
+        standoff=standoff,
+        side_clearance=side_clearance,
+    )
+    if candidates:
+        target_yaw = candidates[0][1]
+        if any(np.allclose(pos, target_pos, atol=1e-6) for pos, _ in candidates):
+            return candidates
+    else:
+        target_yaw = {
+            "neg_y": np.pi / 2,
+            "pos_y": -np.pi / 2,
+            "neg_x": 0.0,
+            "pos_x": np.pi,
+        }[face_key]
+    return [(target_pos, target_yaw), *candidates]
+
+
+def prepend_face_center_candidate(
+    candidates: list[tuple[np.ndarray, float]],
+    face_key: str,
+    fmin: np.ndarray,
+    fmax: np.ndarray,
+    standoff: float = _FACE_STANDOFF,
+) -> list[tuple[np.ndarray, float]]:
+    """Return candidates with the exact face-center candidate placed first."""
+    return prepend_face_target_candidate(
+        candidates,
+        face_key,
+        fmin,
+        fmax,
+        target_xy=None,
+        standoff=standoff,
+    )
+
+
+def get_front_alignment_metrics(
+    fixture: Fixture,
+    pos_xy: np.ndarray,
+    span_margin: float = 0.05,
+    target_xy: np.ndarray | None = None,
+) -> dict[str, float | bool | str] | None:
+    """Return front-face alignment metrics for *pos_xy* relative to *fixture*."""
+    aabb = get_fixture_aabb(fixture)
+    if aabb is None:
+        return None
+
+    fmin, fmax = aabb
+    pos = np.asarray(pos_xy, dtype=float)[:2]
+    front_face = get_face_order(fixture, front_target_xy=target_xy)[0]
+    side_clearance = get_front_working_side_clearance(front_face, fmin, fmax)
+    front_target = get_face_target_point(
+        front_face,
+        fmin,
+        fmax,
+        target_xy=target_xy,
+        standoff=0.0,
+        side_clearance=side_clearance,
+    )
+
+    lateral_axis, safe_min, safe_max = get_face_working_lateral_bounds(
+        front_face,
+        fmin,
+        fmax,
+        side_clearance=side_clearance,
+    )
+    centerline = float(front_target[lateral_axis])
+    lateral_offset = abs(float(pos[lateral_axis] - centerline))
+    within_span = bool(safe_min - span_margin <= pos[lateral_axis] <= safe_max + span_margin)
+
+    if front_face in {"neg_y", "pos_y"}:
+        front_gap = float(fmin[1] - pos[1]) if front_face == "neg_y" else float(pos[1] - fmax[1])
+    else:
+        front_gap = float(fmin[0] - pos[0]) if front_face == "neg_x" else float(pos[0] - fmax[0])
+
+    return {
+        "front_face": front_face,
+        "lateral_offset": lateral_offset,
+        "within_span": within_span,
+        "on_front_face": front_gap > 0.0,
+        "front_gap": front_gap,
+    }
+
+
+def front_lateral_offset(
+    face_key: str,
+    pos_xy: np.ndarray,
+    front_target: np.ndarray,
+) -> float:
+    """Return lateral offset from *pos_xy* to a front-face working target."""
+    lateral_axis = 0 if face_key in {"neg_y", "pos_y"} else 1
+    pos = np.asarray(pos_xy, dtype=float)[:2]
+    target = np.asarray(front_target, dtype=float)[:2]
+    return abs(float(pos[lateral_axis] - target[lateral_axis]))
 
 
 # ======================================================================
@@ -269,9 +570,12 @@ class ContinuousPlacement:
         par_max: float,
         edge_val: float,
         yaw: float,
+        standoff: float | None = None,
     ) -> list[tuple[np.ndarray, float]]:
         """Sample (position, yaw) candidates along one AABB face."""
-        perp_val = edge_val + sign * self._standoff
+        if standoff is None:
+            standoff = self._standoff
+        perp_val = edge_val + sign * standoff
         face_len = par_max - par_min
         candidates: list[tuple[np.ndarray, float]] = []
 
@@ -305,6 +609,30 @@ class ContinuousPlacement:
             flat.extend(cands)
         return flat
 
+    # Face definitions: face_key -> (perp_axis, sign, par_axis, fmin/fmax indices for par, edge index, yaw)
+    _FACE_DEFS = {
+        "neg_y": (1, -1, 0, "fmin0", "fmax0", "fmin1", np.pi / 2),
+        "pos_y": (1, +1, 0, "fmin0", "fmax0", "fmax1", -np.pi / 2),
+        "neg_x": (0, -1, 1, "fmin1", "fmax1", "fmin0", 0.0),
+        "pos_x": (0, +1, 1, "fmin1", "fmax1", "fmax0", np.pi),
+    }
+
+    def _sample_single_face(
+        self,
+        face_key: str,
+        fmin: np.ndarray,
+        fmax: np.ndarray,
+        standoff: float | None = None,
+    ) -> list[tuple[np.ndarray, float]]:
+        """Sample candidates for one face at given standoff."""
+        vals = {"fmin0": fmin[0], "fmax0": fmax[0], "fmin1": fmin[1], "fmax1": fmax[1]}
+        perp_axis, sign, par_axis, par_min_k, par_max_k, edge_k, yaw = self._FACE_DEFS[face_key]
+        return self._sample_face(
+            perp_axis, sign, par_axis,
+            vals[par_min_k], vals[par_max_k], vals[edge_k], yaw,
+            standoff=standoff,
+        )
+
     def _generate_face_candidates_grouped(
         self,
         fixture: Fixture,
@@ -319,34 +647,17 @@ class ContinuousPlacement:
 
         fmin, fmax = aabb
         return {
-            # Bottom face (y_min): robot stands below, faces +y
-            "neg_y": self._sample_face(1, -1, 0, fmin[0], fmax[0], fmin[1], np.pi / 2),
-            # Top face (y_max): robot stands above, faces -y
-            "pos_y": self._sample_face(1, +1, 0, fmin[0], fmax[0], fmax[1], -np.pi / 2),
-            # Left face (x_min): robot stands left, faces +x
-            "neg_x": self._sample_face(0, -1, 1, fmin[1], fmax[1], fmin[0], 0.0),
-            # Right face (x_max): robot stands right, faces -x
-            "pos_x": self._sample_face(0, +1, 1, fmin[1], fmax[1], fmax[0], np.pi),
+            face_key: self._sample_single_face(face_key, fmin, fmax)
+            for face_key in ["neg_y", "pos_y", "neg_x", "pos_x"]
         }
 
-    def _get_face_order(self, fixture: Fixture) -> list[str]:
+    def _get_face_order(
+        self,
+        fixture: Fixture,
+        front_target_xy: np.ndarray | None = None,
+    ) -> list[str]:
         """Return face keys ordered front → sides → back based on fixture.rot."""
-        all_faces = ["neg_y", "pos_y", "neg_x", "pos_x"]
-        if not hasattr(fixture, "rot") or fixture.rot is None:
-            return all_faces
-
-        rot = float(fixture.rot)
-        front_dir = np.array([-np.cos(rot), -np.sin(rot)])
-
-        face_normals = {
-            "neg_y": np.array([0.0, -1.0]),
-            "pos_y": np.array([0.0, 1.0]),
-            "neg_x": np.array([-1.0, 0.0]),
-            "pos_x": np.array([1.0, 0.0]),
-        }
-
-        return sorted(all_faces,
-                       key=lambda f: -float(np.dot(face_normals[f], front_dir)))
+        return get_face_order(fixture, front_target_xy=front_target_xy)
 
     # ------------------------------------------------------------------
     # Main entry
@@ -363,9 +674,13 @@ class ContinuousPlacement:
 
         Args:
             require_front: If True (interactive fixtures like fridge/cabinet),
-                only consider front-face candidates (fall back to sides if
-                none).  If False (surfaces like counters), consider ALL faces
-                and pick the closest valid position.
+                only consider front-face candidates, keeping them close to the
+                fixture's projected front working line. If ``ref_object_pos``
+                is provided in this mode, it is interpreted as the desired
+                front working target, not as a contained-object bias. If False
+                (surfaces like counters), consider ALL faces and use
+                ``ref_object_pos`` to bias toward the referenced object when
+                provided.
         """
         if robot_positions is None:
             robot_positions = []
@@ -397,21 +712,59 @@ class ContinuousPlacement:
                 valid.append((pos, yaw))
             return valid
 
-        def _pick_best(valid):
-            if ref_object_pos is not None:
-                ref_2d = np.asarray(ref_object_pos, dtype=float)[:2]
-                valid.sort(key=lambda x: float(np.linalg.norm(x[0] - ref_2d)))
-            else:
-                valid.sort(key=lambda x: float(np.linalg.norm(x[0] - fixture_center)))
+        def _pick_best(valid, target_point: np.ndarray):
+            target_2d = np.asarray(target_point, dtype=float)[:2]
+            valid.sort(key=lambda x: float(np.linalg.norm(x[0] - target_2d)))
             return (valid[0][0], valid[0][1])
 
         if require_front:
-            # Interactive fixture: try front face first, then fall back
-            face_order = self._get_face_order(fixture)
-            for face_key in face_order:
-                valid = _filter_valid(face_groups.get(face_key, []))
-                if valid:
-                    return _pick_best(valid)
+            # Interactive fixture: stay on the front face and keep as close to
+            # the desired front working line as possible.
+            aabb = get_fixture_aabb(fixture)
+            face_order = self._get_face_order(fixture, front_target_xy=ref_object_pos)
+            front_face = face_order[0]
+            if aabb is not None:
+                fmin, fmax = aabb
+                side_clearance = get_front_working_side_clearance(front_face, fmin, fmax)
+                for standoff in [self._standoff, 0.30, 0.20, 0.15, 0.10]:
+                    front_target = get_face_target_point(
+                        front_face,
+                        fmin,
+                        fmax,
+                        target_xy=ref_object_pos,
+                        standoff=standoff,
+                        side_clearance=side_clearance,
+                    )
+                    candidates = self._sample_single_face(front_face, fmin, fmax, standoff=standoff)
+                    candidates = prepend_face_target_candidate(
+                        candidates,
+                        front_face,
+                        fmin,
+                        fmax,
+                        target_xy=ref_object_pos,
+                        standoff=standoff,
+                        side_clearance=side_clearance,
+                    )
+                    valid = _filter_valid(candidates)
+                    if valid:
+                        valid = [
+                            cand for cand in valid
+                            if is_within_face_working_band(
+                                front_face,
+                                cand[0],
+                                fmin,
+                                fmax,
+                                side_clearance=side_clearance,
+                            )
+                        ]
+                    if valid:
+                        for lateral_limit in _FRONT_WORKING_LATERAL_LIMITS:
+                            centered_valid = [
+                                cand for cand in valid
+                                if front_lateral_offset(front_face, cand[0], front_target) <= lateral_limit
+                            ]
+                            if centered_valid:
+                                return _pick_best(centered_valid, front_target)
             return None
         else:
             # Surface: all faces, pick closest valid position
@@ -421,7 +774,10 @@ class ContinuousPlacement:
             valid = _filter_valid(all_candidates)
             if not valid:
                 return None
-            return _pick_best(valid)
+            target_point = fixture_center
+            if ref_object_pos is not None:
+                target_point = np.asarray(ref_object_pos, dtype=float)[:2]
+            return _pick_best(valid, target_point)
 
     def _is_within_room(self, pos: np.ndarray) -> bool:
         """Return True if *pos* is within the room bounds."""

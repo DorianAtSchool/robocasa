@@ -10,9 +10,29 @@ from __future__ import annotations
 import matplotlib.patches as patches
 import numpy as np
 
-from robocasa.utils.placement import ContinuousPlacement, get_fixture_aabb, is_ground_obstacle
+from robocasa.utils.placement import (
+    ContinuousPlacement,
+    get_fixture_aabb,
+    get_front_working_side_clearance,
+    get_face_order,
+    is_ground_obstacle,
+    is_within_face_working_band,
+)
 from robocasa.models.fixtures import FixtureType
 from robocasa.models.fixtures.fixture_utils import fixture_is_type
+
+_FRONT_ONLY_FIXTURE_TYPES = [
+    FixtureType.FRIDGE,
+    FixtureType.CABINET,
+    FixtureType.CABINET_WITH_DOOR,
+    FixtureType.CABINET_SINGLE_DOOR,
+    FixtureType.CABINET_DOUBLE_DOOR,
+    FixtureType.DRAWER,
+    FixtureType.TOP_DRAWER,
+    FixtureType.MICROWAVE,
+    FixtureType.OVEN,
+    FixtureType.DISHWASHER,
+]
 
 
 def _draw_fixtures(ax, fixtures, label_fontsize=4):
@@ -101,8 +121,27 @@ def draw_continuous_map(ax, runner):
 
     _draw_fixtures(ax, runner._fixtures)
 
-    def _classify_candidate(cp, pos, fxtr):
+    def _classify_candidate(cp, pos, fixture_id, fxtr, face_key):
         """Return (color, marker, size) for a candidate position."""
+        if any(fixture_is_type(fxtr, ft) for ft in _FRONT_ONLY_FIXTURE_TYPES):
+            aabb = get_fixture_aabb(fxtr)
+            if aabb is not None:
+                fmin, fmax = aabb
+                front_target = None
+                if hasattr(runner, "_get_fixture_front_target_xy"):
+                    front_target = runner._get_fixture_front_target_xy(fixture_id)
+                front_face = get_face_order(fxtr, front_target_xy=front_target)[0]
+                side_clearance = get_front_working_side_clearance(front_face, fmin, fmax)
+                if face_key != front_face:
+                    return "#cc3333", "x", 3
+                if not is_within_face_working_band(
+                    front_face,
+                    pos,
+                    fmin,
+                    fmax,
+                    side_clearance=side_clearance,
+                ):
+                    return "#cc3333", "x", 3
         if not cp.is_standable(pos):
             return "#cc3333", "x", 3   # red x: out of bounds or collides
         if cp._collides_with_obstacles(pos, exclude_fixture=fxtr):
@@ -121,11 +160,12 @@ def draw_continuous_map(ax, runner):
         is_dining = "dining" in fid.lower()
         if not (is_target or is_dining):
             continue
-        candidates = cp._generate_face_candidates(fxtr)
-        for pos, yaw in candidates:
-            color, marker, size = _classify_candidate(cp, pos, fxtr)
-            ax.plot(pos[0], pos[1], marker, color=color, markersize=size,
-                    zorder=3, alpha=0.7)
+        grouped_candidates = cp._generate_face_candidates_grouped(fxtr)
+        for face_key, candidates in grouped_candidates.items():
+            for pos, yaw in candidates:
+                color, marker, size = _classify_candidate(cp, pos, fid, fxtr, face_key)
+                ax.plot(pos[0], pos[1], marker, color=color, markersize=size,
+                        zorder=3, alpha=0.7)
 
     _draw_robots(ax, runner)
 

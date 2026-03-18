@@ -36,6 +36,8 @@ Existing tools (`place_on_object`, `place_on_surface`, `place_in_receptacle`) re
 
 **Goal:** Make robot base placement robust across all layouts, including corners, islands, and tight kitchens.
 
+Implementation summary: see [sim_tool_executor_phase_2.md](/Users/dorian/Documents/robocasa/docs/sim_tool_executor_phase_2.md).
+
 Build a 2D occupancy grid (~5cm cells) from fixture bounding boxes at scene init:
 - Query grid for free cells within reach of target fixture
 - Rank candidate cells by reachability and approach angle

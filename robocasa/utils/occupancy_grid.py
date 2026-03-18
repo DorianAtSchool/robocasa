@@ -14,7 +14,17 @@ from __future__ import annotations
 import numpy as np
 
 from robocasa.models.fixtures.fixture import Fixture
-from robocasa.utils.placement import get_fixture_aabb
+from robocasa.utils.placement import (
+    _FRONT_WORKING_LATERAL_LIMITS,
+    front_lateral_offset,
+    get_face_center,
+    get_face_order,
+    get_face_target_point,
+    get_front_working_side_clearance,
+    get_fixture_aabb,
+    is_within_face_working_band,
+    prepend_face_target_candidate,
+)
 
 # Fixture name substrings that should NOT be rasterized as ground obstacles.
 _SKIP_NAME_PATTERNS = ("floor",)
@@ -100,6 +110,11 @@ class OccupancyGrid:
 
         for name in obstacle_names:
             self._rasterize_fixture(fixtures[name])
+
+        # Save fixture-only occupancy (before flood-fill).  Front-face
+        # candidates for interactive fixtures use this grid so that narrow
+        # gaps between fixtures (e.g. fridge/counter) are not sealed off.
+        self._fixture_grid = self._grid.copy()
 
         # Flood-fill from room interior to find reachable free cells.
         # Any free cell NOT reached is an enclosed pocket → mark occupied.
@@ -222,6 +237,13 @@ class OccupancyGrid:
             return False
         return not self._grid[r, c]
 
+    def is_free_of_fixtures(self, xy: np.ndarray) -> bool:
+        """Return True if the cell is not occupied by any fixture (ignores flood-fill)."""
+        r, c = self._world_to_grid(xy)
+        if r < 0 or r >= self._rows or c < 0 or c >= self._cols:
+            return False
+        return not self._fixture_grid[r, c]
+
     def is_standable(self, xy: np.ndarray) -> bool:
         """Return True if a robot can stand at world position *xy*."""
         return self.is_free(xy)
@@ -242,33 +264,24 @@ class OccupancyGrid:
     # Face-based candidate generation
     # ------------------------------------------------------------------
 
-    def _get_face_order(self, fixture: Fixture) -> list[str]:
+    def _get_face_order(
+        self,
+        fixture: Fixture,
+        front_target_xy: np.ndarray | None = None,
+    ) -> list[str]:
         """Return face keys ordered front -> sides -> back based on fixture.rot."""
-        all_faces = ["neg_y", "pos_y", "neg_x", "pos_x"]
-        if not hasattr(fixture, "rot") or fixture.rot is None:
-            return all_faces
-
-        rot = float(fixture.rot)
-        front_dir = np.array([-np.cos(rot), -np.sin(rot)])
-
-        face_normals = {
-            "neg_y": np.array([0.0, -1.0]),
-            "pos_y": np.array([0.0, 1.0]),
-            "neg_x": np.array([-1.0, 0.0]),
-            "pos_x": np.array([1.0, 0.0]),
-        }
-
-        return sorted(all_faces,
-                       key=lambda f: -float(np.dot(face_normals[f], front_dir)))
+        return get_face_order(fixture, front_target_xy=front_target_xy)
 
     def _sample_face(
         self,
         face_key: str,
         fmin: np.ndarray,
         fmax: np.ndarray,
+        standoff: float | None = None,
     ) -> list[tuple[np.ndarray, float]]:
         """Sample (position, yaw) candidates along one AABB face at standoff."""
-        standoff = self._standoff
+        if standoff is None:
+            standoff = self._standoff
         spacing = self._sample_spacing
 
         # face_key -> (perp_axis, sign, par_axis, par_min, par_max, edge_val, yaw)
@@ -316,9 +329,13 @@ class OccupancyGrid:
 
         Args:
             require_front: If True (interactive fixtures like fridge/cabinet),
-                only consider front-face candidates (fall back to sides if
-                none).  If False (surfaces like counters), consider ALL faces
-                and pick the closest valid position.
+                only consider front-face candidates, keeping them close to the
+                projected front working line. If ``ref_object_pos`` is
+                provided in this mode, it is interpreted as the desired front
+                working target, not as a contained-object bias. If False
+                (surfaces like counters), consider ALL faces and use
+                ``ref_object_pos`` to bias toward the referenced object when
+                provided.
 
         Yaw is always axis-aligned (perpendicular to the fixture face).
         """
@@ -335,7 +352,15 @@ class OccupancyGrid:
         fmin, fmax = aabb
         fixture_center = np.asarray(fixture.pos[:2], dtype=float)
 
-        def _filter_valid(candidates):
+        def _filter_valid(candidates, fixture_only: bool = False):
+            """Filter candidates to valid positions.
+
+            Args:
+                fixture_only: If True, only check fixture overlap (ignore
+                    flood-fill reachability).  Used for front-face candidates
+                    of interactive fixtures where the robot teleports in.
+            """
+            grid = self._fixture_grid if fixture_only else self._grid
             valid: list[tuple[np.ndarray, float]] = []
             for pos, yaw in candidates:
                 # Safety: never place inside the target fixture's AABB
@@ -345,7 +370,7 @@ class OccupancyGrid:
                 r, c = self._world_to_grid(pos)
                 if not (0 <= r < self._rows and 0 <= c < self._cols):
                     continue
-                if self._grid[r, c]:
+                if grid[r, c]:
                     continue
                 if (r, c) in robot_cell_set:
                     continue
@@ -359,22 +384,58 @@ class OccupancyGrid:
                 valid.append((pos, yaw))
             return valid
 
-        def _pick_best(valid):
-            if ref_object_pos is not None:
-                ref_2d = np.asarray(ref_object_pos, dtype=float)[:2]
-                valid.sort(key=lambda x: float(np.linalg.norm(x[0] - ref_2d)))
-            else:
-                valid.sort(key=lambda x: float(np.linalg.norm(x[0] - fixture_center)))
+        def _pick_best(valid, target_point: np.ndarray):
+            target_2d = np.asarray(target_point, dtype=float)[:2]
+            valid.sort(key=lambda x: float(np.linalg.norm(x[0] - target_2d)))
             return (valid[0][0], valid[0][1])
 
         if require_front:
-            # Interactive fixture: try front face first, then fall back
-            face_order = self._get_face_order(fixture)
-            for face_key in face_order:
-                candidates = self._sample_face(face_key, fmin, fmax)
-                valid = _filter_valid(candidates)
+            # Interactive fixture: stay on the front face and keep as close to
+            # the desired front working line as possible.
+            # Use fixture_only=True so flood-fill doesn't block narrow gaps
+            # (robot teleports, doesn't navigate).
+            face_order = self._get_face_order(fixture, front_target_xy=ref_object_pos)
+            front_face = face_order[0]
+            side_clearance = get_front_working_side_clearance(front_face, fmin, fmax)
+            for standoff in [self._standoff, 0.30, 0.20, 0.15, 0.10]:
+                front_target = get_face_target_point(
+                    front_face,
+                    fmin,
+                    fmax,
+                    target_xy=ref_object_pos,
+                    standoff=standoff,
+                    side_clearance=side_clearance,
+                )
+                candidates = self._sample_face(front_face, fmin, fmax, standoff=standoff)
+                candidates = prepend_face_target_candidate(
+                    candidates,
+                    front_face,
+                    fmin,
+                    fmax,
+                    target_xy=ref_object_pos,
+                    standoff=standoff,
+                    side_clearance=side_clearance,
+                )
+                valid = _filter_valid(candidates, fixture_only=True)
                 if valid:
-                    return _pick_best(valid)
+                    valid = [
+                        cand for cand in valid
+                        if is_within_face_working_band(
+                            front_face,
+                            cand[0],
+                            fmin,
+                            fmax,
+                            side_clearance=side_clearance,
+                        )
+                    ]
+                if valid:
+                    for lateral_limit in _FRONT_WORKING_LATERAL_LIMITS:
+                        centered_valid = [
+                            cand for cand in valid
+                            if front_lateral_offset(front_face, cand[0], front_target) <= lateral_limit
+                        ]
+                        if centered_valid:
+                            return _pick_best(centered_valid, front_target)
             return None
         else:
             # Surface: all faces, pick closest valid position
@@ -384,4 +445,7 @@ class OccupancyGrid:
             valid = _filter_valid(all_candidates)
             if not valid:
                 return None
-            return _pick_best(valid)
+            target_point = fixture_center
+            if ref_object_pos is not None:
+                target_point = np.asarray(ref_object_pos, dtype=float)[:2]
+            return _pick_best(valid, target_point)

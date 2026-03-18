@@ -32,6 +32,11 @@ from robocasa.models.fixtures.toaster import Toaster
 import robocasa.utils.object_utils as OU
 from robocasa.models.fixtures import FixtureType
 from robocasa.models.fixtures.fixture_utils import fixture_is_type
+from robocasa.utils.placement import (
+    MAX_FRONT_WORKING_LATERAL_OFFSET,
+    get_front_alignment_metrics,
+    get_fixture_aabb,
+)
 from robocasa.utils.sim_tool_specs import SIM_TOOL_SPEC_BY_NAME
 from robocasa.utils.trajectory_runner import TrajectoryRunner
 
@@ -613,11 +618,19 @@ class SimToolExecutor:
             preferred_fixture_types=preferred_fixture_types,
             require_placeable=require_placeable,
         )
-        self.runner._move_robot_near_fixture(
-            robot_idx,
-            fixture_id,
-            ref_object_id=object_id,
-        )
+        fixture = self.runner._fixtures[fixture_id]
+        if _is_approach_center(fixture):
+            self.runner._move_robot_near_fixture(
+                robot_idx,
+                fixture_id,
+                require_front=True,
+            )
+        else:
+            self.runner._move_robot_near_fixture(
+                robot_idx,
+                fixture_id,
+                ref_object_id=object_id,
+            )
         self._sync_held_object(robot_idx)
         return fixture_id
 
@@ -1137,7 +1150,11 @@ class SimToolExecutor:
     def navigate_to_fixture(self, fixture_id: str, robot_idx: int = 0) -> ToolResult:
         fixture = self._require_fixture(fixture_id)
         front = _is_approach_center(fixture)
-        placed = self.runner._move_robot_near_fixture(robot_idx, fixture_id, require_front=front)
+        placed = self._move_robot_near_fixture_with_retries(
+            robot_idx,
+            fixture_id,
+            require_front=front,
+        )
         self._sync_held_object(robot_idx)
         return ToolResult(
             tool_name="navigate_to_fixture",
@@ -1153,7 +1170,13 @@ class SimToolExecutor:
     ) -> ToolResult:
         fixture = self._require_fixture(target_id)
         if not self._robot_near_fixture(robot_idx, target_id):
-            self.runner._move_robot_near_fixture(robot_idx, target_id, require_front=True)
+            moved = self._move_robot_near_fixture_with_retries(
+                robot_idx,
+                target_id,
+                require_front=True,
+            )
+            if moved:
+                self._sync_held_object(robot_idx)
         if part_id == "hinged" and hasattr(fixture, "open_door"):
             fixture.open_door(env=self.env)
         else:
@@ -1169,7 +1192,13 @@ class SimToolExecutor:
     ) -> ToolResult:
         fixture = self._require_fixture(target_id)
         if not self._robot_near_fixture(robot_idx, target_id):
-            self.runner._move_robot_near_fixture(robot_idx, target_id, require_front=True)
+            moved = self._move_robot_near_fixture_with_retries(
+                robot_idx,
+                target_id,
+                require_front=True,
+            )
+            if moved:
+                self._sync_held_object(robot_idx)
         if part_id == "hinged" and hasattr(fixture, "close_door"):
             fixture.close_door(env=self.env)
         else:
@@ -1185,7 +1214,13 @@ class SimToolExecutor:
     ) -> ToolResult:
         fixture = self._require_fixture(target_id)
         if not self._robot_near_fixture(robot_idx, target_id):
-            self.runner._move_robot_near_fixture(robot_idx, target_id, require_front=True)
+            moved = self._move_robot_near_fixture_with_retries(
+                robot_idx,
+                target_id,
+                require_front=True,
+            )
+            if moved:
+                self._sync_held_object(robot_idx)
         joint_name = self._resolve_joint_name(fixture, part_id if part_id != "sliding" else "slide")
         self._set_named_joint(fixture, joint_name, 1.0)
         return ToolResult("open_sliding_part", True, {"target_id": target_id, "part_id": part_id})
@@ -1198,19 +1233,93 @@ class SimToolExecutor:
     ) -> ToolResult:
         fixture = self._require_fixture(target_id)
         if not self._robot_near_fixture(robot_idx, target_id):
-            self.runner._move_robot_near_fixture(robot_idx, target_id, require_front=True)
+            moved = self._move_robot_near_fixture_with_retries(
+                robot_idx,
+                target_id,
+                require_front=True,
+            )
+            if moved:
+                self._sync_held_object(robot_idx)
         joint_name = self._resolve_joint_name(fixture, part_id if part_id != "sliding" else "slide")
         self._set_named_joint(fixture, joint_name, 0.0)
         return ToolResult("close_sliding_part", True, {"target_id": target_id, "part_id": part_id})
 
     def _robot_near_fixture(self, robot_idx: int, fixture_id: str, threshold: float = 1.5) -> bool:
-        """Return True if the robot is already within *threshold* of the fixture."""
+        """Return True if the robot is ready to interact with the fixture."""
         fxtr = self.runner._fixtures.get(fixture_id)
         if fxtr is None:
             return False
         pos = self.runner._get_robot_position(robot_idx)[:2]
+        if _is_approach_center(fxtr):
+            target_xy = self.runner._get_fixture_front_target_xy(fixture_id)
+            metrics = get_front_alignment_metrics(fxtr, pos, target_xy=target_xy)
+            if metrics is None:
+                return False
+            return bool(
+                metrics["on_front_face"]
+                and metrics["within_span"]
+                and metrics["lateral_offset"] <= MAX_FRONT_WORKING_LATERAL_OFFSET
+            )
         fxtr_pos = np.asarray(fxtr.pos[:2], dtype=float)
         return float(np.linalg.norm(pos - fxtr_pos)) < threshold
+
+    def _fixture_clearance_radius(self, fixture_id: str) -> float:
+        """Return a radius around the fixture where teammates likely block access."""
+        fixture = self.runner._fixtures.get(fixture_id)
+        if fixture is None:
+            return 1.5
+        aabb = get_fixture_aabb(fixture)
+        if aabb is None:
+            return 1.5
+        half_extent = 0.5 * np.linalg.norm(aabb[1] - aabb[0])
+        return max(1.5, float(half_extent + 0.8))
+
+    def _clear_fixture_blockers(self, robot_idx: int, fixture_id: str) -> bool:
+        """Move nearby teammate robots away from a fixture before retrying placement."""
+        fixture = self.runner._fixtures.get(fixture_id)
+        if fixture is None:
+            return False
+        fixture_pos = np.asarray(fixture.pos[:2], dtype=float)
+        clearance_radius = self._fixture_clearance_radius(fixture_id)
+        moved_any = False
+        for other_idx in range(self.runner._num_robots):
+            if other_idx == robot_idx:
+                continue
+            other_pos = self.runner._get_robot_position(other_idx)[:2]
+            if float(np.linalg.norm(other_pos - fixture_pos)) >= clearance_radius:
+                continue
+            self.runner.give_space(other_idx, fixture_id)
+            self._sync_held_object(other_idx)
+            moved_any = True
+        return moved_any
+
+    def _move_robot_near_fixture_with_retries(
+        self,
+        robot_idx: int,
+        fixture_id: str,
+        ref_object_id: str | None = None,
+        ref_pos_override: np.ndarray | None = None,
+        require_front: bool = False,
+    ) -> bool:
+        """Place a robot near a fixture, clearing teammate blockers if needed."""
+        placed = self.runner._move_robot_near_fixture(
+            robot_idx,
+            fixture_id,
+            ref_object_id=ref_object_id,
+            ref_pos_override=ref_pos_override,
+            require_front=require_front,
+        )
+        if placed or not require_front:
+            return placed
+        if not self._clear_fixture_blockers(robot_idx, fixture_id):
+            return placed
+        return self.runner._move_robot_near_fixture(
+            robot_idx,
+            fixture_id,
+            ref_object_id=ref_object_id,
+            ref_pos_override=ref_pos_override,
+            require_front=require_front,
+        )
 
     def pick_up_object(
         self,
@@ -1225,23 +1334,24 @@ class SimToolExecutor:
         if current_holder is not None and current_holder != robot_idx:
             raise ValueError(f"Object {object_id!r} is already held by robot {current_holder}")
 
-        # Skip navigation if robot is already near the fixture — avoids
-        # displacing another robot when both need the same tight fixture
-        # (e.g. two robots at a fridge against a wall).
+        # Skip navigation only if the robot is already in a usable working
+        # pose for the fixture.
         if not self._robot_near_fixture(robot_idx, source_id):
             source_fxtr = self.runner._fixtures[source_id]
             if _is_approach_center(source_fxtr):
                 # Interactive fixture (fridge, cabinet) — must approach from front
-                self.runner._move_robot_near_fixture(
+                moved = self._move_robot_near_fixture_with_retries(
                     robot_idx, source_id, require_front=True,
                 )
             else:
                 # Surface — pre-compute object position, pick closest face
                 obj_pos, _ = self._get_object_pose(object_id)
                 ref_pos = obj_pos[:2].copy()
-                self.runner._move_robot_near_fixture(
+                moved = self._move_robot_near_fixture_with_retries(
                     robot_idx, source_id, ref_pos_override=ref_pos,
                 )
+            if moved:
+                self._sync_held_object(robot_idx)
         self._held_objects[robot_idx] = object_id
         self._sync_held_object(robot_idx)
         return ToolResult(
@@ -1476,7 +1586,13 @@ class SimToolExecutor:
         robot_idx: int = 0,
     ) -> ToolResult:
         fixture = self._require_fixture(target_id)
-        self.runner._move_robot_near_fixture(robot_idx, target_id, require_front=True)
+        moved = self._move_robot_near_fixture_with_retries(
+            robot_idx,
+            target_id,
+            require_front=True,
+        )
+        if moved:
+            self._sync_held_object(robot_idx)
 
         if isinstance(fixture, Microwave):
             fixture._turned_on = control_id == "start_button"
@@ -1501,7 +1617,13 @@ class SimToolExecutor:
         robot_idx: int = 0,
     ) -> ToolResult:
         fixture = self._require_fixture(target_id)
-        self.runner._move_robot_near_fixture(robot_idx, target_id, require_front=True)
+        moved = self._move_robot_near_fixture_with_retries(
+            robot_idx,
+            target_id,
+            require_front=True,
+        )
+        if moved:
+            self._sync_held_object(robot_idx)
 
         if isinstance(fixture, Toaster):
             slot_pair = 0
@@ -1526,7 +1648,13 @@ class SimToolExecutor:
         robot_idx: int = 0,
     ) -> ToolResult:
         fixture = self._require_fixture(target_id)
-        self.runner._move_robot_near_fixture(robot_idx, target_id, require_front=True)
+        moved = self._move_robot_near_fixture_with_retries(
+            robot_idx,
+            target_id,
+            require_front=True,
+        )
+        if moved:
+            self._sync_held_object(robot_idx)
 
         goal_lower = str(goal).lower()
         if goal_lower in {"on", "open", "high", "max", "1", "true"}:
