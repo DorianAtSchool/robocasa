@@ -240,15 +240,32 @@ class TrajectoryAdapter:
             if isinstance(dispenser_id, str):
                 args["reference_fixture_id"] = self._resolve_dispenser_id(dispenser_id)
 
-        if tool_name == "get_env_image":
-            image_path = step.get("image_path")
-            if isinstance(image_path, str):
-                args["image_path"] = str(self._resolve_output_path(image_path, output_dir))
-        elif tool_name == "get_agent_image":
-            args.setdefault("agent_id", agent_id)
-            image_path = step.get("image_path")
-            if isinstance(image_path, str):
-                args["image_path"] = str(self._resolve_output_path(image_path, output_dir))
+        if tool_name in {"get_env_image", "get_agent_image", "get_image"}:
+            if "views" not in args and "view" in args:
+                args["views"] = [args.pop("view")]
+            elif isinstance(args.get("views"), str):
+                args["views"] = [args["views"]]
+
+            if tool_name == "get_agent_image":
+                args.setdefault("agent_id", agent_id)
+
+            image_paths = args.get("image_paths")
+            if not (isinstance(image_paths, list) and image_paths):
+                image_paths = step.get("image_paths")
+            if isinstance(image_paths, list) and image_paths:
+                args["image_paths"] = [
+                    str(self._resolve_output_path(image_path, output_dir))
+                    for image_path in image_paths
+                ]
+            else:
+                image_path = args.pop("image_path", None)
+                if not isinstance(image_path, str):
+                    image_path = step.get("image_path")
+                if isinstance(image_path, str):
+                    args["image_paths"] = [
+                        str(self._resolve_output_path(image_path, output_dir))
+                    ]
+            tool_name = "get_image"
 
         args = self._resolve_step_args(
             tool_name,
@@ -265,6 +282,7 @@ class TrajectoryAdapter:
                 "source_agent": agent_id,
                 "reasoning": step.get("reasoning"),
                 "image_path": step.get("image_path"),
+                "image_paths": deepcopy(step.get("image_paths")),
             },
         }
 

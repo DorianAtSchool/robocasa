@@ -30,17 +30,10 @@ def _build_tool_spec(name: str, description: str, *arg_names: str) -> dict[str, 
 
 SIM_TOOL_SPECS: list[dict[str, Any]] = [
     _build_tool_spec(
-        "get_agent_image",
-        "Capture and save one image from a robot-mounted camera.",
-        "agent_id",
-        "view",
-        "image_path",
-    ),
-    _build_tool_spec(
-        "get_env_image",
-        "Capture and save one image from a shared environment camera.",
-        "view",
-        "image_path",
+        "get_image",
+        "Capture and save one or more images from named views.",
+        "views",
+        "image_paths",
     ),
     _build_tool_spec(
         "close_hinged_part",

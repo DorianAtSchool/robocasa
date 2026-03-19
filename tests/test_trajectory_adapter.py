@@ -106,15 +106,19 @@ class TestTrajectoryAdapter(unittest.TestCase):
             adapted["initial_state"]["objects"]["mug_main"]["location"],
             "cab_main",
         )
+        self.assertEqual(adapted["tool_calls"][0]["tool"], "get_image")
+        self.assertEqual(adapted["tool_calls"][0]["args"]["views"], ["top_view"])
         self.assertEqual(
-            adapted["tool_calls"][0]["args"]["image_path"],
-            str(Path("tmp/output") / "images/traj_1/0_top.png"),
+            adapted["tool_calls"][0]["args"]["image_paths"],
+            [str(Path("tmp/output") / "images/traj_1/0_top.png")],
         )
         self.assertEqual(adapted["tool_calls"][1]["tool"], "place_under")
         self.assertEqual(
             adapted["tool_calls"][1]["args"]["reference_fixture_id"],
             "coffee_machine_main",
         )
+        self.assertEqual(adapted["tool_calls"][2]["tool"], "get_image")
+        self.assertEqual(adapted["tool_calls"][2]["args"]["views"], ["agentview_right"])
         self.assertEqual(adapted["tool_calls"][2]["args"]["agent_id"], "agent_1")
         self.assertTrue(adapted["resolution_log"])
 
@@ -179,20 +183,27 @@ class TestSimToolExecutorObservationHelpers(unittest.TestCase):
         )
         return executor
 
-    def test_get_env_image_saves_requested_view(self):
+    def test_get_image_saves_requested_env_view(self):
         executor = self._make_executor()
         with tempfile.TemporaryDirectory() as tmpdir:
             image_path = Path(tmpdir) / "top.png"
-            result = executor.get_env_image("top_view", str(image_path))
+            result = executor.get_image(
+                views=["top_view"],
+                image_paths=[str(image_path)],
+            )
 
             self.assertTrue(image_path.exists())
             self.assertEqual(result.details["camera_name"], "top_view")
 
-    def test_get_agent_image_supports_agentview_right(self):
+    def test_get_image_supports_agentview_right(self):
         executor = self._make_executor()
         with tempfile.TemporaryDirectory() as tmpdir:
             image_path = Path(tmpdir) / "right.png"
-            result = executor.get_agent_image("agent_1", "agentview_right", str(image_path))
+            result = executor.get_image(
+                views=["agentview_right"],
+                image_paths=[str(image_path)],
+                agent_id="agent_1",
+            )
 
             self.assertTrue(image_path.exists())
             self.assertEqual(result.details["camera_name"], "robot1_agentview_right")
