@@ -4,15 +4,15 @@ This document explains the current implementation of
 [sim_tool_executor.py](/Users/dorian/Documents/robocasa/robocasa/utils/sim_tool_executor.py).
 
 It is narrower than
-[sim_tool_layer.md](/Users/dorian/Documents/robocasa/docs/sim_tool_layer.md).
+[sim_tool_layer.md](./sim_tool_layer.md).
 That document describes the planner-facing tool surface. This document focuses
 on the concrete executor that runs those tools inside a live RoboCasa scene.
 
 For implementation history, see:
 
-- [sim_tool_executor_phase_2.md](/Users/dorian/Documents/robocasa/docs/sim_tool_executor_phase_2.md)
-- [sim_tool_executor_phase_3.md](/Users/dorian/Documents/robocasa/docs/sim_tool_executor_phase_3.md)
-- [continuous_vs_grid_placement.md](/Users/dorian/Documents/robocasa/docs/continuous_vs_grid_placement.md)
+- [sim_tool_executor_phase_2.md](./sim_tool_executor_phase_2.md)
+- [sim_tool_executor_phase_3.md](./sim_tool_executor_phase_3.md)
+- [continuous_vs_grid_placement.md](./continuous_vs_grid_placement.md)
 
 ## Purpose
 

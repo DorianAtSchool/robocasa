@@ -7,7 +7,7 @@ and external LLMs a stable, validated action interface that can be grounded and
 executed in a live scene.
 
 The concrete executor for these tools is documented in
-[sim_tool_executor.md](/Users/dorian/Documents/robocasa/docs/sim_tool_executor.md).
+[sim_tool_executor.md](./sim_tool_executor.md).
 
 ## Why This Layer Exists
 

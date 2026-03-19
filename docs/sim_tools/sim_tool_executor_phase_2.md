@@ -2,7 +2,7 @@
 
 This document records what Phase 2 turned into in practice.
 
-The original Phase 2 plan in [sim_tool_executor_phases.md](/Users/dorian/Documents/robocasa/docs/sim_tool_executor_phases.md) described a 2D occupancy grid for robot approach grounding. The final implementation was broader: it became a full robot-base placement subsystem with two interchangeable backends, shared front-approach semantics for enclosing fixtures, and sweep-based validation tooling.
+The original Phase 2 plan in [sim_tool_executor_phases.md](./sim_tool_executor_phases.md) described a 2D occupancy grid for robot approach grounding. The final implementation was broader: it became a full robot-base placement subsystem with two interchangeable backends, shared front-approach semantics for enclosing fixtures, and sweep-based validation tooling.
 
 ## Summary
 

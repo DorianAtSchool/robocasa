@@ -36,7 +36,7 @@ Existing tools (`place_on_object`, `place_on_surface`, `place_in_receptacle`) re
 
 **Goal:** Make robot base placement robust across all layouts, including corners, islands, and tight kitchens.
 
-Implementation summary: see [sim_tool_executor_phase_2.md](/Users/dorian/Documents/robocasa/docs/sim_tool_executor_phase_2.md).
+Implementation summary: see [sim_tool_executor_phase_2.md](./sim_tool_executor_phase_2.md).
 
 Build a 2D occupancy grid (~5cm cells) from fixture bounding boxes at scene init:
 - Query grid for free cells within reach of target fixture
@@ -52,7 +52,7 @@ This grid replaces the current fixture-relative fallback in `_move_robot_near_fi
 
 ## Phase 3: Collision-Aware Object Placement
 
-Implementation summary: see [sim_tool_executor_phase_3.md](/Users/dorian/Documents/robocasa/docs/sim_tool_executor_phase_3.md).
+Implementation summary: see [sim_tool_executor_phase_3.md](./sim_tool_executor_phase_3.md).
 
 **Goal:** Place objects on surfaces without colliding with other objects or appliances.
 

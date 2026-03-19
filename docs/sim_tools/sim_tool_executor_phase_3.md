@@ -2,7 +2,7 @@
 
 This document records what Phase 3 turned into in practice.
 
-The original Phase 3 plan in [sim_tool_executor_phases.md](/Users/dorian/Documents/robocasa/docs/sim_tool_executor_phases.md) described collision-aware object placement on surfaces. The final implementation kept that goal, but it landed as a shared fixture-placement sampler in the runner plus executor-side routing changes so the high-level placement tools actually use it.
+The original Phase 3 plan in [sim_tool_executor_phases.md](./sim_tool_executor_phases.md) described collision-aware object placement on surfaces. The final implementation kept that goal, but it landed as a shared fixture-placement sampler in the runner plus executor-side routing changes so the high-level placement tools actually use it.
 
 ## Summary
 
@@ -125,7 +125,7 @@ Validation:
 
 Documentation:
 
-- [sim_tool_executor_phase_3.md](/Users/dorian/Documents/robocasa/docs/sim_tool_executor_phase_3.md)
+- [sim_tool_executor_phase_3.md](./sim_tool_executor_phase_3.md)
 
 ## End State
 

@@ -83,14 +83,14 @@ Welcome to RoboCasa's documentation!
    :maxdepth: 1
    :caption: Sim Tools
 
-   commands
-   sim_tool_layer
-   sim_tool_executor
-   sim_tool_executor_phases
-   sim_tool_executor_phase_2
-   sim_tool_executor_phase_3
-   continuous_vs_grid_placement
-   trajectory_guessing_and_generation_workflow
+   sim_tools/commands
+   sim_tools/sim_tool_layer
+   sim_tools/sim_tool_executor
+   sim_tools/sim_tool_executor_phases
+   sim_tools/sim_tool_executor_phase_2
+   sim_tools/sim_tool_executor_phase_3
+   sim_tools/continuous_vs_grid_placement
+   sim_tools/trajectory_guessing_and_generation_workflow
 
 .. toctree::
    :maxdepth: 4
