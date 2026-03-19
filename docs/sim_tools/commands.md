@@ -105,31 +105,6 @@ Example `get_image` tool call inside a plan or trajectory step:
 }
 ```
 
-Verify map generation directly through the tool function:
-
-```bash
-python - <<'PY'
-from robocasa.utils.sim_tool_executor import SimToolExecutor
-
-executor = SimToolExecutor(
-    task_name="HotDogSetup",
-    robots=2,
-    layout=11,
-    style=34,
-    seed=42,
-    placement="grid",
-)
-try:
-    result = executor.get_image(
-        views=["map"],
-        image_paths=["tmp/verify_map.png"],
-    )
-    print(result.details)
-finally:
-    executor.close()
-PY
-```
-
 ## Trajectory-Level Runs
 
 Hotdog trajectory test, grid placement:
