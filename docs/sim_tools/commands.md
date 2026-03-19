@@ -205,5 +205,8 @@ python tests/test_placement_sweep.py \
 
 - `cooperative_hotdog_setup` maps to `HotDogSetup`.
 - `sandwich_station` maps to `PrepareSandwichStation`.
+- `grid` is the default placement mode for the executor, trajectory tests, and sweep tests.
+- A trajectory JSON is not self-contained today unless it carries `scene_parameters` (or top-level `layout` / `style` / `seed`).
+  Older symbolic trajectory JSONs still need those flags so the simulator can recreate a concrete kitchen instance.
 - Executor outputs include placement maps, frame PNGs, videos, and metadata JSON.
 - Sweep outputs write one folder per combo with a `result.json`.

@@ -7,11 +7,11 @@ placement strategy and logs per-step robot positions, invariant checks, and
 optional video/frame output.
 
 Usage:
-  # Default: 2 tasks × 2 layouts, continuous placement
-  python tests/test_placement_sweep.py --placement continuous --output tmp/sweep_continuous
-
-  # Grid placement
+  # Default: 2 tasks × 2 layouts, grid placement
   python tests/test_placement_sweep.py --placement grid --output tmp/sweep_grid
+
+  # Continuous placement
+  python tests/test_placement_sweep.py --placement continuous --output tmp/sweep_continuous
 
   # Specific tasks and layouts
   python tests/test_placement_sweep.py --tasks HotDogSetup,PrepareSandwichStation \
@@ -21,7 +21,7 @@ Usage:
   python tests/test_placement_sweep.py --tasks HotDogSetup --layouts 11 --styles 34 --output tmp/quick
 
 Options:
-  --placement    grid or continuous (default: continuous)
+  --placement    grid or continuous (default: grid)
   --output       Directory for results (required)
   --tasks        Comma-separated task names (default: HotDogSetup,PrepareSandwichStation)
   --layouts      Comma-separated layout ids (default: 11,56)
@@ -354,8 +354,8 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "--placement", default="continuous", choices=["grid", "continuous"],
-        help="Placement strategy (default: continuous)",
+        "--placement", default="grid", choices=["grid", "continuous"],
+        help="Placement strategy (default: grid)",
     )
     parser.add_argument(
         "--output", type=str, required=True,

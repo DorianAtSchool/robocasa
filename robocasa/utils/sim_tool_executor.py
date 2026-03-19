@@ -1985,9 +1985,33 @@ def _main():
     )
     parser.add_argument("--task", type=str, default=None)
     parser.add_argument("--robots", type=int, default=2)
-    parser.add_argument("--layout", type=int, default=11)
-    parser.add_argument("--style", type=int, default=34)
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--layout",
+        type=int,
+        default=None,
+        help=(
+            "Kitchen layout id. If omitted, uses trajectory scene_parameters.layout "
+            "when present, otherwise defaults to 11."
+        ),
+    )
+    parser.add_argument(
+        "--style",
+        type=int,
+        default=None,
+        help=(
+            "Kitchen style id. If omitted, uses trajectory scene_parameters.style "
+            "when present, otherwise defaults to 34."
+        ),
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help=(
+            "Environment seed. If omitted, uses trajectory scene_parameters.seed "
+            "when present, otherwise defaults to 42."
+        ),
+    )
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=360)
     parser.add_argument("--output-dir", type=str, required=True)
@@ -2064,6 +2088,25 @@ def _main():
         with open(args.trajectory, "r") as f:
             trajectory_payload = json.load(f)
 
+    def _resolve_scene_parameter(name: str, fallback: int) -> int:
+        explicit_value = getattr(args, name)
+        if explicit_value is not None:
+            return explicit_value
+        if isinstance(trajectory_payload, dict):
+            scene_parameters = trajectory_payload.get("scene_parameters")
+            if isinstance(scene_parameters, dict):
+                scene_value = scene_parameters.get(name)
+                if scene_value is not None:
+                    return int(scene_value)
+            top_level_value = trajectory_payload.get(name)
+            if top_level_value is not None:
+                return int(top_level_value)
+        return fallback
+
+    layout = _resolve_scene_parameter("layout", 11)
+    style = _resolve_scene_parameter("style", 34)
+    seed = _resolve_scene_parameter("seed", 42)
+
     if args.task is None:
         if args.demo_plan is not None:
             demo_key = args.demo_plan.strip().lower().replace("-", "_")
@@ -2082,9 +2125,9 @@ def _main():
     executor = SimToolExecutor(
         task_name=task_name,
         robots=args.robots,
-        layout=args.layout,
-        style=args.style,
-        seed=args.seed,
+        layout=layout,
+        style=style,
+        seed=seed,
         render_width=args.width,
         render_height=args.height,
         gl_backend=args.gl_backend,
