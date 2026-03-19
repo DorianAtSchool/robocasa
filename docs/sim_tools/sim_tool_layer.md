@@ -188,7 +188,7 @@ planner context should contain:
 - hard rules that forbid invented ids
 
 The generator for this lives in
-[generate_llm_task_descriptions.py](/Users/dorian/Documents/robocasa/robocasa/scripts/generate_llm_task_descriptions.py).
+[generate_llm_task_descriptions.py](/Users/dorian/Documents/robocasa_mason/robocasa/utils/generate_llm_task_descriptions.py).
 
 ## Current Limits
 

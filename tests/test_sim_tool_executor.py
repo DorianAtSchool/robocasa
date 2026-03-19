@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import robosuite.utils.transform_utils as T
 
-from robocasa.scripts.generate_llm_task_descriptions import (
+from robocasa.utils.generate_llm_task_descriptions import (
     build_compact_task_context,
     render_llm_prompt,
 )
