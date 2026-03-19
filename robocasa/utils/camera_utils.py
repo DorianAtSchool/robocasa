@@ -186,13 +186,35 @@ def get_robot_cam_configs(robot, use_cotraining_cameras=False):
     return deep_update(default_configs, robot_specific_configs)
 
 
+def _replicate_cam_configs_for_robot(base_configs, robot_idx):
+    """Create camera configs for robot N by remapping robot0 names/bodies."""
+    if robot_idx == 0:
+        return deepcopy(base_configs)
+    result = {}
+    for cam_name, cam_cfg in base_configs.items():
+        new_name = cam_name.replace("robot0_", f"robot{robot_idx}_")
+        new_cfg = deepcopy(cam_cfg)
+        parent = new_cfg.get("parent_body")
+        if parent:
+            new_cfg["parent_body"] = parent.replace(
+                "mobilebase0_", f"mobilebase{robot_idx}_"
+            ).replace("robot0_", f"robot{robot_idx}_")
+        result[new_name] = new_cfg
+    return result
+
+
 def set_cameras(env):
     """
     Adds new kitchen-relevant cameras to the environment. Will randomize cameras if specified.
+    Creates camera configs for all robots (not just robot 0).
     """
-    env._cam_configs = get_robot_cam_configs(
+    base_configs = get_robot_cam_configs(
         env.robots[0].name, use_cotraining_cameras=env.use_cotraining_cameras
     )
+    env._cam_configs = {}
+    for i in range(len(env.robots)):
+        env._cam_configs.update(_replicate_cam_configs_for_robot(base_configs, i))
+
     if env.randomize_cameras:
         randomize_cameras(env)
 

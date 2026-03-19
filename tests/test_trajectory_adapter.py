@@ -1,0 +1,258 @@
+from __future__ import annotations
+
+import tempfile
+from pathlib import Path
+from types import SimpleNamespace
+import unittest
+
+import numpy as np
+
+from robocasa.utils.sim_tool_executor import SimToolExecutor
+from robocasa.utils.trajectory_adapter import TrajectoryAdapter
+
+
+class FakeExecutor:
+    def __init__(self):
+        self.loaded_state = None
+        self.executed_steps = []
+        self.scene = {
+            "fixtures": {
+                "cab_main": {"fixture_type": "cabinet_double_door"},
+                "counter_main": {"fixture_type": "counter_non_dining"},
+                "coffee_machine_main": {"fixture_type": "coffee_machine"},
+            },
+            "objects": {
+                "mug_main": {"object_type": "mug"},
+            },
+        }
+
+    def get_scene_description(self):
+        return self.scene
+
+    def _parse_agent_idx(self, agent_id):
+        if isinstance(agent_id, int):
+            return agent_id
+        return int(str(agent_id).replace("agent_", ""))
+
+    def load_initial_state(self, initial_state):
+        self.loaded_state = initial_state
+        return {"loaded": True}
+
+    def execute(self, tool_name, robot_idx=0, **kwargs):
+        self.executed_steps.append((tool_name, robot_idx, kwargs))
+        return SimpleNamespace(success=True, details={"tool_name": tool_name, "args": kwargs})
+
+
+class TestTrajectoryAdapter(unittest.TestCase):
+    def test_adapt_resolves_ids_and_rewrites_image_steps(self):
+        executor = FakeExecutor()
+        adapter = TrajectoryAdapter(executor=executor)
+        trajectory = {
+            "trajectory_id": "traj_1",
+            "initial_state": {
+                "agents": {
+                    "agent_0": {"location": "counter_1", "held_object": None},
+                    "agent_1": {"location": "coffee_machine_1", "held_object": None},
+                },
+                "objects": {
+                    "mug_1": {"object_type": "mug", "location": "cabinet_1"},
+                },
+                "fixtures": {
+                    "cabinet_1": {"fixture_type": "cabinet"},
+                    "counter_1": {"fixture_type": "counter"},
+                    "coffee_machine_1": {"fixture_type": "coffee_machine"},
+                },
+                "machine_state": {
+                    "coffee_machine_1": {
+                        "started": False,
+                        "dispenser_id": "coffee_machine_dispenser",
+                    }
+                },
+            },
+            "steps": [
+                {
+                    "step": 0,
+                    "agent": "agent_0",
+                    "tool": "get_env_image",
+                    "args": {"view": "top_view"},
+                    "image_path": "images/traj_1/0_top.png",
+                },
+                {
+                    "step": 1,
+                    "agent": "agent_0",
+                    "tool": "place_under_dispenser",
+                    "args": {
+                        "object_id": "mug_1",
+                        "dispenser_id": "coffee_machine_dispenser",
+                    },
+                },
+                {
+                    "step": 2,
+                    "agent": "agent_1",
+                    "tool": "get_agent_image",
+                    "args": {"view": "agentview_right"},
+                    "image_path": "images/traj_1/2_right.png",
+                },
+            ],
+        }
+
+        adapted = adapter.adapt(trajectory, output_dir="tmp/output")
+
+        self.assertEqual(
+            adapted["initial_state"]["agents"]["agent_0"]["location"],
+            "counter_main",
+        )
+        self.assertEqual(
+            adapted["initial_state"]["objects"]["mug_main"]["location"],
+            "cab_main",
+        )
+        self.assertEqual(
+            adapted["tool_calls"][0]["args"]["image_path"],
+            str(Path("tmp/output") / "images/traj_1/0_top.png"),
+        )
+        self.assertEqual(adapted["tool_calls"][1]["tool"], "place_under")
+        self.assertEqual(
+            adapted["tool_calls"][1]["args"]["reference_fixture_id"],
+            "coffee_machine_main",
+        )
+        self.assertEqual(adapted["tool_calls"][2]["args"]["agent_id"], "agent_1")
+        self.assertTrue(adapted["resolution_log"])
+
+    def test_fixture_family_matching_handles_specific_scene_types(self):
+        executor = FakeExecutor()
+        adapter = TrajectoryAdapter(executor=executor)
+
+        self.assertEqual(
+            adapter._fixture_candidates_for_type("cabinet"),
+            ["cab_main"],
+        )
+        self.assertEqual(
+            adapter._fixture_candidates_for_type("counter"),
+            ["counter_main"],
+        )
+
+    def test_execute_loads_state_then_runs_steps(self):
+        executor = FakeExecutor()
+        adapter = TrajectoryAdapter(executor=executor)
+        trajectory = {
+            "initial_state": {
+                "agents": {"agent_0": {"location": "counter_1", "held_object": None}},
+                "objects": {"mug_1": {"object_type": "mug", "location": "cabinet_1"}},
+                "fixtures": {
+                    "cabinet_1": {"fixture_type": "cabinet"},
+                    "counter_1": {"fixture_type": "counter"},
+                },
+            },
+            "steps": [
+                {
+                    "step": 0,
+                    "agent": "agent_0",
+                    "tool": "communicate",
+                    "args": {"to": "agent_1", "message": "hello"},
+                }
+            ],
+        }
+
+        metadata = adapter.execute(trajectory)
+
+        self.assertTrue(metadata["load_initial_state"]["loaded"])
+        self.assertIsNotNone(executor.loaded_state)
+        self.assertEqual(len(executor.executed_steps), 1)
+        self.assertEqual(executor.executed_steps[0][0], "communicate")
+
+
+class TestSimToolExecutorObservationHelpers(unittest.TestCase):
+    def _make_executor(self):
+        executor = SimToolExecutor.__new__(SimToolExecutor)
+        executor.runner = SimpleNamespace(
+            render_height=4,
+            render_width=5,
+            _render_room_view=lambda: np.full((4, 5, 3), 7, dtype=np.uint8),
+            _render_top_view=lambda: np.full((4, 5, 3), 9, dtype=np.uint8),
+        )
+        executor.env = SimpleNamespace(
+            sim=SimpleNamespace(
+                render=lambda height, width, camera_name: np.full(
+                    (height, width, 3), 13, dtype=np.uint8
+                )
+            )
+        )
+        return executor
+
+    def test_get_env_image_saves_requested_view(self):
+        executor = self._make_executor()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image_path = Path(tmpdir) / "top.png"
+            result = executor.get_env_image("top_view", str(image_path))
+
+            self.assertTrue(image_path.exists())
+            self.assertEqual(result.details["camera_name"], "top_view")
+
+    def test_get_agent_image_supports_agentview_right(self):
+        executor = self._make_executor()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image_path = Path(tmpdir) / "right.png"
+            result = executor.get_agent_image("agent_1", "agentview_right", str(image_path))
+
+            self.assertTrue(image_path.exists())
+            self.assertEqual(result.details["camera_name"], "robot1_agentview_right")
+
+
+class TestSimToolExecutorLoadInitialState(unittest.TestCase):
+    def test_load_initial_state_repositions_agents_and_holds_objects(self):
+        move_calls = []
+        navigate_calls = []
+        machine_calls = []
+        location_updates = []
+        synced = []
+
+        executor = SimToolExecutor.__new__(SimToolExecutor)
+        executor._held_objects = {}
+        executor.runner = SimpleNamespace(
+            _fixtures={"counter_main": object(), "cab_main": object()},
+            move_object=lambda object_id, location: move_calls.append((object_id, location)),
+            _set_object_location=lambda object_id, fixture_id: location_updates.append(
+                (object_id, fixture_id)
+            ),
+        )
+        executor.open_hinged_part = lambda target_id, part_id: None
+        executor.close_hinged_part = lambda target_id, part_id: None
+        executor.open_sliding_part = lambda target_id, part_id: None
+        executor.close_sliding_part = lambda target_id, part_id: None
+        executor._set_fixture_machine_state = lambda fixture_id, started: machine_calls.append(
+            (fixture_id, started)
+        )
+        executor.navigate_to_fixture = lambda fixture_id, robot_idx=0: navigate_calls.append(
+            (robot_idx, fixture_id)
+        )
+        executor._require_object = lambda object_id: object_id
+        executor._sync_held_object = lambda robot_idx: synced.append(robot_idx)
+        executor._parse_agent_idx = lambda agent_id: int(str(agent_id).replace("agent_", ""))
+
+        summary = executor.load_initial_state(
+            {
+                "agents": {
+                    "agent_0": {"location": "counter_main", "held_object": "mug_main"},
+                    "agent_1": {"location": "cab_main", "held_object": None},
+                },
+                "objects": {
+                    "mug_main": {"location": "cab_main"},
+                },
+                "fixtures": {},
+                "machine_state": {
+                    "counter_main": {"started": False},
+                },
+            }
+        )
+
+        self.assertEqual(move_calls, [])
+        self.assertEqual(navigate_calls, [(0, "counter_main"), (1, "cab_main")])
+        self.assertEqual(machine_calls, [("counter_main", False)])
+        self.assertEqual(executor._held_objects, {0: "mug_main"})
+        self.assertEqual(synced, [0])
+        self.assertEqual(location_updates, [("mug_main", "counter_main")])
+        self.assertTrue(summary["loaded"])
+
+
+if __name__ == "__main__":
+    unittest.main()
