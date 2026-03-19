@@ -208,6 +208,32 @@ class TestSimToolExecutorObservationHelpers(unittest.TestCase):
             self.assertTrue(image_path.exists())
             self.assertEqual(result.details["camera_name"], "robot1_agentview_right")
 
+    def test_get_image_supports_multiple_views_and_map(self):
+        executor = self._make_executor()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            top_path = Path(tmpdir) / "top.png"
+            map_path = Path(tmpdir) / "map.png"
+
+            def _fake_save_map_image(requested_path):
+                requested_path = Path(requested_path)
+                requested_path.write_bytes(b"map")
+                return requested_path
+
+            executor._save_map_image = _fake_save_map_image
+            result = executor.get_image(
+                views=["top_view", "map"],
+                image_paths=[str(top_path), str(map_path)],
+            )
+
+            self.assertTrue(top_path.exists())
+            self.assertTrue(map_path.exists())
+            self.assertEqual(result.details["views"], ["top_view", "map"])
+            self.assertEqual(result.details["camera_names"], ["top_view", "map"])
+            self.assertEqual(
+                result.details["image_paths"],
+                [str(top_path), str(map_path)],
+            )
+
 
 class TestSimToolExecutorLoadInitialState(unittest.TestCase):
     def test_load_initial_state_repositions_agents_and_holds_objects(self):
