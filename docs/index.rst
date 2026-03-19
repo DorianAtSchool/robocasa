@@ -80,6 +80,19 @@ Welcome to RoboCasa's documentation!
    .. use_cases/mimicgen
 
 .. toctree::
+   :maxdepth: 1
+   :caption: Sim Tools
+
+   commands
+   sim_tool_layer
+   sim_tool_executor
+   sim_tool_executor_phases
+   sim_tool_executor_phase_2
+   sim_tool_executor_phase_3
+   continuous_vs_grid_placement
+   trajectory_guessing_and_generation_workflow
+
+.. toctree::
    :maxdepth: 4
    :caption: Source API
 
