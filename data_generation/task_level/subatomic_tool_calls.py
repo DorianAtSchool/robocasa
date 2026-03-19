@@ -72,8 +72,8 @@ SUBATOMIC_TOOL_SPECS: tuple[SubatomicToolSpec, ...] = (
     ),
     _build_tool_spec(
         "get_image",
-        "Capture an image from a named camera view for later inspection.",
-        "camera_view",
+        "Capture one or more images from named views for later inspection.",
+        ("views", "STRING_ARRAY"),
     ),
     _build_tool_spec(
         "give_space",
@@ -126,12 +126,6 @@ SUBATOMIC_TOOL_SPECS: tuple[SubatomicToolSpec, ...] = (
         "Place an object onto an exposed support surface or attachment seat.",
         "object_id",
         "support_id",
-    ),
-    _build_tool_spec(
-        "place_under_dispenser",
-        "Place an object under a machine dispenser target.",
-        "object_id",
-        "dispenser_id",
     ),
     _build_tool_spec(
         "place_under",

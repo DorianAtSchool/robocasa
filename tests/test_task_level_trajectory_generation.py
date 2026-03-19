@@ -101,6 +101,8 @@ from data_generation.task_level.generation.raw.orchestrator import (
     generate_trajectories,
 )
 from data_generation.task_level.generation.raw.outputs import (
+    _resolve_output_paths,
+    _write_generation_outputs,
     build_cost_output_payload,
     build_error_summary_output_payload,
     build_summary_output_payload,
@@ -138,8 +140,8 @@ PREPARE_COFFEE_ACTION_SPECS = (
     ("pick_up_object", {"object_id": "mug_1", "source_id": "counter_1"}),
     ("navigate_to_fixture", {"fixture_id": "coffee_machine_1"}),
     (
-        "place_under_dispenser",
-        {"object_id": "mug_1", "dispenser_id": "coffee_machine_dispenser"},
+        "place_under",
+        {"object_id": "mug_1", "reference_fixture_id": "coffee_machine_1"},
     ),
     ("press_button", {"target_id": "coffee_machine_1", "control_id": "start_button"}),
 )
@@ -198,7 +200,7 @@ def make_required_get_image_step(
     agent_id,
     *,
     reasoning,
-    camera_view="wrist",
+    views=("wrist",),
 ):
     """Builds a compact get_image step used to frame task actions."""
 
@@ -206,29 +208,7 @@ def make_required_get_image_step(
         "step": -1,
         "agent": agent_id,
         "tool": "get_image",
-        "args": {"camera_view": camera_view},
-        "reasoning": reasoning,
-    }
-
-
-def make_required_v2_image_step(
-    agent_id,
-    *,
-    reasoning,
-    tool_name,
-    view,
-):
-    """Builds a compact `v2` observation step used in shared FSM tests."""
-
-    if tool_name == "get_env_image":
-        args = {"view": view}
-    else:
-        args = {"agent_id": agent_id, "view": view}
-    return {
-        "step": -1,
-        "agent": agent_id,
-        "tool": tool_name,
-        "args": args,
+        "args": {"views": list(views)},
         "reasoning": reasoning,
     }
 
@@ -858,6 +838,20 @@ def make_verbalized_response(
     return payload
 
 
+def measure_nested_json_depth(value):
+    """Measures the deepest nested dict-or-list path in a JSON-like payload."""
+
+    if isinstance(value, dict):
+        if not value:
+            return 1
+        return 1 + max(measure_nested_json_depth(child) for child in value.values())
+    if isinstance(value, list):
+        if not value:
+            return 1
+        return 1 + max(measure_nested_json_depth(child) for child in value)
+    return 0
+
+
 def make_prepare_coffee_task_instance(run_index=0):
     """Builds the deterministic PrepareCoffee task instance used by runtime."""
 
@@ -957,7 +951,7 @@ class SubatomicToolCatalogTests(unittest.TestCase):
         self.assertIn("place_next_to", tool_names)
         self.assertIn("pick_up_object", tool_names)
         self.assertIn("place_under", tool_names)
-        self.assertIn("place_under_dispenser", tool_names)
+        self.assertNotIn("place_under_dispenser", tool_names)
         self.assertIn("press_button", tool_names)
         self.assertNotIn("wait", tool_names)
         self.assertTrue(all(tool_name == tool_name.lower() for tool_name in tool_names))
@@ -966,7 +960,8 @@ class SubatomicToolCatalogTests(unittest.TestCase):
         prompt = build_prepare_coffee_prompt("unit-test")
         self.assertIn("give_space", prompt)
         self.assertIn("pick_up_object", prompt)
-        self.assertIn("place_under_dispenser", prompt)
+        self.assertIn("place_under", prompt)
+        self.assertNotIn("place_under_dispenser", prompt)
         self.assertIn("press_button", prompt)
         self.assertNotIn('"wait"', prompt)
         self.assertIn("communicate", prompt)
@@ -1006,6 +1001,35 @@ class SubatomicToolCatalogTests(unittest.TestCase):
         )
         self.assertIn(
             "communicate first about that upcoming navigation",
+            prompt,
+        )
+        self.assertIn(
+            "Each communicate step sends a message to the other agent in the scene",
+            prompt,
+        )
+        self.assertIn(
+            "args.to must be that agent's exact ID.",
+            prompt,
+        )
+        self.assertIn(
+            "args must contain exactly the argument names required by that tool",
+            prompt,
+        )
+        self.assertIn(
+            "Do not omit required args and do not invent extra arg keys.",
+            prompt,
+        )
+        self.assertIn(
+            "use the exact symbolic IDs shown in the allowed tools block",
+            prompt,
+        )
+        self.assertIn(
+            "Keep args as a flat object that contains only that step's tool inputs.",
+            prompt,
+        )
+        self.assertNotIn("Args formatting example:", prompt)
+        self.assertNotIn(
+            "Study this JSON example and mirror the same flat args structure.",
             prompt,
         )
         self.assertIn(
@@ -1072,6 +1096,7 @@ class SubatomicToolCatalogTests(unittest.TestCase):
         self.assertIn("place_next_to", prompt)
         self.assertIn("PrepareSandwichStation", prompt)
         self.assertIn("toaster_oven_1", prompt)
+        self.assertNotIn("Args formatting example:", prompt)
         self.assertIn(
             "Use place_next_to with reference_object_id toaster_oven_1",
             prompt,
@@ -1287,6 +1312,11 @@ class DotenvLoadingTests(unittest.TestCase):
         self.assertEqual(
             runtime_config.cost_output_path, Path("/tmp/custom_costs.json")
         )
+
+    def test_parse_args_accepts_resume_directory(self):
+        runtime_config = parse_args(["--resume", "/tmp/existing-run"])
+
+        self.assertEqual(runtime_config.resume_path, Path("/tmp/existing-run"))
 
     def test_parse_args_rejects_removed_output_flag(self):
         with self.assertRaises(SystemExit):
@@ -1764,12 +1794,17 @@ class FiniteStateTaskValidatorTests(unittest.TestCase):
             list(step_properties["tool"]["enum"]),
             list(allowed_tool_specs),
         )
+        args_properties = step_properties["args"]["properties"]
         self.assertEqual(
-            list(step_properties["args"]["properties"]),
+            step_properties["args"]["type"],
+            "OBJECT",
+        )
+        self.assertEqual(
+            list(args_properties),
             [
                 "to",
                 "message",
-                "camera_view",
+                "views",
                 "object_id",
                 "source_id",
                 "receptacle_id",
@@ -1783,14 +1818,51 @@ class FiniteStateTaskValidatorTests(unittest.TestCase):
             ],
         )
         self.assertEqual(
-            step_properties["args"]["properties"]["to"]["enum"],
+            args_properties["to"]["enum"],
+            ["agent_0", "agent_1"],
+        )
+        self.assertEqual(
+            args_properties["views"],
+            {
+                "type": "ARRAY",
+                "items": {"type": "STRING"},
+            },
+        )
+        self.assertEqual(
+            step_properties["agent"]["enum"],
             ["agent_0", "agent_1"],
         )
         self.assertNotIn("agents", response_schema["properties"])
         self.assertEqual(response_schema["required"], ["steps"])
         self.assertNotIn("image_path", step_properties)
+        self.assertNotIn("image_paths", step_properties)
         self.assertNotIn("entity_refs", step_properties)
         self.assertEqual(response_schema["properties"]["steps"]["minItems"], 4)
+
+    def test_build_task_response_schema_preserves_integer_tool_arg_types(self):
+        response_schema = build_task_response_schema(
+            agent_ids=("agent_0", "agent_1"),
+            allowed_tool_specs={
+                "communicate": {
+                    "description": "Send a short coordination message.",
+                    "tool_args": ["to", "message"],
+                },
+                "set_timer": {
+                    "description": "Set a timer duration.",
+                    "tool_args": ["duration", "unit"],
+                    "tool_arg_types": {"duration": "INTEGER"},
+                },
+            },
+        )
+
+        args_properties = response_schema["properties"]["steps"]["items"]["properties"][
+            "args"
+        ]["properties"]
+        self.assertEqual(args_properties["duration"], {"type": "INTEGER"})
+        self.assertEqual(
+            args_properties["to"]["enum"],
+            ["agent_0", "agent_1"],
+        )
 
     def test_validator_inserts_canonical_agents_when_model_omits_them(self):
         validator = PrepareCoffeeValidator()
@@ -1845,7 +1917,7 @@ class FiniteStateTaskValidatorTests(unittest.TestCase):
             ),
             make_toy_action_spec(
                 "get_image",
-                {"camera_view": "wrist"},
+                {"views": ["wrist"]},
             ),
             make_toy_action_spec(
                 "navigate_to_fixture",
@@ -2124,7 +2196,7 @@ class FiniteStateTaskValidatorTests(unittest.TestCase):
 
         self.assertTrue(validation["is_valid"])
 
-    def test_validator_accepts_v2_observation_tools(self):
+    def test_validator_accepts_multiview_get_image_steps(self):
         actions = (
             make_toy_action_spec(
                 "navigate_to_fixture",
@@ -2152,69 +2224,54 @@ class FiniteStateTaskValidatorTests(unittest.TestCase):
         candidate["steps"] = [
             candidate["steps"][0],
             candidate["steps"][1],
-            make_required_v2_image_step(
+            make_required_get_image_step(
                 "agent_0",
-                tool_name="get_env_image",
-                view="top_view",
                 reasoning="I should inspect the full scene before the task begins.",
+                views=("top_view", "room_view", "map"),
             ),
-            make_required_v2_image_step(
+            make_required_get_image_step(
                 "agent_0",
-                tool_name="get_env_image",
-                view="room_view",
-                reasoning="I should inspect the room view before the task begins.",
-            ),
-            make_required_v2_image_step(
-                "agent_0",
-                tool_name="get_agent_image",
-                view="agentview_center",
                 reasoning="I should inspect the path before navigation.",
+                views=("agentview_center", "agentview_left", "agentview_right"),
             ),
             action_steps[0],
-            make_required_v2_image_step(
+            make_required_get_image_step(
                 "agent_0",
-                tool_name="get_agent_image",
-                view="agentview_center",
                 reasoning="I should confirm the navigation result.",
+                views=("agentview_center", "agentview_left", "agentview_right"),
             ),
-            make_required_v2_image_step(
+            make_required_get_image_step(
                 "agent_0",
-                tool_name="get_agent_image",
-                view="wrist",
                 reasoning="I should inspect the object before grasping it.",
+                views=("wrist", "agentview_center"),
             ),
             action_steps[1],
-            make_required_v2_image_step(
+            make_required_get_image_step(
                 "agent_0",
-                tool_name="get_agent_image",
-                view="agentview_center",
                 reasoning="I should confirm the grasp result.",
+                views=("wrist", "agentview_center"),
             ),
-            make_required_v2_image_step(
+            make_required_get_image_step(
                 "agent_0",
-                tool_name="get_agent_image",
-                view="agentview_center",
                 reasoning="I should inspect the next navigation target.",
+                views=("agentview_center", "agentview_left", "agentview_right"),
             ),
             action_steps[2],
-            make_required_v2_image_step(
+            make_required_get_image_step(
                 "agent_0",
-                tool_name="get_agent_image",
-                view="agentview_center",
                 reasoning="I should confirm the navigation result at the shelf.",
+                views=("agentview_center", "agentview_left", "agentview_right"),
             ),
-            make_required_v2_image_step(
+            make_required_get_image_step(
                 "agent_0",
-                tool_name="get_agent_image",
-                view="wrist",
                 reasoning="I should inspect the placement target.",
+                views=("wrist", "agentview_center"),
             ),
             action_steps[3],
-            make_required_v2_image_step(
+            make_required_get_image_step(
                 "agent_0",
-                tool_name="get_agent_image",
-                view="agentview_center",
                 reasoning="I should capture the completed setup.",
+                views=("wrist", "agentview_center"),
             ),
         ]
         renumber_candidate_steps(candidate)
@@ -2998,6 +3055,90 @@ class GenerationTests(unittest.TestCase):
             batch_service.create_calls[0]["output_prefix"], round_output_prefix
         )
 
+    def test_batch_processing_progress_status_shows_completed_trajectory_count(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_config = RuntimeConfig(
+                composite_task="PrepareCoffee",
+                num_runs=2,
+                model="gemini-3-flash-preview",
+                sdk="google-genai",
+                project="demo-project",
+                location="global",
+                temperature=0.5,
+                max_workers=8,
+                max_retries=2,
+                batch_processing=True,
+                batch_gcs_prefix="gs://demo-bucket/batch-prefix",
+            )
+            batch_run_context = BatchRunContext(
+                run_id="20260311T000000Z",
+                local_staging_dir=Path(tmpdir) / "batch" / "20260311T000000Z",
+                gcs_run_prefix="gs://demo-bucket/batch-prefix/prepare_coffee/20260311T000000Z",
+            )
+            round_output_prefix = (
+                "gs://demo-bucket/batch-prefix/prepare_coffee/20260311T000000Z/"
+                "round-01/output"
+            )
+            batch_storage = FakeBatchStorage(
+                {
+                    round_output_prefix: make_batch_download(
+                        "gs://demo-bucket/output/predictions.jsonl",
+                        [
+                            make_batch_output_row(
+                                "traj-000000-attempt-00",
+                                candidate=make_valid_candidate(),
+                            ),
+                            make_batch_output_row(
+                                "traj-000001-attempt-00",
+                                candidate=make_alternative_valid_candidate(),
+                            ),
+                        ],
+                    )
+                }
+            )
+            batch_service = FakeBatchService([make_batch_job("batchJobs/round-01")])
+            overall_progress = mock.Mock()
+            progress_handles = ProgressHandles(
+                display=None,
+                overall_progress=overall_progress,
+                trajectory_progress_bars=[],
+                log_writer=None,
+            )
+
+            with mock.patch(
+                "data_generation.task_level.runtime.batch_generation._build_batch_run_context",
+                return_value=batch_run_context,
+            ):
+                with mock.patch(
+                    "data_generation.task_level.runtime.batch_generation._build_batch_service_from_runtime",
+                    return_value=batch_service,
+                ):
+                    with mock.patch(
+                        "data_generation.task_level.runtime.batch_generation._build_batch_storage_from_runtime",
+                        return_value=batch_storage,
+                    ):
+                        with mock.patch(
+                            "data_generation.task_level.runtime.batch_generation._create_batch_progress_handles",
+                            return_value=progress_handles,
+                        ):
+                            payload = generate_trajectories(
+                                runtime_config,
+                                show_progress=False,
+                            )
+
+        self.assertEqual(payload["num_trajectories"], 2)
+        status_updates = [
+            call.args[0] for call in overall_progress.set_postfix_str.call_args_list
+        ]
+        self.assertIn("starting trajectories=0/2", status_updates[0])
+        self.assertTrue(
+            any(
+                "round 1: processing results trajectories=1/2" in status
+                for status in status_updates
+            )
+        )
+        self.assertIn("complete trajectories=2/2", status_updates[-1])
+
     def test_batch_request_payload_includes_optional_thinking_level(self):
         runtime_config = RuntimeConfig(
             composite_task="PrepareCoffee",
@@ -3122,6 +3263,90 @@ class GenerationTests(unittest.TestCase):
             '"variation_key": "traj-000000-attempt-01"',
             batch_storage.upload_calls[1]["text"],
         )
+
+    def test_batch_processing_returns_partial_payload_when_one_run_exhausts(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_config = RuntimeConfig(
+                composite_task="PrepareCoffee",
+                num_runs=2,
+                model="gemini-3-flash-preview",
+                sdk="google-genai",
+                project="demo-project",
+                location="global",
+                temperature=0.5,
+                max_workers=3,
+                max_retries=2,
+                batch_processing=True,
+                batch_gcs_prefix="gs://demo-bucket/batch-prefix",
+            )
+            batch_run_context = BatchRunContext(
+                run_id="20260311T000000Z",
+                local_staging_dir=Path(tmpdir) / "batch" / "20260311T000000Z",
+                gcs_run_prefix="gs://demo-bucket/batch-prefix/prepare_coffee/20260311T000000Z",
+            )
+            round_one_output_prefix = (
+                "gs://demo-bucket/batch-prefix/prepare_coffee/20260311T000000Z/"
+                "round-01/output"
+            )
+            round_two_output_prefix = (
+                "gs://demo-bucket/batch-prefix/prepare_coffee/20260311T000000Z/"
+                "round-02/output"
+            )
+            batch_storage = FakeBatchStorage(
+                {
+                    round_one_output_prefix: make_batch_download(
+                        "gs://demo-bucket/output/round-01.jsonl",
+                        [
+                            make_batch_output_row(
+                                "traj-000000-attempt-00",
+                                candidate=make_valid_candidate(),
+                            ),
+                            make_batch_output_row(
+                                "traj-000001-attempt-00",
+                                status="internal error",
+                            ),
+                        ],
+                    ),
+                    round_two_output_prefix: make_batch_download(
+                        "gs://demo-bucket/output/round-02.jsonl",
+                        [
+                            make_batch_output_row(
+                                "traj-000001-attempt-01",
+                                status="still broken",
+                            )
+                        ],
+                    ),
+                }
+            )
+            batch_service = FakeBatchService(
+                [
+                    make_batch_job("batchJobs/round-01"),
+                    make_batch_job("batchJobs/round-02"),
+                ]
+            )
+
+            with mock.patch(
+                "data_generation.task_level.runtime.batch_generation._build_batch_run_context",
+                return_value=batch_run_context,
+            ):
+                with mock.patch(
+                    "data_generation.task_level.runtime.batch_generation._build_batch_service_from_runtime",
+                    return_value=batch_service,
+                ):
+                    with mock.patch(
+                        "data_generation.task_level.runtime.batch_generation._build_batch_storage_from_runtime",
+                        return_value=batch_storage,
+                    ):
+                        payload = generate_trajectories(
+                            runtime_config,
+                            show_progress=False,
+                        )
+
+        self.assertEqual(payload["num_trajectories"], 1)
+        self.assertEqual(payload["completed_run_indices"], [0])
+        self.assertEqual(payload["failed_run_indices"], [1])
+        self.assertEqual(payload["pending_run_indices"], [1])
+        self.assertFalse(payload["is_complete"])
 
     def test_batch_processing_disable_validation_keeps_invalid_trajectory(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -3425,6 +3650,12 @@ class GenerationTests(unittest.TestCase):
         self.assertTrue(
             all(
                 "image_path" not in step for step in payload["trajectories"][0]["steps"]
+            )
+        )
+        self.assertTrue(
+            all(
+                "image_paths" not in step
+                for step in payload["trajectories"][0]["steps"]
             )
         )
 
@@ -3926,6 +4157,36 @@ class GenerationTests(unittest.TestCase):
             ],
             [0.8, 0.2],
         )
+
+    def test_batch_processing_verbalized_request_payload_stays_within_depth_limit(self):
+        runtime_config = RuntimeConfig(
+            composite_task="PrepareCoffee",
+            num_runs=1,
+            model="gemini-3-flash-preview",
+            sdk="google-genai",
+            project="demo-project",
+            location="global",
+            temperature=0.5,
+            max_workers=1,
+            max_retries=1,
+            sampling="verbalized",
+            verbalized_k=2,
+            batch_processing=True,
+            batch_gcs_prefix="gs://demo-bucket/batch-prefix",
+        )
+
+        payload = _batch_request_payload(
+            prompt="Say hi",
+            runtime_config=runtime_config,
+            task_definition=PREPARE_COFFEE_TASK,
+        )
+
+        row = {
+            "variation_key": "traj-000000-attempt-00",
+            "request": payload,
+        }
+
+        self.assertEqual(measure_nested_json_depth(row), 15)
 
     def test_preflight_cost_estimate_counts_verbalized_prompt_once_per_run(self):
         runtime_config = RuntimeConfig(
@@ -4466,6 +4727,41 @@ class GenerationTests(unittest.TestCase):
             overall_progress.set_postfix_str.call_args_list[-1].args[0],
             "running accumulated=$0.0026 projected=$0.0026",
         )
+
+    def test_on_demand_generation_returns_partial_payload_when_one_run_exhausts(self):
+        runtime_config = RuntimeConfig(
+            composite_task="PrepareCoffee",
+            num_runs=2,
+            model="gemini-3-flash-preview",
+            sdk="google-genai",
+            project="demo-project",
+            location="global",
+            temperature=0.5,
+            max_workers=1,
+            max_retries=1,
+        )
+        client_factories = [
+            SequencedFakeClient([make_valid_candidate()]),
+            mock.Mock(
+                generate=mock.Mock(
+                    side_effect=ResponseFormatValidationError(
+                        "Model response did not contain JSON."
+                    )
+                )
+            ),
+        ]
+
+        payload = generate_trajectories(
+            runtime_config,
+            client_factory=lambda: client_factories.pop(0),
+            show_progress=False,
+        )
+
+        self.assertEqual(payload["num_trajectories"], 1)
+        self.assertEqual(payload["completed_run_indices"], [0])
+        self.assertEqual(payload["failed_run_indices"], [1])
+        self.assertEqual(payload["pending_run_indices"], [1])
+        self.assertFalse(payload["is_complete"])
 
     def test_generate_single_trajectory_updates_progress_status_with_cost(self):
         self.assertEqual(PROGRESS_BAR_WIDTH, 30)
@@ -6161,6 +6457,10 @@ class GenerationTests(unittest.TestCase):
                     "completed_trajectories": 1,
                     "invalid_trajectories": 0,
                     "successful_trajectory_fraction": 1.0,
+                    "completed_run_indices": [0],
+                    "failed_run_indices": [],
+                    "pending_run_indices": [],
+                    "is_complete": True,
                     "trajectory_directory": "trajectories",
                     "trajectory_files": [
                         {
@@ -6263,7 +6563,86 @@ class GenerationTests(unittest.TestCase):
                 )
             )
 
-    def test_main_writes_combined_summary_for_multiple_tasks(self):
+    def test_main_prints_failure_summary_for_incomplete_single_task_runs(self):
+        fixed_payload = {
+            "composite_task": "PrepareCoffee",
+            "sdk": "google-genai",
+            "model": "gemini-3-flash-preview",
+            "model_config": {
+                "reasoning": {"thinking_level": "minimal"},
+                "sampling": {"temperature": 0.2},
+            },
+            "num_runs": 1,
+            "num_trajectories": 0,
+            "generated_at": "2026-03-10T00:00:00+00:00",
+            "cost_summary": {
+                "prompt_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "total_cost_usd": 0.0,
+            },
+            "completed_run_indices": [],
+            "failed_run_indices": [0],
+            "pending_run_indices": [0],
+            "is_complete": False,
+            "trajectory_prompts": [],
+            "attempt_prompts": [],
+            "trajectory_outputs": [],
+            "trajectories": [],
+            "error_events": [
+                {
+                    "error_type": "TrajectoryGenerationError",
+                    "source": "on_demand",
+                    "stage": "generation",
+                    "saved_in_output": False,
+                    "message": "Vertex rejected the request with 400 INVALID_ARGUMENT.",
+                    "summary": (
+                        "TrajectoryGenerationError: Vertex rejected the request "
+                        "with 400 INVALID_ARGUMENT."
+                    ),
+                    "trajectory_index": 0,
+                    "trajectory_id": "traj_000000",
+                    "attempt_number": 1,
+                    "retryable": False,
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            summary_path = Path(tmpdir) / "summary.json"
+            error_summary_path = Path(tmpdir) / "summary_errors.json"
+
+            with mock.patch(
+                "data_generation.task_level.generation.raw.cli.generate_trajectories",
+                return_value=fixed_payload,
+            ):
+                with mock.patch(
+                    "data_generation.task_level.generation.raw.cli.resolve_dataset_output_path",
+                    return_value=summary_path,
+                ):
+                    with mock.patch("builtins.print") as mocked_print:
+                        exit_code = main([])
+
+            self.assertEqual(exit_code, 1)
+            self.assertTrue(summary_path.exists())
+            self.assertTrue(error_summary_path.exists())
+            printed_messages = [call.args[0] for call in mocked_print.call_args_list]
+            self.assertIn(
+                "Generation incomplete for PrepareCoffee: 1/1 runs failed.",
+                printed_messages,
+            )
+            self.assertIn(
+                "Failure: TrajectoryGenerationError: Vertex rejected the request with 400 INVALID_ARGUMENT.",
+                printed_messages,
+            )
+            self.assertIn(
+                f"Inspect {error_summary_path} for the full error log.",
+                printed_messages,
+            )
+
+    def test_main_writes_combined_summary_for_multiple_tasks_when_request_incomplete(
+        self,
+    ):
         prepare_coffee_payload = {
             "composite_task": "PrepareCoffee",
             "sdk": "google-genai",
@@ -6291,6 +6670,10 @@ class GenerationTests(unittest.TestCase):
             "attempt_prompts": [],
             "trajectory_outputs": [],
             "error_events": [],
+            "completed_run_indices": [0],
+            "failed_run_indices": [1],
+            "pending_run_indices": [1],
+            "is_complete": False,
             "trajectories": [
                 {
                     "trajectory_id": "traj_000000",
@@ -6329,6 +6712,10 @@ class GenerationTests(unittest.TestCase):
             "attempt_prompts": [],
             "trajectory_outputs": [],
             "error_events": [],
+            "completed_run_indices": [0],
+            "failed_run_indices": [1],
+            "pending_run_indices": [1],
+            "is_complete": False,
             "trajectories": [
                 {
                     "trajectory_id": "traj_000000",
@@ -6360,7 +6747,7 @@ class GenerationTests(unittest.TestCase):
                             "2",
                         ]
                     )
-            self.assertEqual(exit_code, 0)
+            self.assertEqual(exit_code, 1)
             self.assertTrue(request_summary_path.exists())
             combined_summary = json.loads(
                 request_summary_path.read_text(encoding="utf-8")
@@ -6386,6 +6773,11 @@ class GenerationTests(unittest.TestCase):
                 combined_summary["cost_summary"]["cached_input_tokens"], 50
             )
             self.assertEqual(combined_summary["cost_summary"]["total_cost_usd"], 0.008)
+            self.assertFalse(combined_summary["is_complete"])
+            self.assertEqual(
+                combined_summary["pending_tasks"],
+                ["PrepareCoffee", "HotDogSetup"],
+            )
             self.assertEqual(len(combined_summary["task_summaries"]), 2)
             self.assertEqual(combined_cost["cost_summary"]["cached_input_tokens"], 50)
             self.assertEqual(combined_cost["cost_summary"]["total_cost_usd"], 0.008)
@@ -6400,6 +6792,196 @@ class GenerationTests(unittest.TestCase):
                     request_summary_path.parent / "hot_dog_setup" / "summary.json"
                 ).exists()
             )
+
+    def test_main_resume_merges_existing_single_task_outputs_in_place(self):
+        existing_payload = {
+            "composite_task": "PrepareCoffee",
+            "sdk": "google-genai",
+            "model": "gemini-3-flash-preview",
+            "model_config": {
+                "reasoning": {"thinking_level": None},
+                "sampling": {"temperature": 0.6, "strategy": "base"},
+            },
+            "num_runs": 2,
+            "num_trajectories": 1,
+            "generated_at": "2026-03-10T00:00:00+00:00",
+            "cost_summary": {
+                "prompt_tokens": 100,
+                "cached_input_tokens": 0,
+                "output_tokens": 200,
+                "reasoning_tokens": 0,
+                "total_tokens": 300,
+                "input_cost_usd": 0.001,
+                "output_cost_usd": 0.002,
+                "total_cost_usd": 0.003,
+                "average_trajectory_cost_usd": 0.003,
+                "notes": [],
+            },
+            "error_events": [
+                {
+                    "error_type": "ResponseFormatValidationError",
+                    "source": "on_demand",
+                    "stage": "generation",
+                    "summary": "ResponseFormatValidationError: Model response did not contain JSON.",
+                    "message": "Model response did not contain JSON.",
+                    "trajectory_index": 1,
+                    "trajectory_id": "traj_000001",
+                    "attempt_number": 1,
+                    "retryable": False,
+                    "saved_in_output": False,
+                }
+            ],
+            "attempt_prompts": [],
+            "trajectory_prompts": [
+                {
+                    "trajectory_id": "traj_000000",
+                    "prompt": "existing prompt",
+                }
+            ],
+            "trajectory_outputs": [
+                {
+                    "trajectory_id": "traj_000000",
+                    "raw_output": {"existing": True},
+                }
+            ],
+            "completed_run_indices": [0],
+            "failed_run_indices": [1],
+            "pending_run_indices": [1],
+            "is_complete": False,
+            "trajectories": [
+                {
+                    "trajectory_id": "traj_000000",
+                    "agents": [{"agent": "agent_0"}, {"agent": "agent_1"}],
+                    "steps": make_valid_candidate()["steps"],
+                    "validation": {"is_valid": True},
+                    "generation_usage": {
+                        "successful_attempt_number": 1,
+                        "prompt_tokens": 100,
+                        "output_tokens": 200,
+                        "reasoning_tokens": 0,
+                        "total_tokens": 300,
+                        "observed_cost_usd": 0.003,
+                    },
+                    "prompt": "existing prompt",
+                    "raw_output": {"existing": True},
+                }
+            ],
+        }
+        resumed_payload = {
+            "composite_task": "PrepareCoffee",
+            "sdk": "google-genai",
+            "model": "gemini-3-flash-preview",
+            "model_config": {
+                "reasoning": {"thinking_level": None},
+                "sampling": {"temperature": 0.6, "strategy": "base"},
+            },
+            "num_runs": 2,
+            "num_trajectories": 1,
+            "generated_at": "2026-03-10T00:05:00+00:00",
+            "cost_summary": {
+                "prompt_tokens": 110,
+                "cached_input_tokens": 0,
+                "output_tokens": 210,
+                "reasoning_tokens": 0,
+                "total_tokens": 320,
+                "input_cost_usd": 0.0011,
+                "output_cost_usd": 0.0021,
+                "total_cost_usd": 0.0032,
+                "average_trajectory_cost_usd": 0.0032,
+                "notes": [],
+            },
+            "error_events": [],
+            "attempt_prompts": [],
+            "trajectory_prompts": [
+                {
+                    "trajectory_id": "traj_000001",
+                    "prompt": "resumed prompt",
+                }
+            ],
+            "trajectory_outputs": [
+                {
+                    "trajectory_id": "traj_000001",
+                    "raw_output": {"resumed": True},
+                }
+            ],
+            "completed_run_indices": [1],
+            "failed_run_indices": [],
+            "pending_run_indices": [],
+            "is_complete": True,
+            "trajectories": [
+                {
+                    "trajectory_id": "traj_000001",
+                    "agents": [{"agent": "agent_0"}, {"agent": "agent_1"}],
+                    "steps": make_alternative_valid_candidate()["steps"],
+                    "validation": {"is_valid": True},
+                    "generation_usage": {
+                        "successful_attempt_number": 1,
+                        "prompt_tokens": 110,
+                        "output_tokens": 210,
+                        "reasoning_tokens": 0,
+                        "total_tokens": 320,
+                        "observed_cost_usd": 0.0032,
+                    },
+                    "prompt": "resumed prompt",
+                    "raw_output": {"resumed": True},
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            resume_dir = Path(tmpdir) / "prepare_coffee_run"
+            task_runtime_config = RuntimeConfig(
+                composite_task="PrepareCoffee",
+                num_runs=2,
+                model="gemini-3-flash-preview",
+                sdk="google-genai",
+                project="demo-project",
+                location="global",
+                temperature=0.6,
+                max_workers=1,
+                max_retries=1,
+                summary_path=resume_dir / "summary.json",
+            )
+            output_paths = _resolve_output_paths(task_runtime_config)
+            _write_generation_outputs(existing_payload, output_paths=output_paths)
+
+            with mock.patch(
+                "data_generation.task_level.generation.raw.cli.generate_trajectories",
+                return_value=resumed_payload,
+            ) as mocked_generate:
+                exit_code = main(
+                    [
+                        "--tasks",
+                        "PrepareCoffee",
+                        "--num-runs",
+                        "2",
+                        "--model",
+                        "gemini-3-flash-preview",
+                        "--temperature",
+                        "0.6",
+                        "--resume",
+                        str(resume_dir),
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            mocked_generate.assert_called_once()
+            resumed_runtime_config = mocked_generate.call_args.args[0]
+            self.assertEqual(resumed_runtime_config.run_indices, (1,))
+            merged_summary = json.loads(
+                (resume_dir / "summary.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                merged_summary["completed_run_indices"],
+                [0, 1],
+            )
+            self.assertEqual(merged_summary["pending_run_indices"], [])
+            self.assertTrue(merged_summary["is_complete"])
+            trajectory_ids = [
+                trajectory_file["trajectory_id"]
+                for trajectory_file in merged_summary["trajectory_files"]
+            ]
+            self.assertEqual(trajectory_ids, ["traj_000000", "traj_000001"])
 
     def test_run_cli_exits_immediately_on_keyboard_interrupt(self):
         with mock.patch(

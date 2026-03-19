@@ -55,9 +55,11 @@ class RuntimeConfig:
     thinking_level: str | None = None
     summary_path: Path | None = None
     cost_output_path: Path | None = None
+    resume_path: Path | None = None
     disable_validation: bool = False
     batch_processing: bool = False
     batch_gcs_prefix: str | None = None
+    run_indices: tuple[int, ...] = ()
     composite_tasks: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
@@ -101,6 +103,8 @@ class RuntimeConfig:
         *,
         summary_path: Path | None = None,
         cost_output_path: Path | None = None,
+        resume_path: Path | None = None,
+        run_indices: tuple[int, ...] | None = None,
     ) -> RuntimeConfig:
         """Builds one task-scoped runtime config for the shared single-task runtime."""
 
@@ -110,6 +114,8 @@ class RuntimeConfig:
             composite_tasks=(),
             summary_path=summary_path,
             cost_output_path=cost_output_path,
+            resume_path=resume_path,
+            run_indices=self.run_indices if run_indices is None else run_indices,
         )
 
 
@@ -129,6 +135,18 @@ def _validate_runtime_config(runtime_config: RuntimeConfig) -> None:
         )
     if runtime_config.num_runs <= 0:
         raise TrajectoryGenerationError("--num-runs must be greater than 0.")
+    if runtime_config.run_indices:
+        if any(
+            run_index < 0 or run_index >= runtime_config.num_runs
+            for run_index in runtime_config.run_indices
+        ):
+            raise TrajectoryGenerationError(
+                "Configured run indices must fall within the requested --num-runs range."
+            )
+        if len(set(runtime_config.run_indices)) != len(runtime_config.run_indices):
+            raise TrajectoryGenerationError(
+                "Configured run indices must not contain duplicates."
+            )
     if runtime_config.max_workers <= 0:
         raise TrajectoryGenerationError("--max-workers must be greater than 0.")
     if runtime_config.max_retries <= 0:
@@ -146,3 +164,16 @@ def _validate_runtime_config(runtime_config: RuntimeConfig) -> None:
             "--batch-gcs-prefix or GOOGLE_CLOUD_BATCH_GCS_PREFIX is required "
             "when --batch-processing is enabled."
         )
+    if runtime_config.resume_path is not None:
+        if not runtime_config.resume_path.exists():
+            raise TrajectoryGenerationError(
+                f"Resume directory does not exist: {runtime_config.resume_path}."
+            )
+        if not runtime_config.resume_path.is_dir():
+            raise TrajectoryGenerationError(
+                f"Resume path must be a directory: {runtime_config.resume_path}."
+            )
+        if runtime_config.cost_output_path is not None:
+            raise TrajectoryGenerationError(
+                "--cost-output may not be used together with --resume."
+            )

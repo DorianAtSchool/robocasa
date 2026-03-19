@@ -543,6 +543,32 @@ class FiniteStateTaskValidator:
                             "arg_value": arg_value,
                         },
                     )
+            elif arg_schema_type == "STRING_ARRAY":
+                if not isinstance(arg_value, list) or not arg_value:
+                    raise ToolArgumentSemanticValidationError(
+                        f"{step['tool']} requires {arg_name} to be a non-empty string list.",
+                        details={
+                            "tool": step["tool"],
+                            "arg_name": arg_name,
+                            "arg_value": arg_value,
+                        },
+                    )
+
+                normalized_values: list[str] = []
+                for list_value in arg_value:
+                    if not isinstance(list_value, str) or not " ".join(
+                        list_value.strip().split()
+                    ):
+                        raise ToolArgumentSemanticValidationError(
+                            f"{step['tool']} requires {arg_name} to contain only non-empty strings.",
+                            details={
+                                "tool": step["tool"],
+                                "arg_name": arg_name,
+                                "arg_value": arg_value,
+                            },
+                        )
+                    normalized_values.append(" ".join(list_value.strip().split()))
+                tool_args[arg_name] = normalized_values
             allowed_ids_key = _allowed_ids_key_for_arg_name(arg_name)
             if allowed_ids_key is None or allowed_ids_key not in tool_spec:
                 continue

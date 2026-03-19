@@ -37,6 +37,7 @@ except ImportError:  # pragma: no cover
 from data_generation.task_level.generation.raw.config import RuntimeConfig
 from data_generation.task_level.generation.raw.runtime_support import (
     _expected_saved_trajectory_count,
+    _requested_run_indices,
     _trajectories_per_run,
     _validation_error_progress_summary,
     _validation_error_summary,
@@ -101,6 +102,15 @@ class AccumulatedCostTracker:
         with self._lock:
             return self._status_text_locked()
 
+    def completed_trajectory_count_text(self) -> str:
+        """Formats completed and total trajectory counts for progress displays."""
+
+        with self._lock:
+            return _completed_trajectory_count_text(
+                completed_trajectories=self._completed_trajectories,
+                total_trajectories=self._total_trajectories,
+            )
+
     def _status_text_locked(self) -> str:
         unavailable_text = format_cost_usd(
             None,
@@ -155,9 +165,22 @@ class AccumulatedCostTracker:
         return None
 
 
+def _completed_trajectory_count_text(
+    *,
+    completed_trajectories: int,
+    total_trajectories: int,
+) -> str:
+    """Formats compact completed trajectory counts for shared progress status."""
+
+    return f"trajectories={completed_trajectories}/{total_trajectories}"
+
+
 def _progress_run_count(runtime_config: Any) -> int:
     """Returns the progress-bar item count for runtime-like configs."""
 
+    requested_run_indices = getattr(runtime_config, "run_indices", ())
+    if isinstance(requested_run_indices, tuple) and requested_run_indices:
+        return len(requested_run_indices)
     run_count = getattr(runtime_config, "num_runs", None)
     if isinstance(run_count, int):
         return run_count
@@ -392,6 +415,7 @@ class RichProgressDisplay:
         )
         self._progress.start()
         progress_count = _progress_run_count(runtime_config)
+        requested_run_indices = _requested_run_indices(runtime_config)
         overall_task_id = self._progress.add_task(
             "[cyan]runs[/cyan]",
             total=progress_count,
@@ -407,7 +431,7 @@ class RichProgressDisplay:
             RichTaskProgressAdapter(
                 self._progress,
                 self._progress.add_task(
-                    f"[{_trajectory_progress_color(index)}]{format_trajectory_progress_label(index)}[/{_trajectory_progress_color(index)}]",
+                    f"[{_trajectory_progress_color(index)}]{format_trajectory_progress_label(requested_run_indices[index])}[/{_trajectory_progress_color(index)}]",
                     total=_trajectories_per_run(runtime_config),
                     status="queued",
                     start=True,
@@ -440,6 +464,7 @@ def _create_progress_handles(
         )
 
     progress_count = _progress_run_count(runtime_config)
+    requested_run_indices = _requested_run_indices(runtime_config)
     overall_progress = tqdm(
         total=progress_count,
         desc="Runs",
@@ -455,7 +480,7 @@ def _create_progress_handles(
         TqdmTaskProgressAdapter(
             tqdm(
                 total=_trajectories_per_run(runtime_config),
-                desc=format_trajectory_progress_label(index),
+                desc=format_trajectory_progress_label(requested_run_indices[index]),
                 bar_format=TQDM_BAR_FORMAT,
                 position=index + 1,
                 leave=True,

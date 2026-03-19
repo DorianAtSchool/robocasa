@@ -72,11 +72,8 @@ def make_sample_trajectory():
 
 
 class PostTrajectoryGenerationTests(unittest.TestCase):
-    def test_post_process_trajectory_v1_wraps_actions_with_get_image(self):
-        trajectory = post_process_trajectory(
-            make_sample_trajectory(),
-            image_tool_version="v1",
-        )
+    def test_post_process_trajectory_wraps_actions_with_multiview_get_image(self):
+        trajectory = post_process_trajectory(make_sample_trajectory())
 
         self.assertEqual(
             [step["tool"] for step in trajectory["steps"]],
@@ -98,29 +95,44 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
         )
         self.assertEqual(
             trajectory["steps"][0]["args"],
-            {"camera_view": "top_view"},
+            {"views": ["top_view", "room_view", "map"]},
         )
         self.assertEqual(
-            trajectory["steps"][0]["image_path"],
-            "images/traj_000000/0_top_view_agent_0.png",
+            trajectory["steps"][0]["image_paths"],
+            [
+                "images/traj_000000/0_top_view_agent_0.png",
+                "images/traj_000000/0_room_view_agent_0.png",
+                "images/traj_000000/0_map_agent_0.png",
+            ],
         )
         self.assertEqual(
             trajectory["steps"][3]["args"],
-            {"camera_view": "base_camera"},
+            {
+                "views": [
+                    "agentview_center",
+                    "agentview_left",
+                    "agentview_right",
+                ]
+            },
         )
         self.assertEqual(
-            trajectory["steps"][3]["image_path"],
-            "images/traj_000000/3_base_camera_agent_0.png",
+            trajectory["steps"][3]["image_paths"],
+            [
+                "images/traj_000000/3_agentview_center_agent_0.png",
+                "images/traj_000000/3_agentview_left_agent_0.png",
+                "images/traj_000000/3_agentview_right_agent_0.png",
+            ],
         )
         self.assertEqual(
             trajectory["steps"][0]["reasoning"],
-            "I need an initial top-view image before the task begins.",
+            "I need top-view, room-view, and map images before the task begins.",
         )
         self.assertEqual(
             trajectory["steps"][3]["reasoning"],
             (
-                "I need a base-camera image to observe the current scene before "
-                "I execute navigate_to_fixture."
+                "I need center agent-view, left agent-view, and right agent-view "
+                "images to observe the current scene before I execute "
+                "navigate_to_fixture."
             ),
         )
         self.assertEqual(
@@ -130,24 +142,26 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
         self.assertEqual(
             trajectory["steps"][5]["reasoning"],
             (
-                "I need a base-camera image to observe the current scene after "
-                "I executed navigate_to_fixture."
+                "I need center agent-view, left agent-view, and right agent-view "
+                "images to observe the current scene after I executed "
+                "navigate_to_fixture."
             ),
         )
         self.assertEqual(
             trajectory["steps"][6]["reasoning"],
             (
-                "I need a base-camera image to observe the current scene before "
-                "I execute pick_up_object."
+                "I need wrist and center agent-view images to observe the current "
+                "scene before I execute pick_up_object."
             ),
         )
         self.assertEqual(
             trajectory["steps"][8]["reasoning"],
             (
-                "I need a base-camera image to observe the current scene after "
-                "I executed pick_up_object."
+                "I need wrist and center agent-view images to observe the current "
+                "scene after I executed pick_up_object."
             ),
         )
+        self.assertNotIn("image_path", trajectory["steps"][0])
         self.assertFalse(trajectory["validation"]["is_valid"])
         self.assertEqual(trajectory["validation"]["checks"], [])
         self.assertIsNone(trajectory["validation"]["final_state"])
@@ -162,91 +176,8 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
         self.assertIsNone(trajectory["validation"]["step"])
         self.assertNotEqual(trajectory["validation"]["signature"], "old-signature")
 
-    def test_post_process_trajectory_v2_splits_env_and_agent_image_tools(self):
-        trajectory = post_process_trajectory(
-            make_sample_trajectory(),
-            image_tool_version="v2",
-        )
-
-        self.assertEqual(
-            [step["tool"] for step in trajectory["steps"]],
-            [
-                "get_env_image",
-                "get_env_image",
-                "communicate",
-                "communicate",
-                "get_agent_image",
-                "get_agent_image",
-                "get_agent_image",
-                "navigate_to_fixture",
-                "get_agent_image",
-                "get_agent_image",
-                "get_agent_image",
-                "get_agent_image",
-                "get_agent_image",
-                "pick_up_object",
-                "get_agent_image",
-                "get_agent_image",
-            ],
-        )
-        self.assertEqual(
-            [step["step"] for step in trajectory["steps"]],
-            list(range(16)),
-        )
-        self.assertEqual(trajectory["steps"][0]["args"], {"view": "top_view"})
-        self.assertEqual(trajectory["steps"][1]["args"], {"view": "room_view"})
-        self.assertEqual(
-            trajectory["steps"][0]["image_path"],
-            "images/traj_000000/0_get_env_image_top_view_agent_0.png",
-        )
-        self.assertEqual(
-            trajectory["steps"][1]["image_path"],
-            "images/traj_000000/1_get_env_image_room_view_agent_0.png",
-        )
-        self.assertEqual(
-            trajectory["steps"][4]["args"],
-            {"agent_id": "agent_0", "view": "agentview_center"},
-        )
-        self.assertEqual(
-            trajectory["steps"][6]["args"],
-            {"agent_id": "agent_0", "view": "agentview_right"},
-        )
-        self.assertEqual(
-            trajectory["steps"][11]["args"],
-            {"agent_id": "agent_0", "view": "wrist"},
-        )
-        self.assertEqual(
-            trajectory["steps"][4]["image_path"],
-            "images/traj_000000/4_get_agent_image_agentview_center_agent_0.png",
-        )
-        self.assertEqual(
-            trajectory["steps"][11]["image_path"],
-            "images/traj_000000/11_get_agent_image_wrist_agent_0.png",
-        )
-        self.assertEqual(
-            trajectory["steps"][1]["reasoning"],
-            "I need an initial room-view image before the task begins.",
-        )
-        self.assertEqual(
-            trajectory["steps"][4]["reasoning"],
-            (
-                "I need a center agent-view image from my perspective before I "
-                "execute navigate_to_fixture."
-            ),
-        )
-        self.assertEqual(
-            trajectory["steps"][11]["reasoning"],
-            (
-                "I need a wrist image from my perspective before I execute "
-                "pick_up_object."
-            ),
-        )
-
-    def test_post_process_trajectory_v1_keeps_rewritten_steps_schema_valid(self):
-        trajectory = post_process_trajectory(
-            make_sample_trajectory(),
-            image_tool_version="v1",
-        )
+    def test_post_process_trajectory_keeps_rewritten_steps_schema_valid(self):
+        trajectory = post_process_trajectory(make_sample_trajectory())
         validator = PrepareCoffeeValidator()
 
         try:
@@ -261,48 +192,9 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
         except TrajectoryStructureValidationError as exc:
             self.fail(f"Rewritten steps should remain schema-valid: {exc}")
 
-    def test_post_process_trajectory_v2_keeps_rewritten_steps_schema_valid(self):
-        trajectory = post_process_trajectory(
-            make_sample_trajectory(),
-            image_tool_version="v2",
-        )
-        validator = PrepareCoffeeValidator()
-
-        try:
-            validator.validate(
-                {
-                    "agents": trajectory["agents"],
-                    "steps": trajectory["steps"],
-                }
-            )
-        except TaskSemanticValidationError:
-            pass
-        except TrajectoryStructureValidationError as exc:
-            self.fail(f"Rewritten steps should remain schema-valid: {exc}")
-
-    def test_post_process_trajectory_v1_is_idempotent(self):
-        first_pass = post_process_trajectory(
-            make_sample_trajectory(),
-            image_tool_version="v1",
-        )
+    def test_post_process_trajectory_is_idempotent(self):
+        first_pass = post_process_trajectory(make_sample_trajectory())
         second_pass = post_process_trajectory(first_pass)
-
-        self.assertEqual(second_pass["steps"], first_pass["steps"])
-        self.assertEqual(
-            second_pass["validation"]["signature"],
-            first_pass["validation"]["signature"],
-        )
-        self.assertEqual(
-            second_pass["validation"]["error_type"],
-            POST_PROCESS_VALIDATION_ERROR_TYPE,
-        )
-
-    def test_post_process_trajectory_v2_is_idempotent(self):
-        first_pass = post_process_trajectory(
-            make_sample_trajectory(),
-            image_tool_version="v2",
-        )
-        second_pass = post_process_trajectory(first_pass, image_tool_version="v2")
 
         self.assertEqual(second_pass["steps"], first_pass["steps"])
         self.assertEqual(
@@ -404,7 +296,6 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
             processed_count = post_process_dataset(
                 dataset_path,
                 disable_progress=True,
-                image_tool_version="v1",
             )
 
             self.assertEqual(processed_count, 1)
@@ -415,8 +306,12 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
             self.assertEqual(source_trajectory["steps"][0]["tool"], "communicate")
             self.assertEqual(updated_trajectory["steps"][0]["tool"], "get_image")
             self.assertEqual(
-                updated_trajectory["steps"][0]["image_path"],
-                "images/traj_000000/0_top_view_agent_0.png",
+                updated_trajectory["steps"][0]["image_paths"],
+                [
+                    "images/traj_000000/0_top_view_agent_0.png",
+                    "images/traj_000000/0_room_view_agent_0.png",
+                    "images/traj_000000/0_map_agent_0.png",
+                ],
             )
             self.assertEqual(
                 json.loads(output_dataset_path.read_text(encoding="utf-8"))[
@@ -439,22 +334,26 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
             )
             self.assertTrue(output_images_dir.is_dir())
 
-    def test_parse_args_requires_explicit_image_tool_version(self):
+    def test_parse_args_requires_dataset(self):
         with self.assertRaises(SystemExit):
-            parse_args(["--dataset", "summary.json"])
+            parse_args([])
 
-    def test_parse_args_accepts_v2_image_tool_version(self):
-        args = parse_args(
-            [
-                "--dataset",
-                "summary.json",
-                "--image-tool-version",
-                "v2",
-            ]
-        )
+    def test_parse_args_accepts_dataset_without_image_tool_version(self):
+        args = parse_args(["--dataset", "summary.json"])
 
         self.assertEqual(args.dataset, Path("summary.json"))
-        self.assertEqual(args.image_tool_version, "v2")
+        self.assertFalse(args.disable_progress)
+
+    def test_parse_args_rejects_legacy_image_tool_version_flag(self):
+        with self.assertRaises(SystemExit):
+            parse_args(
+                [
+                    "--dataset",
+                    "summary.json",
+                    "--image-tool-version",
+                    "v2",
+                ]
+            )
 
 
 if __name__ == "__main__":

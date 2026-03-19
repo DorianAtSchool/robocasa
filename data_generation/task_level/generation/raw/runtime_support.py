@@ -41,6 +41,10 @@ from data_generation.task_level.tasks import (
 from data_generation.utils import round_cost, stable_json_sha256
 
 
+class RunExhaustedError(TrajectoryGenerationError):
+    """Raised when one run fails permanently but the task can continue."""
+
+
 def format_trajectory_id(trajectory_index: int) -> str:
     """Formats one persisted trajectory ID with enough padding for large runs."""
 
@@ -239,6 +243,20 @@ def _sampling_strategy_for_runtime(runtime_config: RuntimeConfig):
     return get_sampling_strategy(getattr(runtime_config, "sampling", "base"))
 
 
+def _requested_run_indices(runtime_config: RuntimeConfig) -> tuple[int, ...]:
+    """Returns the run indices that this invocation should execute."""
+
+    if runtime_config.run_indices:
+        return tuple(runtime_config.run_indices)
+    return tuple(range(runtime_config.num_runs))
+
+
+def _requested_run_count(runtime_config: RuntimeConfig) -> int:
+    """Returns how many runs this invocation should execute."""
+
+    return len(_requested_run_indices(runtime_config))
+
+
 def _trajectories_per_run(runtime_config: RuntimeConfig) -> int:
     """Returns how many saved trajectories one successful run should emit."""
 
@@ -250,7 +268,7 @@ def _trajectories_per_run(runtime_config: RuntimeConfig) -> int:
 def _expected_saved_trajectory_count(runtime_config: RuntimeConfig) -> int:
     """Returns the expected saved trajectory count for one successful job."""
 
-    return runtime_config.num_runs * _trajectories_per_run(runtime_config)
+    return _requested_run_count(runtime_config) * _trajectories_per_run(runtime_config)
 
 
 def _global_trajectory_index(

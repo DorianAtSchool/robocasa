@@ -12,14 +12,11 @@ RELEASE_TOOL_NAMES = frozenset(
         "place_on_object",
         "place_on_surface",
         "place_under",
-        "place_under_dispenser",
     }
 )
 OBSERVATION_TOOL_NAMES = frozenset(
     {
         "get_image",
-        "get_env_image",
-        "get_agent_image",
     }
 )
 GIVE_SPACE_TOOL_NAMES = frozenset({"give_space"})
@@ -29,5 +26,4 @@ PLACE_LOCATION_ARG_NAMES = (
     "support_id",
     "receptacle_id",
     "support_object_id",
-    "dispenser_id",
 )

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,7 +35,12 @@ from data_generation.task_level.runtime.client import (
     COST_DECIMAL_PLACES,
     TrajectoryGenerationError,
 )
-from data_generation.utils import camel_to_snake_case, round_cost, write_json_output
+from data_generation.utils import (
+    camel_to_snake_case,
+    coerce_int,
+    round_cost,
+    write_json_output,
+)
 
 
 @dataclass(frozen=True)
@@ -45,6 +51,10 @@ class OutputPaths:
     output_dir: Path
     cost_path: Path
     error_summary_path: Path
+
+
+ATTEMPT_PROMPT_FILENAME_PATTERN = re.compile(r"^(traj_\d+)_(\d+)\.md$")
+TRAJECTORY_ID_PATTERN = re.compile(r"^traj_(\d+)$")
 
 
 def resolve_cost_output_path(
@@ -215,6 +225,134 @@ def _build_model_config_payload(runtime_config: RuntimeConfig) -> dict[str, Any]
     }
 
 
+def _sorted_unique_run_indices(
+    run_indices: list[int] | set[int] | tuple[int, ...],
+) -> list[int]:
+    """Normalizes run indices into one sorted unique list of non-negative ints."""
+
+    return sorted(
+        {
+            run_index
+            for run_index in run_indices
+            if isinstance(run_index, int) and run_index >= 0
+        }
+    )
+
+
+def _payload_num_runs(payload: dict[str, Any]) -> int:
+    """Reads the total requested run count from one saved payload."""
+
+    num_runs = coerce_int(payload.get("num_runs"))
+    return max(num_runs or 0, 0)
+
+
+def _payload_trajectories_per_run(payload: dict[str, Any]) -> int:
+    """Reads how many saved trajectories each successful run should emit."""
+
+    model_config = payload.get("model_config", {})
+    if not isinstance(model_config, dict):
+        return 1
+    sampling_payload = model_config.get("sampling", {})
+    if not isinstance(sampling_payload, dict):
+        return 1
+    if sampling_payload.get("strategy") != "verbalized":
+        return 1
+    verbalized_k = coerce_int(sampling_payload.get("verbalized_k")) or 1
+    return max(verbalized_k, 1)
+
+
+def _trajectory_index_from_id(trajectory_id: str) -> int | None:
+    """Parses the flat saved trajectory index from one trajectory ID."""
+
+    match = TRAJECTORY_ID_PATTERN.match(trajectory_id)
+    if match is None:
+        return None
+    return int(match.group(1))
+
+
+def _run_index_for_trajectory_id(
+    trajectory_id: str,
+    *,
+    trajectories_per_run: int,
+) -> int | None:
+    """Maps one trajectory ID back to the originating run index."""
+
+    trajectory_index = _trajectory_index_from_id(trajectory_id)
+    if trajectory_index is None:
+        return None
+    return trajectory_index // max(trajectories_per_run, 1)
+
+
+def _completed_run_indices_from_trajectories(payload: dict[str, Any]) -> list[int]:
+    """Derives completed run indices from the saved trajectories when needed."""
+
+    completed_run_indices = payload.get("completed_run_indices")
+    if isinstance(completed_run_indices, list):
+        return _sorted_unique_run_indices(completed_run_indices)
+
+    trajectories_per_run = _payload_trajectories_per_run(payload)
+    completed_runs: set[int] = set()
+    for trajectory in payload.get("trajectories", []):
+        if not isinstance(trajectory, dict):
+            continue
+        trajectory_id = trajectory.get("trajectory_id")
+        if not isinstance(trajectory_id, str):
+            continue
+        run_index = _run_index_for_trajectory_id(
+            trajectory_id,
+            trajectories_per_run=trajectories_per_run,
+        )
+        if run_index is not None:
+            completed_runs.add(run_index)
+    return _sorted_unique_run_indices(completed_runs)
+
+
+def _failed_run_indices_from_error_events(
+    payload: dict[str, Any],
+    *,
+    completed_run_indices: list[int],
+) -> list[int]:
+    """Derives failed run indices from persisted error events when needed."""
+
+    failed_run_indices = payload.get("failed_run_indices")
+    if isinstance(failed_run_indices, list):
+        return _sorted_unique_run_indices(failed_run_indices)
+
+    completed_run_index_set = set(completed_run_indices)
+    failed_runs: set[int] = set()
+    for error_event in _collect_payload_error_events(payload):
+        trajectory_index = error_event.get("trajectory_index")
+        if not isinstance(trajectory_index, int):
+            continue
+        if trajectory_index in completed_run_index_set:
+            continue
+        if error_event.get("retryable") is False:
+            failed_runs.add(trajectory_index)
+    return _sorted_unique_run_indices(failed_runs)
+
+
+def _payload_run_state(payload: dict[str, Any]) -> dict[str, Any]:
+    """Builds the persisted run-completion state for one task payload."""
+
+    num_runs = _payload_num_runs(payload)
+    completed_run_indices = _completed_run_indices_from_trajectories(payload)
+    failed_run_indices = _failed_run_indices_from_error_events(
+        payload,
+        completed_run_indices=completed_run_indices,
+    )
+    pending_run_indices = [
+        run_index
+        for run_index in range(num_runs)
+        if run_index not in set(completed_run_indices)
+    ]
+    return {
+        "completed_run_indices": completed_run_indices,
+        "failed_run_indices": failed_run_indices,
+        "pending_run_indices": pending_run_indices,
+        "is_complete": not pending_run_indices,
+    }
+
+
 def _summary_trajectory_entry(trajectory: dict[str, Any]) -> dict[str, str]:
     trajectory_id = trajectory["trajectory_id"]
     return {
@@ -275,6 +413,7 @@ def build_summary_output_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if "cost_summary" in payload:
         summary_payload["cost_summary"] = payload["cost_summary"]
     summary_payload.update(_summary_trajectory_stats(payload["trajectories"]))
+    summary_payload.update(_payload_run_state(payload))
     summary_payload["trajectory_directory"] = TRAJECTORY_DIRECTORY_NAME
     summary_payload["trajectory_files"] = [
         _summary_trajectory_entry(trajectory) for trajectory in payload["trajectories"]
@@ -581,6 +720,17 @@ def build_request_summary_output_payload(
         "cost_summary": _aggregate_task_cost_summaries(task_payloads),
         "task_summaries": [],
     }
+    summary_payload["completed_tasks"] = [
+        task_run_entry["composite_task"]
+        for task_run_entry in task_run_entries
+        if _payload_run_state(task_run_entry["payload"])["is_complete"]
+    ]
+    summary_payload["pending_tasks"] = [
+        task_run_entry["composite_task"]
+        for task_run_entry in task_run_entries
+        if not _payload_run_state(task_run_entry["payload"])["is_complete"]
+    ]
+    summary_payload["is_complete"] = not summary_payload["pending_tasks"]
 
     request_root = request_summary_path.parent
     for task_run_entry in task_run_entries:
@@ -612,6 +762,7 @@ def build_request_summary_output_payload(
             "trajectory_stats": _summary_trajectory_stats(task_payload["trajectories"]),
             "cost_summary": task_payload.get("cost_summary"),
         }
+        task_summary_entry.update(_payload_run_state(task_payload))
         summary_payload["task_summaries"].append(task_summary_entry)
 
     return summary_payload
@@ -736,12 +887,166 @@ def _sanitize_trajectory_for_output(
     }
 
 
+def _attempt_prompt_sort_key(prompt_entry: dict[str, Any]) -> tuple[str, int]:
+    """Builds a stable sort key for persisted attempt prompt entries."""
+
+    return (
+        str(prompt_entry.get("run_id", "")),
+        int(prompt_entry.get("attempt_number", 0)),
+    )
+
+
+def _trajectory_sort_key(trajectory: dict[str, Any]) -> tuple[int, str]:
+    """Builds a stable sort key for one saved trajectory record."""
+
+    trajectory_id = trajectory.get("trajectory_id")
+    if not isinstance(trajectory_id, str):
+        return (-1, "")
+    trajectory_index = _trajectory_index_from_id(trajectory_id)
+    if trajectory_index is None:
+        return (-1, trajectory_id)
+    return (trajectory_index, trajectory_id)
+
+
+def _load_json_payload(path: Path) -> dict[str, Any] | None:
+    """Loads one JSON payload from disk when the path exists and is valid."""
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _deserialize_raw_output(raw_output_text: str) -> Any:
+    """Rehydrates one raw-output file back into the stored payload shape."""
+
+    try:
+        return json.loads(raw_output_text)
+    except json.JSONDecodeError:
+        return raw_output_text
+
+
+def _load_attempt_prompts(output_paths: OutputPaths) -> list[dict[str, Any]]:
+    """Loads persisted retry prompt files from one task output directory."""
+
+    attempt_prompts: list[dict[str, Any]] = []
+    if not output_paths.prompt_dir.exists():
+        return attempt_prompts
+
+    for prompt_path in sorted(output_paths.prompt_dir.glob("*.md")):
+        match = ATTEMPT_PROMPT_FILENAME_PATTERN.match(prompt_path.name)
+        if match is None:
+            continue
+        attempt_prompts.append(
+            {
+                "run_id": match.group(1),
+                "attempt_number": int(match.group(2)),
+                "prompt": prompt_path.read_text(encoding="utf-8"),
+            }
+        )
+    return attempt_prompts
+
+
+def load_generation_output_payload(output_paths: OutputPaths) -> dict[str, Any]:
+    """Reconstructs one saved task payload from an output directory on disk."""
+
+    summary_payload = _load_json_payload(output_paths.summary_path)
+    if summary_payload is None:
+        raise TrajectoryGenerationError(
+            f"Unable to load saved summary payload from {output_paths.summary_path}."
+        )
+
+    cost_payload = _load_json_payload(output_paths.cost_path) or {}
+    error_payload = _load_json_payload(output_paths.error_summary_path) or {}
+
+    trajectory_payload_paths: list[Path] = []
+    trajectory_files = summary_payload.get("trajectory_files")
+    if isinstance(trajectory_files, list):
+        for trajectory_file in trajectory_files:
+            if not isinstance(trajectory_file, dict):
+                continue
+            relative_path = trajectory_file.get("path")
+            if not isinstance(relative_path, str):
+                continue
+            trajectory_payload_paths.append(
+                output_paths.summary_path.parent / relative_path
+            )
+    if not trajectory_payload_paths:
+        trajectory_payload_paths = sorted(output_paths.trajectory_dir.glob("*.json"))
+
+    trajectories: list[dict[str, Any]] = []
+    for trajectory_path in trajectory_payload_paths:
+        trajectory_payload = _load_json_payload(trajectory_path)
+        if trajectory_payload is None:
+            continue
+        trajectory_id = trajectory_payload.get("trajectory_id")
+        if not isinstance(trajectory_id, str):
+            continue
+        prompt_path = output_paths.prompt_dir / _prompt_output_filename(trajectory_id)
+        if prompt_path.exists():
+            trajectory_payload["prompt"] = prompt_path.read_text(encoding="utf-8")
+        raw_output_path = output_paths.output_dir / _raw_output_filename(trajectory_id)
+        if raw_output_path.exists():
+            trajectory_payload["raw_output"] = _deserialize_raw_output(
+                raw_output_path.read_text(encoding="utf-8")
+            )
+        trajectories.append(trajectory_payload)
+
+    trajectory_prompts = [
+        {
+            "trajectory_id": trajectory["trajectory_id"],
+            "prompt": trajectory["prompt"],
+        }
+        for trajectory in trajectories
+        if isinstance(trajectory.get("prompt"), str)
+    ]
+    trajectory_outputs = [
+        {
+            "trajectory_id": trajectory["trajectory_id"],
+            "raw_output": trajectory["raw_output"],
+        }
+        for trajectory in trajectories
+        if "raw_output" in trajectory
+    ]
+    loaded_payload = {
+        "composite_task": summary_payload.get("composite_task"),
+        "sdk": summary_payload.get("sdk"),
+        "model": summary_payload.get("model"),
+        "model_config": summary_payload.get("model_config"),
+        "num_runs": summary_payload.get("num_runs", 0),
+        "num_trajectories": len(trajectories),
+        "generated_at": summary_payload.get("generated_at"),
+        "cost_summary": cost_payload.get(
+            "cost_summary", summary_payload.get("cost_summary")
+        ),
+        "error_events": error_payload.get("error_events", []),
+        "attempt_prompts": _load_attempt_prompts(output_paths),
+        "trajectory_prompts": trajectory_prompts,
+        "trajectory_outputs": trajectory_outputs,
+        "trajectories": trajectories,
+    }
+    for field_name in (
+        "completed_run_indices",
+        "failed_run_indices",
+        "pending_run_indices",
+        "is_complete",
+    ):
+        if field_name in summary_payload:
+            loaded_payload[field_name] = summary_payload[field_name]
+    return loaded_payload
+
+
 def _build_generation_payload(
     runtime_config: RuntimeConfig,
     ordered_trajectories: list[dict[str, Any]],
     *,
     error_events: list[dict[str, Any]] | None = None,
     attempt_prompts: list[dict[str, Any]] | None = None,
+    completed_run_indices: list[int] | None = None,
+    failed_run_indices: list[int] | None = None,
 ) -> dict[str, Any]:
     generation_usages = [
         trajectory["generation_usage"] for trajectory in ordered_trajectories
@@ -771,7 +1076,7 @@ def _build_generation_payload(
     ]
     cost_summary = _build_cost_summary_from_generation_usages(generation_usages)
     cost_summary = _append_sampling_cost_note(cost_summary, runtime_config)
-    return {
+    payload = {
         "composite_task": runtime_config.composite_task,
         "sdk": runtime_config.sdk,
         "model": runtime_config.model,
@@ -795,6 +1100,108 @@ def _build_generation_payload(
         "trajectory_outputs": trajectory_outputs,
         "trajectories": output_trajectories,
     }
+    if completed_run_indices is not None:
+        payload["completed_run_indices"] = _sorted_unique_run_indices(
+            completed_run_indices
+        )
+    if failed_run_indices is not None:
+        payload["failed_run_indices"] = _sorted_unique_run_indices(failed_run_indices)
+    payload.update(_payload_run_state(payload))
+    return payload
+
+
+def merge_generation_output_payloads(
+    runtime_config: RuntimeConfig,
+    *,
+    existing_payload: dict[str, Any],
+    new_payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Merges one resumed task payload with the newly generated output payload."""
+
+    trajectories_by_id: dict[str, dict[str, Any]] = {}
+    for payload in (existing_payload, new_payload):
+        for trajectory in payload.get("trajectories", []):
+            trajectory_id = trajectory.get("trajectory_id")
+            if isinstance(trajectory_id, str):
+                trajectories_by_id[trajectory_id] = dict(trajectory)
+
+    merged_error_events: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for payload in (existing_payload, new_payload):
+        for error_event in payload.get("error_events", []):
+            if isinstance(error_event, dict):
+                merged_error_events[_error_event_key(error_event)] = dict(error_event)
+
+    merged_attempt_prompts: dict[tuple[str, int], dict[str, Any]] = {}
+    for payload in (existing_payload, new_payload):
+        for prompt_entry in payload.get("attempt_prompts", []):
+            if not isinstance(prompt_entry, dict):
+                continue
+            merged_attempt_prompts[_attempt_prompt_sort_key(prompt_entry)] = dict(
+                prompt_entry
+            )
+
+    completed_run_indices = set(
+        _completed_run_indices_from_trajectories(existing_payload)
+    )
+    completed_run_indices.update(_completed_run_indices_from_trajectories(new_payload))
+    failed_run_indices = set(
+        _failed_run_indices_from_error_events(
+            existing_payload,
+            completed_run_indices=list(completed_run_indices),
+        )
+    )
+    failed_run_indices.update(
+        _failed_run_indices_from_error_events(
+            new_payload,
+            completed_run_indices=list(completed_run_indices),
+        )
+    )
+    failed_run_indices.difference_update(completed_run_indices)
+
+    ordered_trajectories = sorted(
+        trajectories_by_id.values(),
+        key=_trajectory_sort_key,
+    )
+    return _build_generation_payload(
+        runtime_config,
+        ordered_trajectories,
+        error_events=[merged_error_events[key] for key in sorted(merged_error_events)],
+        attempt_prompts=[
+            merged_attempt_prompts[key] for key in sorted(merged_attempt_prompts)
+        ],
+        completed_run_indices=list(completed_run_indices),
+        failed_run_indices=list(failed_run_indices),
+    )
+
+
+def validate_resume_payload(
+    runtime_config: RuntimeConfig,
+    payload: dict[str, Any],
+) -> None:
+    """Validates that saved task outputs match the active resume request."""
+
+    if payload.get("composite_task") != runtime_config.composite_task:
+        raise TrajectoryGenerationError(
+            "Resume directory task does not match the requested composite task."
+        )
+    if payload.get("model") != runtime_config.model:
+        raise TrajectoryGenerationError(
+            "Resume directory model does not match the requested model."
+        )
+    if payload.get("sdk") != runtime_config.sdk:
+        raise TrajectoryGenerationError(
+            "Resume directory SDK does not match the requested SDK."
+        )
+    if _payload_num_runs(payload) != runtime_config.num_runs:
+        raise TrajectoryGenerationError(
+            "Resume directory num_runs does not match the requested --num-runs value."
+        )
+    expected_model_config = _build_model_config_payload(runtime_config)
+    if payload.get("model_config") != expected_model_config:
+        raise TrajectoryGenerationError(
+            "Resume directory model configuration does not match the requested "
+            "sampling, temperature, or thinking settings."
+        )
 
 
 def _resolve_output_paths(runtime_config: RuntimeConfig) -> OutputPaths:

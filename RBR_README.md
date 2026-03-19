@@ -168,45 +168,71 @@ python -m data_generation.task_level.generation.raw.cli \
   --batch-gcs-prefix gs://your-bucket/robocasa-batch
 ```
 
+If a request stops with some runs still incomplete, do not start from scratch. The
+generator now supports in-place resume for both batch and on-demand runs:
+
+```bash
+python -m data_generation.task_level.generation.raw.cli \
+  --tasks PrepareCoffee HotDogSetup \
+  --num-runs 4 \
+  --sampling verbalized \
+  --verbalized-k 3 \
+  --model gemini-3-flash-preview \
+  --location global \
+  --thinking-level medium \
+  --max-workers 10 \
+  --max-retries 2 \
+  --batch-processing \
+  --batch-gcs-prefix gs://your-bucket/robocasa-batch \
+  --resume data_generation/task_level/data/gemini-3-flash-preview/requests/{timestamp}
+```
+
+For a single-task run, pass that task directory to `--resume`. For a multi-task
+request, pass the request directory. Resume reuses the existing directory in place,
+skips completed runs, and retries only the pending run indices.
+
 
 ### Adding Images via Post-Processing of Raw Data
 
-After the raw data is generated via LLM, run post-processing to add versioned image observation
-steps and deterministic `image_path` fields in a copied dataset tree under `data/w_images/`. The output path mirrors the
-source tree after `data/raw/`, so
+After the raw data is generated via LLM, run post-processing to add default multi-view
+`get_image` observation steps and deterministic `image_paths` fields in a copied
+dataset tree under `data/w_images/`. The output path mirrors the source tree after
+`data/raw/`, so
 `data/raw/requests/{timestamp}/{task}/summary.json` becomes
 `data/w_images/requests/{timestamp}/{task}/summary.json`. The source dataset stays unchanged:
 
 ```bash
 python -m data_generation.task_level.generation.image.cli \
-  --dataset data_generation/task_level/data/raw/requests/{timestamp}/{task}/summary.json \
-  --image-tool-version v1
+  --dataset data_generation/task_level/data/raw/requests/{timestamp}/{task}/summary.json
 ```
 
-Supported post-processing formats:
-- `v1`: preserves the current `get_image` layout with one initial `top_view` step and `base_camera` steps around each non-communication action.
-- `v2`: inserts both `get_env_image(top_view)` and `get_env_image(room_view)` at the beginning, then uses `get_agent_image` around each non-communication action.
-- In `v2`, navigation actions get `agentview_center`, `agentview_left`, and `agentview_right`; non-navigation actions get `wrist` and `agentview_center`.
+Default post-processing behavior:
+- Add one initial `get_image(views=[top_view, room_view, map])` step before any task action.
+- Wrap each navigation action with one `get_image` step before and after using
+  `agentview_center`, `agentview_left`, and `agentview_right`.
+- Wrap each non-navigation action with one `get_image` step before and after using
+  `wrist` and `agentview_center`.
+- Store the rendered artifacts for each inserted observation step in `image_paths`,
+  ordered to match the requested `views`.
 
 To post-process every task summary inside one request directory, run directly in CLI:
 
 ```bash
 for summary in data_generation/task_level/data/raw/requests/{timestamp}/*/summary.json; do
   python -m data_generation.task_level.generation.image.cli \
-    --dataset "$summary" \
-    --image-tool-version v2
+    --dataset "$summary"
 done
 ```
 
 The raw generator writes artifacts next to the dataset summary:
-- `trajectories/`: validated saved trajectory JSON
+- `trajectories/`: saved trajectory JSON
 - `prompts/`: the exact prompt used for each saved trajectory
 - `outputs/`: the raw successful model output text for each saved trajectory
 - `summary_errors.json`: aggregated error events for that task or request
-- `summary_costs.json`: costs of generation per trajectory
+- `cost_summary.json`: costs of generation per trajectory and aggregated totals
 
 Post-processing keeps those copied artifacts and also prepares:
-- `images/`: sibling image root referenced by inserted observation steps via `image_path`
+- `images/`: sibling image root referenced by inserted observation steps via `image_paths`
 
 Sampling notes:
 - `--num-runs` is the number of runs, not always the number of saved trajectories.
@@ -229,7 +255,15 @@ Notes:
   keeps invalid trajectories, records the validation error in the output, and omits
   retry-attempt metadata from the saved JSON.
 - With `--enable-validation`, invalid or duplicate trajectories are retried up to
-  `--max-retries` and only validated trajectories are written.
+  `--max-retries`. If some runs still fail after the retry budget is exhausted, the
+  generator writes the successful runs, records the failed run indices in the task
+  summary, continues to the remaining tasks, and exits non-zero at the end.
+- Task summaries now include explicit run state:
+  `completed_run_indices`, `failed_run_indices`, `pending_run_indices`, and
+  `is_complete`. Request summaries also surface whether the overall request is
+  complete.
+- `--resume` works for both on-demand and batch mode. It validates that the saved
+  directory matches the requested task/model/sampling configuration before reusing it.
 - The output `.json` stores interleaved tool-call steps for `agent_0` and `agent_1`,
   plus short explicit reasoning text per step.
 - The main output path stores a compact trajectory summary plus `cost_summary`. A
@@ -243,7 +277,9 @@ Notes:
   the CLI runs, the overall progress bar shows both the accumulated observed cost
   so far and a single projected total computed from the remaining trajectories
   and the current average cost per saved trajectory. Until at least one trajectory
-  finishes, that live projected value is shown as `NaN`.
+  finishes, that live projected value is shown as `NaN`. In batch mode, the overall
+  status text also shows `trajectories=x/y` so you can see how many saved
+  trajectories are complete so far.
 - The generator now uses a single supported client path:
   `genai.Client(http_options=HttpOptions(api_version="v1"))` after the runtime
   configures the Vertex environment variables internally.

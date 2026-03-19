@@ -37,12 +37,12 @@ def _append_unique_field_names(
             destination.append(field_name)
 
 
-def _build_symbolic_field_schema(
+def _build_scalar_field_schema(
     field_name: str,
     agent_ids: Sequence[str],
     schema_type: str = "STRING",
 ) -> dict[str, Any]:
-    """Builds a schema property entry for one symbolic response field."""
+    """Builds a scalar schema property entry for one symbolic response field."""
 
     if field_name in {"agent", "agent_id", "to"}:
         return {
@@ -50,6 +50,21 @@ def _build_symbolic_field_schema(
             "enum": list(agent_ids),
         }
     return {"type": schema_type}
+
+
+def _build_symbolic_field_schema(
+    field_name: str,
+    agent_ids: Sequence[str],
+    schema_type: str = "STRING",
+) -> dict[str, Any]:
+    """Builds a schema property entry for one symbolic response field."""
+
+    if schema_type == "STRING_ARRAY":
+        return {
+            "type": "ARRAY",
+            "items": _build_scalar_field_schema(field_name, agent_ids),
+        }
+    return _build_scalar_field_schema(field_name, agent_ids, schema_type)
 
 
 def _allowed_ids_key_for_arg_name(arg_name: str) -> str | None:
@@ -70,7 +85,7 @@ def _resolve_tool_arg_schema_type(
     if not isinstance(tool_arg_types, dict):
         raise ValueError("tool_arg_types must be a mapping when provided.")
     schema_type = tool_arg_types.get(field_name, "STRING")
-    if schema_type not in {"STRING", "INTEGER"}:
+    if schema_type not in {"STRING", "INTEGER", "STRING_ARRAY"}:
         raise ValueError(f"Unsupported schema type {schema_type!r} for {field_name}.")
     return schema_type
 
@@ -95,15 +110,10 @@ def build_task_response_schema(
     for tool_spec in allowed_tool_specs.values():
         # Preserve the tool registry order so schema rendering stays stable.
         for field_name in tool_spec.get("tool_args", ()):
+            schema_type = _resolve_tool_arg_schema_type(field_name, tool_spec)
             if field_name not in tool_arg_schema_types:
-                tool_arg_schema_types[field_name] = _resolve_tool_arg_schema_type(
-                    field_name,
-                    tool_spec,
-                )
-            elif tool_arg_schema_types[field_name] != _resolve_tool_arg_schema_type(
-                field_name,
-                tool_spec,
-            ):
+                tool_arg_schema_types[field_name] = schema_type
+            elif tool_arg_schema_types[field_name] != schema_type:
                 raise ValueError(
                     f"Conflicting schema types were configured for tool arg {field_name}."
                 )

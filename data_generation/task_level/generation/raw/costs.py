@@ -13,6 +13,7 @@ from data_generation.task_level.generation.raw.config import (
 )
 from data_generation.task_level.generation.raw.runtime_support import (
     _default_traffic_type_for_runtime,
+    _requested_run_count,
     _sampling_strategy_for_runtime,
 )
 from data_generation.task_level.runtime.client import (
@@ -540,7 +541,7 @@ def _build_preflight_cost_estimate_summary(
         summary = _build_cost_estimate_summary_from_generation_usages(
             _projected_generation_usages_from_history(
                 historical_generation_usages,
-                num_runs=runtime_config.num_runs,
+                num_runs=_requested_run_count(runtime_config),
             ),
             runtime_config=runtime_config,
         )
@@ -584,7 +585,7 @@ def _build_preflight_cost_estimate_summary(
         round_observed_cost=False,
     )
     summary = _build_cost_estimate_summary_from_generation_usages(
-        [generation_usage] * runtime_config.num_runs,
+        [generation_usage] * _requested_run_count(runtime_config),
         runtime_config=runtime_config,
     )
     if _projected_attempt_count(runtime_config) > 1:

@@ -10,7 +10,6 @@ from .constants import (
     ACQUIRE_TOOL_NAMES,
     CLOSE_PART_TOOL_NAMES,
     GIVE_SPACE_TOOL_NAMES,
-    NAVIGATION_TOOL_NAMES,
     OPEN_PART_TOOL_NAMES,
     RELEASE_TOOL_NAMES,
 )
@@ -175,6 +174,10 @@ Important rules:
 - If agent_A plans to navigate to a fixture where agent_B is already positioned, have the agents communicate first about that upcoming navigation, then have agent_B execute give_space(fixture_id) at that fixture before agent_A arrives so they avoid a location conflict.
 - In the initial steps, the agents must coordinate through communication tool calls before any task action. Both agents must communicate during this time.
 - Throughout the trajectory, both agents should actively communicate with each other to communicate intentions, plans, and needs, not just in the initial steps.
+- Each communicate step sends a message to the other agent in the scene, so args.to must be the exact ID of that other agent.
+- For each step, args must contain exactly the argument names required by that tool. Do not omit required args and do not invent extra arg keys.
+- In args, use the exact symbolic IDs shown in the allowed tools block for this task.
+- Keep args as a flat object that contains only that step's tool inputs.
 - If an agent is not performing an action, be sure the agent communicates what the agent is waiting for so that no agent is doing nothing.
 - Both agents must cooperatively complete the task, a single agent should not do all subtasks.
 - Use only the allowed tools for this task.

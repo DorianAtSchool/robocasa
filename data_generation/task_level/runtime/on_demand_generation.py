@@ -80,6 +80,8 @@ def generate_single_run(
     attempt_prompts: list[dict[str, Any]] | None = None,
     attempt_prompts_lock: threading.Lock | None = None,
 ) -> list[dict[str, Any]]:
+    """Generates one run and raises RunExhaustedError only for run-scoped failures."""
+
     client = (
         client_factory()
         if client_factory is not None
@@ -503,10 +505,7 @@ def generate_single_run(
                 error_events_lock=error_events_lock,
             )
             if _runtime_support._is_non_retryable_generation_error(exc):
-                raise TrajectoryGenerationError(
-                    "Trajectory generation failed with a non-retryable error: "
-                    f"{_runtime_support._exception_summary(exc)}"
-                ) from exc
+                break
             if trajectory_progress is not None:
                 invalid_summary = None
                 if isinstance(exc, TrajectoryValidationError):
@@ -531,7 +530,11 @@ def generate_single_run(
     ):
         with seen_signatures_lock:
             seen_signatures.difference_update(reserved_run_signatures)
-    raise TrajectoryGenerationError(
+    if trajectory_progress is not None:
+        trajectory_progress.set_postfix_str(
+            f"failed attempts={runtime_config.max_retries}/{runtime_config.max_retries}"
+        )
+    raise _runtime_support.RunExhaustedError(
         f"Unable to generate a valid trajectory run for index {run_index} after "
         f"{runtime_config.max_retries} attempts: "
         f"{_runtime_support._exception_summary(last_error) if last_error is not None else 'Unknown error'}"
@@ -545,6 +548,8 @@ def generate_trajectories_on_demand(
     client_factory: Any = None,
     show_progress: bool = True,
 ) -> dict[str, Any]:
+    """Generates trajectories on demand while preserving partial successful runs."""
+
     seen_signatures: set[str] = set()
     seen_signatures_lock = threading.Lock()
     projected_cost_estimate = _costs._build_preflight_cost_estimate_summary(
@@ -579,10 +584,12 @@ def generate_trajectories_on_demand(
         accumulated_cost_text=accumulated_cost_tracker.status_text(),
     )
 
+    requested_run_indices = _runtime_support._requested_run_indices(runtime_config)
     # Collect by index first so the final JSON stays deterministic under concurrency.
     results: dict[int, list[dict[str, Any]]] = {}
+    failed_run_indices: set[int] = set()
     executor = ThreadPoolExecutor(
-        max_workers=min(runtime_config.max_workers, runtime_config.num_runs)
+        max_workers=min(runtime_config.max_workers, len(requested_run_indices))
     )
     futures: dict[Any, int] = {}
     wait_for_shutdown = True
@@ -595,7 +602,7 @@ def generate_trajectories_on_demand(
                 task_definition=task_definition,
                 client_factory=client_factory,
                 overall_progress=progress_handles.overall_progress,
-                trajectory_progress=progress_handles.trajectory_progress_bars[index],
+                trajectory_progress=trajectory_progress,
                 seen_signatures=seen_signatures,
                 seen_signatures_lock=seen_signatures_lock,
                 accumulated_cost_tracker=accumulated_cost_tracker,
@@ -604,14 +611,27 @@ def generate_trajectories_on_demand(
                 attempt_prompts=attempt_prompts,
                 attempt_prompts_lock=attempt_prompts_lock,
             ): index
-            for index in range(runtime_config.num_runs)
+            for index, trajectory_progress in zip(
+                requested_run_indices,
+                progress_handles.trajectory_progress_bars,
+            )
         }
 
         # Drain futures in completion order, then re-sort below before writing
         # so concurrency never changes dataset ordering.
         for future in as_completed(futures):
             run_index = futures[future]
-            trajectory_records = future.result()
+            try:
+                trajectory_records = future.result()
+            except _runtime_support.RunExhaustedError:
+                failed_run_indices.add(run_index)
+                _progress._update_overall_progress_status(
+                    progress_handles.overall_progress,
+                    amount=1,
+                    status="running",
+                    accumulated_cost_text=accumulated_cost_tracker.status_text(),
+                )
+                continue
             results[run_index] = trajectory_records
     except KeyboardInterrupt:
         wait_for_shutdown = False
@@ -634,4 +654,6 @@ def generate_trajectories_on_demand(
         ordered_trajectories,
         error_events=error_events,
         attempt_prompts=attempt_prompts,
+        completed_run_indices=sorted(results),
+        failed_run_indices=sorted(failed_run_indices),
     )

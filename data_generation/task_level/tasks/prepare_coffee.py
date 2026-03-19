@@ -77,7 +77,7 @@ PREPARE_COFFEE_ALLOWED_TOOL_SPECS = build_allowed_tool_specs(
         "open_hinged_part",
         "pick_up_object",
         "place_on_surface",
-        "place_under_dispenser",
+        "place_under",
         "press_button",
     ),
     overrides={
@@ -96,9 +96,9 @@ PREPARE_COFFEE_ALLOWED_TOOL_SPECS = build_allowed_tool_specs(
             "allowed_object_ids": ["mug_1"],
             "allowed_support_ids": ["counter_1"],
         },
-        "place_under_dispenser": {
+        "place_under": {
             "allowed_object_ids": ["mug_1"],
-            "allowed_dispenser_ids": ["coffee_machine_dispenser"],
+            "allowed_reference_fixture_ids": ["coffee_machine_1"],
         },
         "press_button": {
             "allowed_target_ids": ["coffee_machine_1"],
@@ -114,7 +114,7 @@ PREPARE_COFFEE_RESPONSE_SCHEMA = build_task_response_schema(
 
 PREPARE_COFFEE_TASK_GOAL = (
     "retrieve mug_1 from cabinet_1, place it on counter_1, move it under the "
-    "coffee machine dispenser, then press the coffee machine start button."
+    "coffee machine, then press the coffee machine start button."
 )
 PREPARE_COFFEE_NON_COMMUNICATE_TOOL_NAMES = tuple(
     tool_name
@@ -138,7 +138,7 @@ build_prepare_coffee_prompt = make_task_prompt_builder(
     extra_execution_rules=(
         "Open cabinet_1.door before using pick_up_object on mug_1 from cabinet_1.",
         "Only press coffee_machine_1.start_button after mug_1 is already at coffee_machine_dispenser.",
-        "If an agent is blocked because the other agent still needs to open the cabinet, move the mug, or place the mug under the dispenser, use communicate to explain what it is waiting on before the other agent proceeds.",
+        "If an agent is blocked because the other agent still needs to open the cabinet, move the mug, or place the mug under coffee_machine_1, use communicate to explain what it is waiting on before the other agent proceeds.",
     ),
 )
 
@@ -175,17 +175,6 @@ class PrepareCoffeeValidator(FiniteStateTaskValidator):
                 ]["started"],
             },
         )
-
-    def resolve_required_fixture(
-        self,
-        step: dict[str, Any],
-        runtime_state: TaskRuntimeState,
-    ) -> str | None:
-        """Maps the coffee-machine dispenser token to its owning fixture."""
-
-        if step["tool"] == "place_under_dispenser":
-            return "coffee_machine_1"
-        return super().resolve_required_fixture(step, runtime_state)
 
     def validate_task_preconditions(
         self,

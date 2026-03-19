@@ -38,7 +38,7 @@ or container-like region that contains the object.
 | Transport | `place_on_surface` | `place_on_surface(object, support)` | Place an object onto an exposed support surface or attachment seat. | `place_on_counter`, `place_on_stove_burner` |
 | Transport | `place_in_receptacle` | `place_in_receptacle(object, receptacle)` | Place an object into an interior or container-like region. | `place_in_cabinet`, `place_in_microwave`, `place_in_tupperware` |
 | Transport | `place_on_object` | `place_on_object(object, support_object)` | Place an object on top of another movable object. | `place_cheese_on_bread` |
-| Transport | `place_under_dispenser` | `place_under_dispenser(object, dispenser)` | Place an object under a machine dispenser. | `place_mug_under_coffee_dispenser` |
+| Transport | `place_under` | `place_under(object, reference_fixture)` | Place an object under a reference fixture. For dispenser-like fixtures, this resolves to the dispenser output site. | `place_mug_under_coffee_dispenser` |
 | Access | `open_hinged_part` | `open_hinged_part(target, part)` | Open a hinged door, lid, or head. | `open_fridge_door`, `open_stand_mixer_head` |
 | Access | `close_hinged_part` | `close_hinged_part(target, part)` | Close a hinged door, lid, or head. | `close_cabinet_door`, `close_kettle_lid` |
 | Access | `open_sliding_part` | `open_sliding_part(target, part)` | Pull out a sliding drawer or rack. | `open_drawer`, `pull_out_oven_rack` |
@@ -112,7 +112,7 @@ They should decompose into a pickup subatomic task plus a placement subatomic ta
 | Current RoboCasa atomic task | Canonical subatomic sequence | Suggested explicit alias |
 | --- | --- | --- |
 | `CoffeeServeMug` | `pick_up_object(mug, coffee_machine_dispenser)` + `place_on_surface(mug, counter)` | `pickup_from_coffee_dispenser` + `place_on_counter` |
-| `CoffeeSetupMug` | `pick_up_object(mug, counter)` + `place_under_dispenser(mug, coffee_machine_dispenser)` | `pickup_from_counter` + `place_under_coffee_dispenser` |
+| `CoffeeSetupMug` | `pick_up_object(mug, counter)` + `place_under(mug, coffee_machine)` | `pickup_from_counter` + `place_under_coffee_dispenser` |
 | `PickPlaceCabinetToCounter` | `pick_up_object(object, cabinet_interior)` + `place_on_surface(object, counter)` | `pickup_from_cabinet` + `place_on_counter` |
 | `PickPlaceCounterToBlender` | `pick_up_object(object, counter)` + `place_in_receptacle(object, blender_jar)` | `pickup_from_counter` + `place_in_blender` |
 | `PickPlaceCounterToCabinet` | `pick_up_object(object, counter)` + `place_in_receptacle(object, cabinet_interior)` | `pickup_from_counter` + `place_in_cabinet` |
@@ -202,7 +202,7 @@ be 13 subatomic tasks:
 3. `place_on_surface`
 4. `place_in_receptacle`
 5. `place_on_object`
-6. `place_under_dispenser`
+6. `place_under`
 7. `open_hinged_part`
 8. `close_hinged_part`
 9. `open_sliding_part`

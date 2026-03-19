@@ -400,10 +400,10 @@ class RichBatchProgressDisplay:
             self._progress,
             self._progress.add_task(
                 "[cyan]runs[/cyan]",
-                total=runtime_config.num_runs,
+                total=_runtime_support._requested_run_count(runtime_config),
                 status="waiting for batch results",
             ),
-            runtime_config.num_runs,
+            _runtime_support._requested_run_count(runtime_config),
         )
 
     def close(self) -> None:
@@ -430,7 +430,7 @@ def _create_batch_progress_handles(
         )
 
     overall_progress = tqdm(
-        total=runtime_config.num_runs,
+        total=_runtime_support._requested_run_count(runtime_config),
         desc="Runs",
         position=0,
         disable=disable_progress,
@@ -450,13 +450,17 @@ def _set_batch_progress_status(
     progress_handles: _progress.ProgressHandles,
     status: str,
     *,
+    trajectory_count_text: str | None = None,
     accumulated_cost_text: str | None = None,
 ) -> None:
     """Updates the shared batch progress status text when a progress bar is active."""
 
+    status_parts = [status]
+    if trajectory_count_text:
+        status_parts.append(trajectory_count_text)
     _progress._update_overall_progress_status(
         progress_handles.overall_progress,
-        status=status,
+        status=" ".join(part for part in status_parts if part),
         accumulated_cost_text=accumulated_cost_text,
     )
 
@@ -532,33 +536,14 @@ def _batch_round_completion_message(
     )
 
 
-def _raise_exhausted_batch_errors(
-    runtime_config: RuntimeConfig,
-    exhausted_errors: dict[int, Exception],
-) -> None:
-    if len(exhausted_errors) == 1:
-        trajectory_index, exc = next(iter(exhausted_errors.items()))
-        raise TrajectoryGenerationError(
-            f"Unable to generate a valid trajectory for index {trajectory_index} after "
-            f"{runtime_config.max_retries} attempts: {_runtime_support._exception_summary(exc)}"
-        )
-
-    error_summary = ", ".join(
-        f"{trajectory_index}: {_runtime_support._exception_summary(exc)}"
-        for trajectory_index, exc in sorted(exhausted_errors.items())
-    )
-    raise TrajectoryGenerationError(
-        "Unable to generate valid trajectories after "
-        f"{runtime_config.max_retries} attempts: {error_summary}"
-    )
-
-
 def generate_trajectories_batch(
     runtime_config: RuntimeConfig,
     *,
     task_definition: TaskDefinition,
     show_progress: bool,
 ) -> dict[str, Any]:
+    """Generates batch trajectories while preserving partial successful runs."""
+
     sampling_strategy = _runtime_support._sampling_strategy_for_runtime(runtime_config)
     seen_signatures: set[str] = set()
     seen_signatures_lock = threading.Lock()
@@ -578,19 +563,22 @@ def generate_trajectories_batch(
         task_definition,
     )
     accumulated_cost_tracker = _progress.AccumulatedCostTracker(
-        total_trajectories=runtime_config.num_runs
-        * sampling_strategy.trajectories_per_run(runtime_config),
+        total_trajectories=_runtime_support._expected_saved_trajectory_count(
+            runtime_config
+        ),
     )
     active_job_names: set[str] = set()
     results: dict[int, list[dict[str, Any]]] = {}
+    failed_run_indices: set[int] = set()
+    requested_run_indices = _runtime_support._requested_run_indices(runtime_config)
     task_instances = {
         trajectory_index: task_definition.build_task_instance(trajectory_index)
-        for trajectory_index in range(runtime_config.num_runs)
+        for trajectory_index in requested_run_indices
     }
     attempt_numbers = {
-        trajectory_index: 1 for trajectory_index in range(runtime_config.num_runs)
+        trajectory_index: 1 for trajectory_index in requested_run_indices
     }
-    pending_indices = list(range(runtime_config.num_runs))
+    pending_indices = list(requested_run_indices)
 
     _progress._log_cost_summary(
         label="Initial projected cost",
@@ -607,6 +595,7 @@ def generate_trajectories_batch(
     _set_batch_progress_status(
         progress_handles,
         "starting",
+        trajectory_count_text=accumulated_cost_tracker.completed_trajectory_count_text(),
         accumulated_cost_text=accumulated_cost_tracker.status_text(),
     )
 
@@ -619,6 +608,7 @@ def generate_trajectories_batch(
             _set_batch_progress_status(
                 progress_handles,
                 f"round {round_number}: preparing {len(pending_indices)}",
+                trajectory_count_text=accumulated_cost_tracker.completed_trajectory_count_text(),
                 accumulated_cost_text=accumulated_cost_tracker.status_text(),
             )
 
@@ -676,6 +666,7 @@ def generate_trajectories_batch(
             _set_batch_progress_status(
                 progress_handles,
                 f"round {round_number}: running",
+                trajectory_count_text=accumulated_cost_tracker.completed_trajectory_count_text(),
                 accumulated_cost_text=accumulated_cost_tracker.status_text(),
             )
             _progress._log_runtime_message(
@@ -700,6 +691,7 @@ def generate_trajectories_batch(
             _set_batch_progress_status(
                 progress_handles,
                 f"round {round_number}: processing results",
+                trajectory_count_text=accumulated_cost_tracker.completed_trajectory_count_text(),
                 accumulated_cost_text=accumulated_cost_tracker.status_text(),
             )
 
@@ -770,6 +762,7 @@ def generate_trajectories_batch(
                             _set_batch_progress_status(
                                 progress_handles,
                                 f"round {round_number}: processing results",
+                                trajectory_count_text=accumulated_cost_tracker.completed_trajectory_count_text(),
                                 accumulated_cost_text=accumulated_cost_text,
                             )
                             trajectory_records = _runtime_support._build_trajectory_records_from_sampled_candidates(
@@ -806,13 +799,19 @@ def generate_trajectories_batch(
                                     ),
                                     error_events_lock=error_events_lock,
                                 )
+                            accumulated_cost_text = (
+                                accumulated_cost_tracker.complete_trajectories(
+                                    len(trajectory_records)
+                                )
+                            )
                             _progress._update_overall_progress_status(
                                 progress_handles.overall_progress,
                                 amount=1,
-                                status=f"round {round_number}: processing results",
-                                accumulated_cost_text=accumulated_cost_tracker.complete_trajectories(
-                                    len(trajectory_records)
+                                status=(
+                                    f"round {round_number}: processing results "
+                                    f"{accumulated_cost_tracker.completed_trajectory_count_text()}"
                                 ),
+                                accumulated_cost_text=accumulated_cost_text,
                             )
                             succeeded_count += 1
                             for trajectory_record in trajectory_records:
@@ -864,18 +863,28 @@ def generate_trajectories_batch(
                     succeeded_count=succeeded_count,
                     retryable_count=retryable_count,
                     failed_count=failed_count,
-                    completed_count=len(results),
-                    total_count=runtime_config.num_runs,
+                    completed_count=len(results) + len(exhausted_errors),
+                    total_count=len(requested_run_indices),
                 ),
                 enabled=show_progress,
                 writer=progress_handles.log_writer,
             )
             if exhausted_errors:
-                _raise_exhausted_batch_errors(runtime_config, exhausted_errors)
+                failed_run_indices.update(exhausted_errors)
+                _progress._update_overall_progress_status(
+                    progress_handles.overall_progress,
+                    amount=len(exhausted_errors),
+                    status=(
+                        f"round {round_number}: processing results "
+                        f"{accumulated_cost_tracker.completed_trajectory_count_text()}"
+                    ),
+                    accumulated_cost_text=accumulated_cost_tracker.status_text(),
+                )
             pending_indices = sorted(next_pending_indices)
         _set_batch_progress_status(
             progress_handles,
-            "complete",
+            "complete with failures" if failed_run_indices else "complete",
+            trajectory_count_text=accumulated_cost_tracker.completed_trajectory_count_text(),
             accumulated_cost_text=accumulated_cost_tracker.status_text(),
         )
     except KeyboardInterrupt:
@@ -899,4 +908,6 @@ def generate_trajectories_batch(
         ordered_trajectories,
         error_events=error_events,
         attempt_prompts=attempt_prompts,
+        completed_run_indices=sorted(results),
+        failed_run_indices=sorted(failed_run_indices),
     )
