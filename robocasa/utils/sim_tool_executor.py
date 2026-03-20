@@ -138,14 +138,19 @@ class SimToolExecutor:
         Uses the grid view for grid mode, continuous view for continuous mode,
         or side-by-side if both are available.
         """
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return self._save_map_image(output_dir / f"{prefix}_map.png")
+
+    def _save_map_image(self, image_path: str | Path) -> Path:
+        """Render the placement map and save it to an explicit output path."""
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
         from robocasa.utils.placement_map import draw_grid_map, draw_continuous_map
 
-        output_dir = Path(output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
-
+        path = Path(image_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
         mode = self.runner._placement_mode
         if mode == "grid":
             fig, ax = plt.subplots(1, 1, figsize=(12, 10))
@@ -159,7 +164,6 @@ class SimToolExecutor:
             draw_continuous_map(ax2, self.runner)
 
         fig.tight_layout()
-        path = output_dir / f"{prefix}_map.png"
         fig.savefig(path, dpi=200)
         plt.close(fig)
         return path
@@ -1296,46 +1300,82 @@ class SimToolExecutor:
     # Primitive tools
     # ------------------------------------------------------------------
 
-    def get_env_image(
+    def get_image(
         self,
-        view: str,
-        image_path: str,
+        views: list[str] | tuple[str, ...] | str | None = None,
+        image_paths: list[str] | tuple[str, ...] | str | None = None,
+        agent_id: str | int | None = None,
         robot_idx: int = 0,
+        view: str | None = None,
+        image_path: str | None = None,
     ) -> ToolResult:
-        camera_name = str(view)
-        image = self._render_camera(camera_name)
-        saved_path = self._save_image(image, image_path)
-        return ToolResult(
-            "get_env_image",
-            True,
-            {
-                "robot_idx": robot_idx,
-                "view": view,
-                "camera_name": camera_name,
-                "image_path": str(saved_path),
-            },
-        )
+        if views is None:
+            if view is None:
+                raise ValueError("get_image requires views or view.")
+            view_names = [str(view)]
+        elif isinstance(views, str):
+            view_names = [views]
+        else:
+            view_names = [str(view_name) for view_name in views]
 
-    def get_agent_image(
-        self,
-        agent_id: str,
-        view: str,
-        image_path: str,
-        robot_idx: int = 0,
-    ) -> ToolResult:
-        resolved_robot_idx, camera_name = self._camera_name_for_agent_view(agent_id, view)
-        image = self._render_camera(camera_name)
-        saved_path = self._save_image(image, image_path)
-        return ToolResult(
-            "get_agent_image",
-            True,
-            {
-                "robot_idx": resolved_robot_idx,
-                "view": view,
-                "camera_name": camera_name,
-                "image_path": str(saved_path),
-            },
+        if not view_names:
+            raise ValueError("get_image requires at least one view.")
+
+        if image_paths is None:
+            if image_path is None:
+                raise ValueError("get_image requires image_paths or image_path.")
+            requested_paths = [str(image_path)]
+        elif isinstance(image_paths, (str, Path)):
+            requested_paths = [str(image_paths)]
+        else:
+            requested_paths = [str(path) for path in image_paths]
+
+        if len(requested_paths) != len(view_names):
+            raise ValueError(
+                "get_image requires image_paths to match the number of requested views."
+            )
+
+        resolved_agent_id = (
+            agent_id if agent_id is not None else f"agent_{robot_idx}"
         )
+        resolved_robot_idx = self._parse_agent_idx(resolved_agent_id)
+        saved_paths: list[str] = []
+        camera_names: list[str] = []
+
+        normalized_view_names: list[str] = []
+        for view_name, requested_path in zip(view_names, requested_paths):
+            normalized_view = str(view_name).strip().lower()
+            normalized_view_names.append(normalized_view)
+            if normalized_view == "map":
+                saved_path = self._save_map_image(requested_path)
+                camera_name = "map"
+            elif normalized_view in {"room_view", "top_view"}:
+                camera_name = normalized_view
+                image = self._render_camera(camera_name)
+                saved_path = self._save_image(image, requested_path)
+            else:
+                _, camera_name = self._camera_name_for_agent_view(
+                    resolved_agent_id,
+                    normalized_view,
+                )
+                image = self._render_camera(camera_name)
+                saved_path = self._save_image(image, requested_path)
+
+            camera_names.append(camera_name)
+            saved_paths.append(str(saved_path))
+
+        details = {
+            "robot_idx": resolved_robot_idx,
+            "agent_id": str(resolved_agent_id),
+            "views": normalized_view_names,
+            "camera_names": camera_names,
+            "image_paths": saved_paths,
+        }
+        if len(normalized_view_names) == 1:
+            details["view"] = normalized_view_names[0]
+            details["camera_name"] = camera_names[0]
+            details["image_path"] = saved_paths[0]
+        return ToolResult("get_image", True, details)
 
     def navigate_to_fixture(self, fixture_id: str, robot_idx: int = 0) -> ToolResult:
         fixture = self._require_fixture(fixture_id)
@@ -1985,9 +2025,33 @@ def _main():
     )
     parser.add_argument("--task", type=str, default=None)
     parser.add_argument("--robots", type=int, default=2)
-    parser.add_argument("--layout", type=int, default=11)
-    parser.add_argument("--style", type=int, default=34)
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--layout",
+        type=int,
+        default=None,
+        help=(
+            "Kitchen layout id. If omitted, uses trajectory scene_parameters.layout "
+            "when present, otherwise defaults to 11."
+        ),
+    )
+    parser.add_argument(
+        "--style",
+        type=int,
+        default=None,
+        help=(
+            "Kitchen style id. If omitted, uses trajectory scene_parameters.style "
+            "when present, otherwise defaults to 34."
+        ),
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help=(
+            "Environment seed. If omitted, uses trajectory scene_parameters.seed "
+            "when present, otherwise defaults to 42."
+        ),
+    )
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=360)
     parser.add_argument("--output-dir", type=str, required=True)
@@ -2064,6 +2128,25 @@ def _main():
         with open(args.trajectory, "r") as f:
             trajectory_payload = json.load(f)
 
+    def _resolve_scene_parameter(name: str, fallback: int) -> int:
+        explicit_value = getattr(args, name)
+        if explicit_value is not None:
+            return explicit_value
+        if isinstance(trajectory_payload, dict):
+            scene_parameters = trajectory_payload.get("scene_parameters")
+            if isinstance(scene_parameters, dict):
+                scene_value = scene_parameters.get(name)
+                if scene_value is not None:
+                    return int(scene_value)
+            top_level_value = trajectory_payload.get(name)
+            if top_level_value is not None:
+                return int(top_level_value)
+        return fallback
+
+    layout = _resolve_scene_parameter("layout", 11)
+    style = _resolve_scene_parameter("style", 34)
+    seed = _resolve_scene_parameter("seed", 42)
+
     if args.task is None:
         if args.demo_plan is not None:
             demo_key = args.demo_plan.strip().lower().replace("-", "_")
@@ -2082,9 +2165,9 @@ def _main():
     executor = SimToolExecutor(
         task_name=task_name,
         robots=args.robots,
-        layout=args.layout,
-        style=args.style,
-        seed=args.seed,
+        layout=layout,
+        style=style,
+        seed=seed,
         render_width=args.width,
         render_height=args.height,
         gl_backend=args.gl_backend,

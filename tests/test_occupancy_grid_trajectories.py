@@ -23,7 +23,7 @@ Usage:
   python tests/test_occupancy_grid_trajectories.py --test sandwich --placement continuous --output tmp/sandwich
 
 Options:
-  --placement    grid or continuous (default: continuous)
+  --placement    grid or continuous (default: grid)
   --output       Directory to save videos, frames, and placement maps (optional)
   --layout       Kitchen layout id (default: 11)
   --style        Kitchen style id (default: 34)
@@ -54,7 +54,7 @@ from robocasa.utils.sim_tool_executor import SimToolExecutor
 # ---------------------------------------------------------------------------
 # Globals set by CLI args — tests read these at runtime
 # ---------------------------------------------------------------------------
-_PLACEMENT = "continuous"
+_PLACEMENT = "grid"
 _OUTPUT_DIR: str | None = None
 _LAYOUT = 11
 _STYLE = 34
@@ -554,7 +554,7 @@ def main():
         description="Trajectory-level placement tests with optional video output.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--placement", default="continuous", choices=["grid", "continuous"])
+    parser.add_argument("--placement", default="grid", choices=["grid", "continuous"])
     parser.add_argument("--output", default=None, help="Output directory for videos/frames/maps")
     parser.add_argument("--layout", type=int, default=11)
     parser.add_argument("--style", type=int, default=34)

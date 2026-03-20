@@ -89,6 +89,22 @@ python -m robocasa.utils.sim_tool_executor \
   --output-dir tmp/executor_trajectory_grid
 ```
 
+Example `get_image` tool call inside a plan or trajectory step:
+
+```json
+{
+  "tool": "get_image",
+  "args": {
+    "views": ["top_view", "room_view", "map"],
+    "image_paths": [
+      "images/top.png",
+      "images/room.png",
+      "images/map.png"
+    ]
+  }
+}
+```
+
 ## Trajectory-Level Runs
 
 Hotdog trajectory test, grid placement:
@@ -205,5 +221,9 @@ python tests/test_placement_sweep.py \
 
 - `cooperative_hotdog_setup` maps to `HotDogSetup`.
 - `sandwich_station` maps to `PrepareSandwichStation`.
+- `grid` is the default placement mode for the executor, trajectory tests, and sweep tests.
+- `get_image` accepts an array of views in one call. Supported environment views include `top_view`, `room_view`, and `map`.
+- A trajectory JSON is not self-contained today unless it carries `scene_parameters` (or top-level `layout` / `style` / `seed`).
+  Older symbolic trajectory JSONs still need those flags so the simulator can recreate a concrete kitchen instance.
 - Executor outputs include placement maps, frame PNGs, videos, and metadata JSON.
 - Sweep outputs write one folder per combo with a `result.json`.

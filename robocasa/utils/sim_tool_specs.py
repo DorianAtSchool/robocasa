@@ -12,35 +12,38 @@ from copy import deepcopy
 from typing import Any
 
 
-def _build_tool_spec(name: str, description: str, *arg_names: str) -> dict[str, Any]:
-    """Build a minimal tool spec with required string parameters."""
+def _build_tool_spec(
+    name: str,
+    description: str,
+    *arg_specs: str | tuple[str, str],
+) -> dict[str, Any]:
+    """Build a minimal tool spec with required parameters."""
+    parameters = []
+    for arg_spec in arg_specs:
+        if isinstance(arg_spec, tuple):
+            arg_name, arg_type = arg_spec
+        else:
+            arg_name, arg_type = arg_spec, "string"
+        parameters.append(
+            {
+                "name": arg_name,
+                "type": arg_type,
+                "required": True,
+            }
+        )
     return {
         "name": name,
         "description": description,
-        "parameters": [
-            {
-                "name": arg_name,
-                "type": "string",
-                "required": True,
-            }
-            for arg_name in arg_names
-        ],
+        "parameters": parameters,
     }
 
 
 SIM_TOOL_SPECS: list[dict[str, Any]] = [
     _build_tool_spec(
-        "get_agent_image",
-        "Capture and save one image from a robot-mounted camera.",
-        "agent_id",
-        "view",
-        "image_path",
-    ),
-    _build_tool_spec(
-        "get_env_image",
-        "Capture and save one image from a shared environment camera.",
-        "view",
-        "image_path",
+        "get_image",
+        "Capture and save one or more images from named views, including the placement map via map.",
+        ("views", "array"),
+        ("image_paths", "array"),
     ),
     _build_tool_spec(
         "close_hinged_part",

@@ -14,6 +14,7 @@ class TestSimToolSpecs(unittest.TestCase):
             "close_hinged_part",
             "close_sliding_part",
             "communicate",
+            "get_image",
             "navigate_to_fixture",
             "open_hinged_part",
             "open_sliding_part",
@@ -40,6 +41,7 @@ class TestSimToolSpecs(unittest.TestCase):
             "close_hinged_part": ["target_id", "part_id"],
             "close_sliding_part": ["target_id", "part_id"],
             "communicate": ["to", "message"],
+            "get_image": ["views", "image_paths"],
             "navigate_to_fixture": ["fixture_id"],
             "open_hinged_part": ["target_id", "part_id"],
             "open_sliding_part": ["target_id", "part_id"],
@@ -61,6 +63,15 @@ class TestSimToolSpecs(unittest.TestCase):
                 expected,
             )
             self.assertTrue(all(param["required"] for param in spec["parameters"]))
+
+        self.assertEqual(
+            [param["type"] for param in SIM_TOOL_SPEC_BY_NAME["get_image"]["parameters"]],
+            ["array", "array"],
+        )
+
+        for tool_name, spec in SIM_TOOL_SPEC_BY_NAME.items():
+            if tool_name == "get_image":
+                continue
             self.assertTrue(all(param["type"] == "string" for param in spec["parameters"]))
 
     def test_getters_return_defensive_copies(self):

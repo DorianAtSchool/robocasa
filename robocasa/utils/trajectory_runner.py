@@ -360,7 +360,7 @@ class TrajectoryRunner:
         render_width: int = 512,
         render_height: int = 512,
         gl_backend: str = "osmesa",
-        placement: str = "continuous",
+        placement: str = "grid",
         cell_size: float = 0.10,
         align_to_wall: bool = True,
         standoff: float = 0.40,

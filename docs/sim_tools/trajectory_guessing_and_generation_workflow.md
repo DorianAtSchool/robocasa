@@ -336,9 +336,9 @@ The model should generate the full trajectory JSON, but using the real scene ids
 
 The planner can still emit:
 
-- `get_env_image`
-- `get_agent_image`
-- `image_path`
+- `get_image`
+- `views`
+- `image_paths`
 
 That part is fine.
 
