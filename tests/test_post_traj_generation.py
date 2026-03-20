@@ -214,16 +214,14 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
 
         self.assertNotIn("agents", processed)
 
-    def test_resolve_output_dataset_path_targets_w_images_copy(self):
+    def test_resolve_output_dataset_path_targets_image_copy(self):
         dataset_path = Path(
             "/tmp/data/raw/gemini-3-flash-preview/prepare_coffee/summary.json"
         )
 
         self.assertEqual(
             resolve_output_dataset_path(dataset_path),
-            Path(
-                "/tmp/data/w_images/gemini-3-flash-preview/prepare_coffee/summary.json"
-            ),
+            Path("/tmp/data/image/gemini-3-flash-preview/prepare_coffee/summary.json"),
         )
 
     def test_resolve_output_dataset_path_preserves_request_layout(self):
@@ -234,7 +232,7 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
         self.assertEqual(
             resolve_output_dataset_path(dataset_path),
             Path(
-                "/tmp/data/w_images/gemini-3-flash-preview/requests/20260316T022801Z/prepare_coffee/summary.json"
+                "/tmp/data/image/gemini-3-flash-preview/requests/20260316T022801Z/prepare_coffee/summary.json"
             ),
         )
 

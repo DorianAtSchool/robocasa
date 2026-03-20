@@ -71,6 +71,9 @@ POST_PROCESS_VALIDATION_ERROR_TYPE = "PostProcessingValidationRequired"
 POST_PROCESS_VALIDATION_ERROR = (
     "Trajectory was post-processed after validation and must be revalidated."
 )
+RAW_DATASET_DIRECTORY_NAME = "raw"
+IMAGE_DATASET_DIRECTORY_NAME = "image"
+LEGACY_IMAGE_OUTPUT_DIRECTORY_NAME = "w_images"
 
 
 @dataclass(frozen=True)
@@ -390,19 +393,46 @@ def _load_json_file(path: Path) -> dict[str, Any]:
 
 
 def resolve_output_dataset_path(dataset_path: Path) -> Path:
-    """Maps one source dataset path to the default copied w_images destination."""
+    """Maps one source dataset path to the default copied image destination."""
 
     resolved_path = dataset_path.resolve()
     parts = list(resolved_path.parts)
     try:
         data_index = parts.index("data")
     except ValueError:
-        return dataset_path.parent / "w_images" / dataset_path.name
+        return dataset_path.parent / IMAGE_DATASET_DIRECTORY_NAME / dataset_path.name
 
     relative_parts = parts[data_index + 1 :]
-    if relative_parts and relative_parts[0] in {"raw", "w_images"}:
-        relative_parts = relative_parts[1:]
-    return Path(*parts[: data_index + 1]) / "w_images" / Path(*relative_parts)
+    if not relative_parts:
+        return dataset_path.parent / IMAGE_DATASET_DIRECTORY_NAME / dataset_path.name
+
+    if len(relative_parts) >= 2 and relative_parts[0] in {
+        RAW_DATASET_DIRECTORY_NAME,
+        IMAGE_DATASET_DIRECTORY_NAME,
+        LEGACY_IMAGE_OUTPUT_DIRECTORY_NAME,
+    }:
+        return (
+            Path(*parts[: data_index + 1])
+            / IMAGE_DATASET_DIRECTORY_NAME
+            / relative_parts[1]
+            / Path(*relative_parts[2:])
+        )
+    if len(relative_parts) >= 2 and relative_parts[1] in {
+        RAW_DATASET_DIRECTORY_NAME,
+        IMAGE_DATASET_DIRECTORY_NAME,
+        LEGACY_IMAGE_OUTPUT_DIRECTORY_NAME,
+    }:
+        return (
+            Path(*parts[: data_index + 1])
+            / IMAGE_DATASET_DIRECTORY_NAME
+            / relative_parts[0]
+            / Path(*relative_parts[2:])
+        )
+    return (
+        Path(*parts[: data_index + 1])
+        / IMAGE_DATASET_DIRECTORY_NAME
+        / Path(*relative_parts)
+    )
 
 
 def _resolve_output_image_dir(output_dataset_path: Path) -> Path:

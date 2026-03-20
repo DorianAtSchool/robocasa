@@ -1357,7 +1357,8 @@ class DotenvLoadingTests(unittest.TestCase):
         self.assertEqual(runtime_config.composite_tasks, ("PrepareCoffee",))
         self.assertIsNotNone(runtime_config.summary_path)
         self.assertEqual(runtime_config.summary_path.name, "summary.json")
-        self.assertEqual(runtime_config.summary_path.parents[3], DEFAULT_OUTPUT_DIR)
+        self.assertEqual(runtime_config.summary_path.parents[4], DEFAULT_OUTPUT_DIR)
+        self.assertEqual(runtime_config.summary_path.parents[3].name, "raw")
         self.assertEqual(runtime_config.summary_path.parents[2].name, DEFAULT_MODEL)
         self.assertEqual(runtime_config.summary_path.parents[1].name, "prepare_coffee")
 
@@ -1449,6 +1450,7 @@ class DotenvLoadingTests(unittest.TestCase):
         self.assertEqual(
             resolved,
             DEFAULT_OUTPUT_DIR
+            / "raw"
             / DEFAULT_MODEL
             / "prepare_coffee"
             / "20260310T123456Z"
@@ -1482,6 +1484,7 @@ class DotenvLoadingTests(unittest.TestCase):
         self.assertEqual(
             resolved,
             output_root
+            / "raw"
             / DEFAULT_MODEL
             / "prepare_coffee"
             / "20260310T123456Z"
@@ -1505,6 +1508,7 @@ class DotenvLoadingTests(unittest.TestCase):
         self.assertEqual(
             resolved,
             output_root
+            / "raw"
             / DEFAULT_MODEL
             / REQUEST_DIRECTORY_NAME
             / "20260310T123456Z"

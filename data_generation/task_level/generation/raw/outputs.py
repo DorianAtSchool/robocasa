@@ -73,9 +73,9 @@ def resolve_error_output_path(summary_path: Path) -> Path:
 
 
 def _resolve_model_output_root(model: str) -> Path:
-    """Resolves the default output root for one model name."""
+    """Resolves the default raw output root for one model name."""
 
-    return DEFAULT_OUTPUT_DIR / model
+    return DEFAULT_OUTPUT_DIR / "raw" / model
 
 
 def resolve_dataset_output_path(
