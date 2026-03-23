@@ -14,7 +14,6 @@ from data_generation.task_level.generation.raw.config import (
     DATASET_RUN_TIMESTAMP_FORMAT,
     DEFAULT_OUTPUT_DIR,
     ERROR_SUMMARY_OUTPUT_FILENAME,
-    REQUEST_DIRECTORY_NAME,
     RuntimeConfig,
     SUMMARY_OUTPUT_FILENAME,
     TRAJECTORY_DIRECTORY_NAME,
@@ -72,10 +71,10 @@ def resolve_error_output_path(summary_path: Path) -> Path:
     return summary_path.with_name(ERROR_SUMMARY_OUTPUT_FILENAME)
 
 
-def _resolve_model_output_root(model: str) -> Path:
-    """Resolves the default raw output root for one model name."""
+def _resolve_raw_output_root() -> Path:
+    """Resolves the shared raw output root for generated dataset summaries."""
 
-    return DEFAULT_OUTPUT_DIR / "raw" / model
+    return DEFAULT_OUTPUT_DIR / "raw"
 
 
 def resolve_dataset_output_path(
@@ -86,10 +85,12 @@ def resolve_dataset_output_path(
 ) -> Path:
     """Resolves the default single-task summary output path."""
 
+    # Keep the helper signature stable even though model no longer shards outputs.
+    _ = model
     timestamp = (generated_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
     task_dir = camel_to_snake_case(composite_task)
     return (
-        _resolve_model_output_root(model)
+        _resolve_raw_output_root()
         / task_dir
         / timestamp.strftime(DATASET_RUN_TIMESTAMP_FORMAT)
         / SUMMARY_OUTPUT_FILENAME
@@ -101,12 +102,13 @@ def resolve_request_output_path(
     model: str,
     generated_at: datetime | None = None,
 ) -> Path:
-    """Resolves the request-level combined summary path for multi-task generation."""
+    """Resolves the combined summary path for one multi-task generation run."""
 
+    # Keep the helper signature stable even though model no longer shards outputs.
+    _ = model
     timestamp = (generated_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
     return (
-        _resolve_model_output_root(model)
-        / REQUEST_DIRECTORY_NAME
+        _resolve_raw_output_root()
         / timestamp.strftime(DATASET_RUN_TIMESTAMP_FORMAT)
         / SUMMARY_OUTPUT_FILENAME
     )
@@ -116,7 +118,7 @@ def resolve_request_task_output_path(
     request_summary_path: Path,
     composite_task: str,
 ) -> Path:
-    """Resolves one per-task summary path nested under a shared request directory."""
+    """Resolves one per-task summary path nested under a shared run directory."""
 
     return (
         request_summary_path.parent

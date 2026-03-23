@@ -26,7 +26,9 @@ def _build_subatomic_allowed_tool_specs() -> dict[str, dict[str, Any]]:
             "tool_args": list(argument_names),
         }
         if tool_arg_types:
-            subatomic_allowed_tool_specs[tool_spec.name]["tool_arg_types"] = tool_arg_types
+            subatomic_allowed_tool_specs[tool_spec.name][
+                "tool_arg_types"
+            ] = tool_arg_types
     return subatomic_allowed_tool_specs
 
 
@@ -61,7 +63,7 @@ def build_allowed_tool_specs(
         overrides: Optional per-tool metadata patches applied on top of the
             shared registry entry. Use this to add task-specific symbolic
             constraints without redefining the base tool spec. For example,
-            ``{"pick_up_object": {"allowed_object_ids": ["mug_1"]}}`` keeps the
+            ``{"pick_up_object": {"allowed_object_ids": ["mug"]}}`` keeps the
             shared description and ``tool_args`` fields, then
             adds the task-specific ``allowed_object_ids`` constraint.
 
@@ -85,10 +87,14 @@ def build_allowed_tool_specs(
     for tool_name in requested_tool_names:
         if tool_name not in TASK_LEVEL_ALLOWED_TOOL_SPECS:
             raise KeyError(f"Unknown task-level tool name: {tool_name}")
-        selected_tool_specs[tool_name] = deepcopy(TASK_LEVEL_ALLOWED_TOOL_SPECS[tool_name])
+        selected_tool_specs[tool_name] = deepcopy(
+            TASK_LEVEL_ALLOWED_TOOL_SPECS[tool_name]
+        )
         if tool_name in tool_overrides:
             # Merge task-specific symbolic constraints into the shared base spec.
-            selected_tool_specs[tool_name].update(deepcopy(dict(tool_overrides[tool_name])))
+            selected_tool_specs[tool_name].update(
+                deepcopy(dict(tool_overrides[tool_name]))
+            )
 
     # Keep give_space aligned with navigation fixture constraints when tasks do
     # not need to repeat the same allowed fixture list twice.
@@ -100,11 +106,15 @@ def build_allowed_tool_specs(
         and navigate_tool_spec is not None
         and "allowed_fixture_ids" in navigate_tool_spec
     ):
-        give_space_spec["allowed_fixture_ids"] = deepcopy(navigate_tool_spec["allowed_fixture_ids"])
+        give_space_spec["allowed_fixture_ids"] = deepcopy(
+            navigate_tool_spec["allowed_fixture_ids"]
+        )
 
     unknown_override_names = set(tool_overrides) - set(requested_tool_names)
     if unknown_override_names:
         unknown_names = ", ".join(sorted(unknown_override_names))
-        raise KeyError(f"Overrides were provided for unavailable tool names: {unknown_names}")
+        raise KeyError(
+            f"Overrides were provided for unavailable tool names: {unknown_names}"
+        )
 
     return selected_tool_specs

@@ -89,7 +89,6 @@ from data_generation.task_level.generation.raw.config import (
     DEFAULT_OUTPUT_DIR,
     INTERRUPTED_EXIT_CODE,
     INTERRUPTED_MESSAGE,
-    REQUEST_DIRECTORY_NAME,
     RuntimeConfig,
 )
 from data_generation.task_level.generation.raw.costs import (
@@ -131,58 +130,67 @@ from data_generation.task_level.generation.raw.runtime_support import (
 )
 
 PREPARE_COFFEE_ACTION_SPECS = (
-    ("navigate_to_fixture", {"fixture_id": "cabinet_1"}),
-    ("open_hinged_part", {"target_id": "cabinet_1", "part_id": "door"}),
-    ("pick_up_object", {"object_id": "mug_1", "source_id": "cabinet_1"}),
-    ("navigate_to_fixture", {"fixture_id": "counter_1"}),
-    ("place_on_surface", {"object_id": "mug_1", "support_id": "counter_1"}),
-    ("navigate_to_fixture", {"fixture_id": "counter_1"}),
-    ("pick_up_object", {"object_id": "mug_1", "source_id": "counter_1"}),
-    ("navigate_to_fixture", {"fixture_id": "coffee_machine_1"}),
+    ("navigate_to_fixture", {"fixture_id": "mug_source_fixture"}),
+    ("open_hinged_part", {"target_id": "mug_source_fixture", "part_id": "door"}),
+    ("pick_up_object", {"object_id": "mug", "source_id": "mug_source_fixture"}),
+    ("navigate_to_fixture", {"fixture_id": "staging_surface"}),
+    ("place_on_surface", {"object_id": "mug", "support_id": "staging_surface"}),
+    ("navigate_to_fixture", {"fixture_id": "staging_surface"}),
+    ("pick_up_object", {"object_id": "mug", "source_id": "staging_surface"}),
+    ("navigate_to_fixture", {"fixture_id": "coffee_machine"}),
     (
         "place_under",
-        {"object_id": "mug_1", "reference_fixture_id": "coffee_machine_1"},
+        {"object_id": "mug", "reference_fixture_id": "coffee_machine"},
     ),
-    ("press_button", {"target_id": "coffee_machine_1", "control_id": "start_button"}),
+    ("press_button", {"target_id": "coffee_machine", "control_id": "start_button"}),
 )
 
 HOT_DOG_SETUP_ACTION_SPECS = (
-    ("navigate_to_fixture", {"fixture_id": "counter_1"}),
-    ("pick_up_object", {"object_id": "hotdog_bun_1", "source_id": "counter_1"}),
-    ("navigate_to_fixture", {"fixture_id": "dining_table_1"}),
-    ("place_on_object", {"object_id": "hotdog_bun_1", "support_object_id": "plate_1"}),
-    ("navigate_to_fixture", {"fixture_id": "cabinet_1"}),
-    ("pick_up_object", {"object_id": "condiment_1", "source_id": "cabinet_1"}),
-    ("navigate_to_fixture", {"fixture_id": "dining_table_1"}),
-    ("place_next_to", {"object_id": "condiment_1", "reference_object_id": "plate_1"}),
-    ("navigate_to_fixture", {"fixture_id": "fridge_1"}),
-    ("pick_up_object", {"object_id": "sausage_1", "source_id": "fridge_1"}),
-    ("navigate_to_fixture", {"fixture_id": "dining_table_1"}),
-    ("place_on_object", {"object_id": "sausage_1", "support_object_id": "plate_1"}),
+    ("navigate_to_fixture", {"fixture_id": "bun_source_fixture"}),
+    ("pick_up_object", {"object_id": "bun", "source_id": "bun_source_fixture"}),
+    ("navigate_to_fixture", {"fixture_id": "serving_surface"}),
+    ("place_on_object", {"object_id": "bun", "support_object_id": "serving_plate"}),
+    ("navigate_to_fixture", {"fixture_id": "condiment_source_fixture"}),
+    (
+        "pick_up_object",
+        {"object_id": "condiment", "source_id": "condiment_source_fixture"},
+    ),
+    ("navigate_to_fixture", {"fixture_id": "serving_surface"}),
+    (
+        "place_next_to",
+        {"object_id": "condiment", "reference_object_id": "serving_plate"},
+    ),
+    ("navigate_to_fixture", {"fixture_id": "sausage_source_fixture"}),
+    ("pick_up_object", {"object_id": "sausage", "source_id": "sausage_source_fixture"}),
+    ("navigate_to_fixture", {"fixture_id": "serving_surface"}),
+    ("place_on_object", {"object_id": "sausage", "support_object_id": "serving_plate"}),
 )
 
 PREPARE_SANDWICH_STATION_ACTION_SPECS = (
-    ("navigate_to_fixture", {"fixture_id": "fridge_1"}),
+    ("navigate_to_fixture", {"fixture_id": "ingredient_source_fixture"}),
     (
         "pick_up_object",
-        {"object_id": "ingredient_bowl_1", "source_id": "fridge_1"},
+        {"object_id": "ingredient_bowl", "source_id": "ingredient_source_fixture"},
     ),
-    ("navigate_to_fixture", {"fixture_id": "counter_1"}),
+    ("navigate_to_fixture", {"fixture_id": "staging_surface"}),
     (
         "place_next_to",
         {
-            "object_id": "ingredient_bowl_1",
-            "reference_object_id": "toaster_oven_1",
+            "object_id": "ingredient_bowl",
+            "reference_object_id": "toaster_oven",
         },
     ),
-    ("navigate_to_fixture", {"fixture_id": "fridge_1"}),
-    ("pick_up_object", {"object_id": "baguette_1", "source_id": "fridge_1"}),
-    ("navigate_to_fixture", {"fixture_id": "counter_1"}),
+    ("navigate_to_fixture", {"fixture_id": "ingredient_source_fixture"}),
+    (
+        "pick_up_object",
+        {"object_id": "baguette", "source_id": "ingredient_source_fixture"},
+    ),
+    ("navigate_to_fixture", {"fixture_id": "staging_surface"}),
     (
         "place_next_to",
         {
-            "object_id": "baguette_1",
-            "reference_object_id": "toaster_oven_1",
+            "object_id": "baguette",
+            "reference_object_id": "toaster_oven",
         },
     ),
 )
@@ -457,7 +465,7 @@ def make_alternative_valid_candidate():
             "agent": "agent_1",
             "tool": "navigate_to_fixture",
             "args": {
-                "fixture_id": "coffee_machine_1",
+                "fixture_id": "coffee_machine",
             },
             "reasoning": "I can stage at the machine before the mug arrives.",
         },
@@ -468,11 +476,11 @@ def make_alternative_valid_candidate():
 TOY_FSM_INITIAL_STATE = {
     "agents": {
         "agent_0": {
-            "location": "staging_area",
+            "location": "table_1",
             "held_object": None,
         },
         "agent_1": {
-            "location": "staging_area",
+            "location": "table_1",
             "held_object": None,
         },
     },
@@ -514,11 +522,11 @@ TOY_FSM_ALLOWED_TOOL_SPECS = build_allowed_tool_specs(
 PLACEMENT_REFERENCE_INITIAL_STATE = {
     "agents": {
         "agent_0": {
-            "location": "staging_area",
+            "location": "table_1",
             "held_object": None,
         },
         "agent_1": {
-            "location": "staging_area",
+            "location": "table_1",
             "held_object": None,
         },
     },
@@ -984,11 +992,11 @@ class SubatomicToolCatalogTests(unittest.TestCase):
             prompt,
         )
         self.assertIn(
-            "Open cabinet_1.door before using pick_up_object on mug_1 from cabinet_1.",
+            "Open mug_source_fixture.door before using pick_up_object on mug from mug_source_fixture.",
             prompt,
         )
         self.assertIn(
-            "Only press coffee_machine_1.start_button after mug_1 is already at coffee_machine_dispenser.",
+            "Only press coffee_machine.start_button after mug is already at coffee_machine_dispenser.",
             prompt,
         )
         self.assertIn(
@@ -1095,10 +1103,10 @@ class SubatomicToolCatalogTests(unittest.TestCase):
         self.assertIn("pick_up_object", prompt)
         self.assertIn("place_next_to", prompt)
         self.assertIn("PrepareSandwichStation", prompt)
-        self.assertIn("toaster_oven_1", prompt)
+        self.assertIn("toaster_oven", prompt)
         self.assertNotIn("Args formatting example:", prompt)
         self.assertIn(
-            "Use place_next_to with reference_object_id toaster_oven_1",
+            "Use place_next_to with reference_object_id toaster_oven",
             prompt,
         )
         self.assertNotIn('"wait"', prompt)
@@ -1140,12 +1148,11 @@ class PrepareCoffeeTaskInstanceTests(unittest.TestCase):
                 f"- {agent_id}: {task_instance.initial_state['agents'][agent_id]['location']}",
                 prompt,
             )
-        self.assertNotIn('"location": "staging_area"', prompt)
 
     def test_validator_uses_sampled_initial_positions(self):
         initial_state = deepcopy(PREPARE_COFFEE_INITIAL_STATE)
-        initial_state["agents"]["agent_0"]["location"] = "cabinet_1"
-        initial_state["agents"]["agent_1"]["location"] = "counter_1"
+        initial_state["agents"]["agent_0"]["location"] = "mug_source_fixture"
+        initial_state["agents"]["agent_1"]["location"] = "staging_surface"
         validator = PrepareCoffeeValidator(TaskInstance(initial_state=initial_state))
         candidate = make_valid_candidate()
         candidate["steps"].pop(
@@ -1191,16 +1198,16 @@ class HotDogSetupTaskTests(unittest.TestCase):
 
         self.assertTrue(validation["is_valid"])
         self.assertEqual(
-            validation["final_state"]["objects"]["hotdog_bun_1"]["location"],
-            "plate_1",
+            validation["final_state"]["objects"]["bun"]["location"],
+            "serving_plate",
         )
         self.assertEqual(
-            validation["final_state"]["objects"]["sausage_1"]["location"],
-            "plate_1",
+            validation["final_state"]["objects"]["sausage"]["location"],
+            "serving_plate",
         )
         self.assertTrue(
             validation["final_state"]["machine_state"]["hot_dog_setup"][
-                "condiment_placed_next_to_plate"
+                "condiment_placed_next_to_serving_plate"
             ]
         )
 
@@ -1235,12 +1242,12 @@ class PrepareSandwichStationTaskTests(unittest.TestCase):
 
         self.assertTrue(validation["is_valid"])
         self.assertEqual(
-            validation["final_state"]["objects"]["ingredient_bowl_1"]["location"],
-            "counter_1",
+            validation["final_state"]["objects"]["ingredient_bowl"]["location"],
+            "staging_surface",
         )
         self.assertEqual(
-            validation["final_state"]["objects"]["baguette_1"]["location"],
-            "counter_1",
+            validation["final_state"]["objects"]["baguette"]["location"],
+            "staging_surface",
         )
         self.assertTrue(
             validation["final_state"]["machine_state"]["prepare_sandwich_station"][
@@ -1451,7 +1458,6 @@ class DotenvLoadingTests(unittest.TestCase):
             resolved,
             DEFAULT_OUTPUT_DIR
             / "raw"
-            / DEFAULT_MODEL
             / "prepare_coffee"
             / "20260310T123456Z"
             / "summary.json",
@@ -1485,7 +1491,6 @@ class DotenvLoadingTests(unittest.TestCase):
             resolved,
             output_root
             / "raw"
-            / DEFAULT_MODEL
             / "prepare_coffee"
             / "20260310T123456Z"
             / "summary.json",
@@ -1507,12 +1512,7 @@ class DotenvLoadingTests(unittest.TestCase):
 
         self.assertEqual(
             resolved,
-            output_root
-            / "raw"
-            / DEFAULT_MODEL
-            / REQUEST_DIRECTORY_NAME
-            / "20260310T123456Z"
-            / "summary.json",
+            output_root / "raw" / "20260310T123456Z" / "summary.json",
         )
 
     def test_resolve_trajectory_output_dir_uses_sibling_trajectories_directory(self):
@@ -2550,7 +2550,7 @@ class PrepareCoffeeValidatorTests(unittest.TestCase):
         self.assertTrue(validation["is_valid"])
         self.assertTrue(validation["final_state"]["coffee_machine_started"])
         self.assertEqual(
-            validation["final_state"]["objects"]["mug_1"]["location"],
+            validation["final_state"]["objects"]["mug"]["location"],
             "coffee_machine_dispenser",
         )
 
@@ -2630,7 +2630,7 @@ class PrepareCoffeeValidatorTests(unittest.TestCase):
         candidate["steps"][
             find_step_index(candidate, "unsupported_tool", occurrence=0)
         ]["args"] = {
-            "object_id": "mug_1",
+            "object_id": "mug",
         }
 
         with self.assertRaises(TaskSemanticValidationError):
@@ -2673,7 +2673,8 @@ class PrepareCoffeeValidatorTests(unittest.TestCase):
         self.assertEqual(raised.exception.step, 7)
         self.assertIn("Step 7 (pick_up_object):", str(raised.exception))
         self.assertIn(
-            "must use navigate_to_fixture to reach counter_1", str(raised.exception)
+            "must use navigate_to_fixture to reach staging_surface",
+            str(raised.exception),
         )
         self.assertIn("before using pick_up_object", str(raised.exception))
 
@@ -2697,8 +2698,8 @@ class PrepareCoffeeValidatorTests(unittest.TestCase):
     def test_trajectory_signature_includes_initial_state(self):
         first_validation = self.validator.validate(make_valid_candidate())
         alternate_initial_state = deepcopy(PREPARE_COFFEE_INITIAL_STATE)
-        alternate_initial_state["agents"]["agent_0"]["location"] = "counter_1"
-        alternate_initial_state["agents"]["agent_1"]["location"] = "cabinet_1"
+        alternate_initial_state["agents"]["agent_0"]["location"] = "staging_surface"
+        alternate_initial_state["agents"]["agent_1"]["location"] = "mug_source_fixture"
         alternate_validator = PrepareCoffeeValidator(
             TaskInstance(initial_state=alternate_initial_state)
         )
@@ -4981,8 +4982,8 @@ class GenerationTests(unittest.TestCase):
             "error_type": "NavigationSemanticValidationError",
             "error_base_type": "TaskSemanticValidationError",
             "error": (
-                "Step 9 (pick_up_object): agent_1 is at coffee_machine_1 and must use "
-                "navigate_to_fixture to reach counter_1 before using pick_up_object."
+                "Step 9 (pick_up_object): agent_1 is at coffee_machine and must use "
+                "navigate_to_fixture to reach staging_surface before using pick_up_object."
             ),
             "step": 9,
         }
@@ -4995,9 +4996,9 @@ class GenerationTests(unittest.TestCase):
     def test_build_retry_feedback_text_includes_local_bad_example(self):
         feedback = _build_retry_feedback_text(
             NavigationSemanticValidationError(
-                "agent_1 must navigate_to_fixture(counter_1) before pick_up_object.",
+                "agent_1 must navigate_to_fixture(staging_surface) before pick_up_object.",
                 step=9,
-                details={"agent": "agent_1", "expected_location": "counter_1"},
+                details={"agent": "agent_1", "expected_location": "staging_surface"},
             ),
             candidate=make_valid_candidate(),
         )
@@ -6733,7 +6734,7 @@ class GenerationTests(unittest.TestCase):
         }
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            request_summary_path = Path(tmpdir) / "requests" / "summary.json"
+            request_summary_path = Path(tmpdir) / "20260310T000000Z" / "summary.json"
             with mock.patch(
                 "data_generation.task_level.generation.raw.cli.generate_trajectories",
                 side_effect=[prepare_coffee_payload, hot_dog_payload],

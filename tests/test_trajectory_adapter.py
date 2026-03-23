@@ -40,7 +40,9 @@ class FakeExecutor:
 
     def execute(self, tool_name, robot_idx=0, **kwargs):
         self.executed_steps.append((tool_name, robot_idx, kwargs))
-        return SimpleNamespace(success=True, details={"tool_name": tool_name, "args": kwargs})
+        return SimpleNamespace(
+            success=True, details={"tool_name": tool_name, "args": kwargs}
+        )
 
 
 class TestTrajectoryAdapter(unittest.TestCase):
@@ -51,19 +53,19 @@ class TestTrajectoryAdapter(unittest.TestCase):
             "trajectory_id": "traj_1",
             "initial_state": {
                 "agents": {
-                    "agent_0": {"location": "counter_1", "held_object": None},
-                    "agent_1": {"location": "coffee_machine_1", "held_object": None},
+                    "agent_0": {"location": "staging_surface", "held_object": None},
+                    "agent_1": {"location": "coffee_machine", "held_object": None},
                 },
                 "objects": {
-                    "mug_1": {"object_type": "mug", "location": "cabinet_1"},
+                    "mug": {"object_type": "mug", "location": "mug_source_fixture"},
                 },
                 "fixtures": {
-                    "cabinet_1": {"fixture_type": "cabinet"},
-                    "counter_1": {"fixture_type": "counter"},
-                    "coffee_machine_1": {"fixture_type": "coffee_machine"},
+                    "mug_source_fixture": {"fixture_type": "cabinet"},
+                    "staging_surface": {"fixture_type": "counter"},
+                    "coffee_machine": {"fixture_type": "coffee_machine"},
                 },
                 "machine_state": {
-                    "coffee_machine_1": {
+                    "coffee_machine": {
                         "started": False,
                         "dispenser_id": "coffee_machine_dispenser",
                     }
@@ -82,7 +84,7 @@ class TestTrajectoryAdapter(unittest.TestCase):
                     "agent": "agent_0",
                     "tool": "place_under_dispenser",
                     "args": {
-                        "object_id": "mug_1",
+                        "object_id": "mug",
                         "dispenser_id": "coffee_machine_dispenser",
                     },
                 },
@@ -140,11 +142,15 @@ class TestTrajectoryAdapter(unittest.TestCase):
         adapter = TrajectoryAdapter(executor=executor)
         trajectory = {
             "initial_state": {
-                "agents": {"agent_0": {"location": "counter_1", "held_object": None}},
-                "objects": {"mug_1": {"object_type": "mug", "location": "cabinet_1"}},
+                "agents": {
+                    "agent_0": {"location": "staging_surface", "held_object": None}
+                },
+                "objects": {
+                    "mug": {"object_type": "mug", "location": "mug_source_fixture"}
+                },
                 "fixtures": {
-                    "cabinet_1": {"fixture_type": "cabinet"},
-                    "counter_1": {"fixture_type": "counter"},
+                    "mug_source_fixture": {"fixture_type": "cabinet"},
+                    "staging_surface": {"fixture_type": "counter"},
                 },
             },
             "steps": [
@@ -247,7 +253,9 @@ class TestSimToolExecutorLoadInitialState(unittest.TestCase):
         executor._held_objects = {}
         executor.runner = SimpleNamespace(
             _fixtures={"counter_main": object(), "cab_main": object()},
-            move_object=lambda object_id, location: move_calls.append((object_id, location)),
+            move_object=lambda object_id, location: move_calls.append(
+                (object_id, location)
+            ),
             _set_object_location=lambda object_id, fixture_id: location_updates.append(
                 (object_id, fixture_id)
             ),
@@ -256,15 +264,19 @@ class TestSimToolExecutorLoadInitialState(unittest.TestCase):
         executor.close_hinged_part = lambda target_id, part_id: None
         executor.open_sliding_part = lambda target_id, part_id: None
         executor.close_sliding_part = lambda target_id, part_id: None
-        executor._set_fixture_machine_state = lambda fixture_id, started: machine_calls.append(
-            (fixture_id, started)
+        executor._set_fixture_machine_state = (
+            lambda fixture_id, started: machine_calls.append((fixture_id, started))
         )
-        executor.navigate_to_fixture = lambda fixture_id, robot_idx=0: navigate_calls.append(
-            (robot_idx, fixture_id)
+        executor.navigate_to_fixture = (
+            lambda fixture_id, robot_idx=0: navigate_calls.append(
+                (robot_idx, fixture_id)
+            )
         )
         executor._require_object = lambda object_id: object_id
         executor._sync_held_object = lambda robot_idx: synced.append(robot_idx)
-        executor._parse_agent_idx = lambda agent_id: int(str(agent_id).replace("agent_", ""))
+        executor._parse_agent_idx = lambda agent_id: int(
+            str(agent_id).replace("agent_", "")
+        )
 
         summary = executor.load_initial_state(
             {

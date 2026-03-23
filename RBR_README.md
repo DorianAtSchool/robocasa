@@ -121,7 +121,7 @@ For Gemini 3 models, you can optionally tune reasoning depth with
 When you pass multiple tasks with `--tasks`, the generator writes:
 
 ```text
-data/raw/requests/{timestamp}/
+data/raw/{timestamp}/
 ├── summary.json
 ├── cost_summary.json
 ├── summary_errors.json
@@ -184,26 +184,26 @@ python -m data_generation.task_level.generation.raw.cli \
   --max-retries 2 \
   --batch-processing \
   --batch-gcs-prefix gs://your-bucket/robocasa-batch \
-  --resume data_generation/task_level/data/gemini-3-flash-preview/requests/{timestamp}
+  --resume data_generation/task_level/data/raw/{timestamp}
 ```
 
 For a single-task run, pass that task directory to `--resume`. For a multi-task
-request, pass the request directory. Resume reuses the existing directory in place,
-skips completed runs, and retries only the pending run indices.
+run, pass the timestamped run directory. Resume reuses the existing directory in
+place, skips completed runs, and retries only the pending run indices.
 
 
 ### Adding Images via Post-Processing of Raw Data
 
 After the raw data is generated via LLM, run post-processing to add default multi-view
 `get_image` observation steps and deterministic `image_paths` fields in a copied
-dataset tree under `data/w_images/`. The output path mirrors the source tree after
+dataset tree under `data/image/`. The output path mirrors the source tree after
 `data/raw/`, so
-`data/raw/requests/{timestamp}/{task}/summary.json` becomes
-`data/w_images/requests/{timestamp}/{task}/summary.json`. The source dataset stays unchanged:
+`data/raw/{timestamp}/{task}/summary.json` becomes
+`data/image/{timestamp}/{task}/summary.json`. The source dataset stays unchanged:
 
 ```bash
 python -m data_generation.task_level.generation.image.cli \
-  --dataset data_generation/task_level/data/raw/requests/{timestamp}/{task}/summary.json
+  --dataset data_generation/task_level/data/raw/{timestamp}/{task}/summary.json
 ```
 
 Default post-processing behavior:
@@ -215,10 +215,11 @@ Default post-processing behavior:
 - Store the rendered artifacts for each inserted observation step in `image_paths`,
   ordered to match the requested `views`.
 
-To post-process every task summary inside one request directory, run directly in CLI:
+To post-process every task summary inside one multi-task run directory, run
+directly in CLI:
 
 ```bash
-for summary in data_generation/task_level/data/raw/requests/{timestamp}/*/summary.json; do
+for summary in data_generation/task_level/data/raw/{timestamp}/*/summary.json; do
   python -m data_generation.task_level.generation.image.cli \
     --dataset "$summary"
 done

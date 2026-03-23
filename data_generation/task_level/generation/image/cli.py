@@ -56,9 +56,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         help=(
             "Optional destination dataset JSON. Defaults to the mirrored source "
-            "path under data/image/<model>/, for example "
-            "data/raw/<model>/requests/.../summary.json -> "
-            "data/image/<model>/requests/.../summary.json."
+            "path under data/image/, for example "
+            "data/raw/<run_timestamp>/.../summary.json -> "
+            "data/image/<run_timestamp>/.../summary.json."
         ),
     )
     return parser.parse_args(argv)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from data_generation.task_level.grounding_specs import build_grounding_map_for_task
 from data_generation.task_level.subatomic_tool_specs import build_allowed_tool_specs
 from data_generation.task_level.tasks.shared.errors import (
     TaskPreconditionSemanticValidationError,
@@ -28,34 +29,34 @@ AGENT_IDS = ("agent_0", "agent_1")
 HOT_DOG_SETUP_INITIAL_STATE = {
     "agents": {
         "agent_0": {
-            "location": "staging_area",
+            "location": "condiment_source_fixture",
             "held_object": None,
         },
         "agent_1": {
-            "location": "staging_area",
+            "location": "condiment_source_fixture",
             "held_object": None,
         },
     },
     "objects": {
-        "hotdog_bun_1": {
+        "bun": {
             "object_type": "hotdog_bun",
-            "location": "counter_1",
+            "location": "bun_source_fixture",
         },
-        "sausage_1": {
+        "sausage": {
             "object_type": "sausage",
-            "location": "fridge_1",
+            "location": "sausage_source_fixture",
         },
-        "condiment_1": {
+        "condiment": {
             "object_type": "condiment_bottle",
-            "location": "cabinet_1",
+            "location": "condiment_source_fixture",
         },
-        "plate_1": {
+        "serving_plate": {
             "object_type": "plate",
-            "location": "dining_table_1",
+            "location": "serving_surface",
         },
     },
     "fixtures": {
-        "cabinet_1": {
+        "condiment_source_fixture": {
             "fixture_type": "cabinet",
             "parts": {
                 "door": {
@@ -64,13 +65,13 @@ HOT_DOG_SETUP_INITIAL_STATE = {
                 }
             },
         },
-        "counter_1": {"fixture_type": "counter"},
-        "fridge_1": {"fixture_type": "fridge"},
-        "dining_table_1": {"fixture_type": "dining_table"},
+        "bun_source_fixture": {"fixture_type": "counter"},
+        "sausage_source_fixture": {"fixture_type": "fridge"},
+        "serving_surface": {"fixture_type": "dining_table"},
     },
     "machine_state": {
         "hot_dog_setup": {
-            "condiment_placed_next_to_plate": False,
+            "condiment_placed_next_to_serving_plate": False,
         }
     },
 }
@@ -86,23 +87,27 @@ HOT_DOG_SETUP_ALLOWED_TOOL_SPECS = build_allowed_tool_specs(
     overrides={
         "navigate_to_fixture": {
             "allowed_fixture_ids": [
-                "cabinet_1",
-                "counter_1",
-                "fridge_1",
-                "dining_table_1",
+                "condiment_source_fixture",
+                "bun_source_fixture",
+                "sausage_source_fixture",
+                "serving_surface",
             ],
         },
         "pick_up_object": {
-            "allowed_object_ids": ["hotdog_bun_1", "sausage_1", "condiment_1"],
-            "allowed_source_ids": ["cabinet_1", "counter_1", "fridge_1"],
+            "allowed_object_ids": ["bun", "sausage", "condiment"],
+            "allowed_source_ids": [
+                "condiment_source_fixture",
+                "bun_source_fixture",
+                "sausage_source_fixture",
+            ],
         },
         "place_on_object": {
-            "allowed_object_ids": ["hotdog_bun_1", "sausage_1"],
-            "allowed_support_object_ids": ["plate_1"],
+            "allowed_object_ids": ["bun", "sausage"],
+            "allowed_support_object_ids": ["serving_plate"],
         },
         "place_next_to": {
-            "allowed_object_ids": ["condiment_1"],
-            "allowed_reference_object_ids": ["plate_1"],
+            "allowed_object_ids": ["condiment"],
+            "allowed_reference_object_ids": ["serving_plate"],
         },
     },
 )
@@ -113,8 +118,8 @@ HOT_DOG_SETUP_RESPONSE_SCHEMA = build_task_response_schema(
 )
 
 HOT_DOG_SETUP_TASK_GOAL = (
-    "move hotdog_bun_1 and sausage_1 onto plate_1 on dining_table_1, then place "
-    "condiment_1 next to plate_1 on dining_table_1."
+    "move bun and sausage onto serving_plate on serving_surface, then place "
+    "condiment next to serving_plate on serving_surface."
 )
 HOT_DOG_SETUP_NON_COMMUNICATE_TOOL_NAMES = tuple(
     tool_name
@@ -136,9 +141,9 @@ build_hot_dog_setup_prompt = make_task_prompt_builder(
     allowed_tool_specs=HOT_DOG_SETUP_ALLOWED_TOOL_SPECS,
     non_communicate_tool_names=HOT_DOG_SETUP_NON_COMMUNICATE_TOOL_NAMES,
     extra_execution_rules=(
-        "Move hotdog_bun_1 and sausage_1 onto plate_1, not directly onto dining_table_1.",
-        "Only use place_next_to for condiment_1 with reference_object_id set to plate_1.",
-        "Keep plate_1 on dining_table_1 throughout the trajectory.",
+        "Move bun and sausage onto serving_plate, not directly onto serving_surface.",
+        "Only use place_next_to for condiment with reference_object_id set to serving_plate.",
+        "Keep serving_plate on serving_surface throughout the trajectory.",
     ),
 )
 
@@ -169,21 +174,19 @@ class HotDogSetupValidator(FiniteStateTaskValidator):
             ),
             max_reasoning_chars=MAX_REASONING_CHARS,
             initial_public_state={
-                "bun_location": effective_initial_state["objects"]["hotdog_bun_1"][
+                "bun_location": effective_initial_state["objects"]["bun"]["location"],
+                "sausage_location": effective_initial_state["objects"]["sausage"][
                     "location"
                 ],
-                "sausage_location": effective_initial_state["objects"]["sausage_1"][
+                "condiment_location": effective_initial_state["objects"]["condiment"][
                     "location"
                 ],
-                "condiment_location": effective_initial_state["objects"]["condiment_1"][
-                    "location"
-                ],
-                "plate_location": effective_initial_state["objects"]["plate_1"][
-                    "location"
-                ],
-                "condiment_placed_next_to_plate": effective_initial_state[
+                "serving_plate_location": effective_initial_state["objects"][
+                    "serving_plate"
+                ]["location"],
+                "condiment_placed_next_to_serving_plate": effective_initial_state[
                     "machine_state"
-                ]["hot_dog_setup"]["condiment_placed_next_to_plate"],
+                ]["hot_dog_setup"]["condiment_placed_next_to_serving_plate"],
             },
         )
 
@@ -194,13 +197,15 @@ class HotDogSetupValidator(FiniteStateTaskValidator):
     ) -> None:
         """Checks the HotDogSetup-specific stationary plate invariant."""
 
-        if runtime_state.objects["plate_1"]["location"] != "dining_table_1":
+        if runtime_state.objects["serving_plate"]["location"] != "serving_surface":
             raise TaskPreconditionSemanticValidationError(
-                "plate_1 must remain on dining_table_1 throughout HotDogSetup.",
+                "serving_plate must remain on serving_surface throughout HotDogSetup.",
                 details={
-                    "object_id": "plate_1",
-                    "required_location": "dining_table_1",
-                    "actual_location": runtime_state.objects["plate_1"]["location"],
+                    "object_id": "serving_plate",
+                    "required_location": "serving_surface",
+                    "actual_location": runtime_state.objects["serving_plate"][
+                        "location"
+                    ],
                     "tool": step["tool"],
                 },
             )
@@ -208,16 +213,18 @@ class HotDogSetupValidator(FiniteStateTaskValidator):
     def is_goal_state_satisfied(self, runtime_state: TaskRuntimeState) -> bool:
         """Checks success using the symbolic hot-dog setup goal state."""
 
-        bun_on_plate = runtime_state.objects["hotdog_bun_1"]["location"] == "plate_1"
-        sausage_on_plate = runtime_state.objects["sausage_1"]["location"] == "plate_1"
+        bun_on_plate = runtime_state.objects["bun"]["location"] == "serving_plate"
+        sausage_on_plate = (
+            runtime_state.objects["sausage"]["location"] == "serving_plate"
+        )
         plate_on_table = (
-            runtime_state.objects["plate_1"]["location"] == "dining_table_1"
+            runtime_state.objects["serving_plate"]["location"] == "serving_surface"
         )
         condiment_on_table = (
-            runtime_state.objects["condiment_1"]["location"] == "dining_table_1"
+            runtime_state.objects["condiment"]["location"] == "serving_surface"
         )
         condiment_next_to_plate = runtime_state.machine_state["hot_dog_setup"][
-            "condiment_placed_next_to_plate"
+            "condiment_placed_next_to_serving_plate"
         ]
         return (
             bun_on_plate
@@ -236,28 +243,28 @@ class HotDogSetupValidator(FiniteStateTaskValidator):
 
         if (
             step["tool"] == "place_next_to"
-            and step["args"]["object_id"] == "condiment_1"
-            and step["args"]["reference_object_id"] == "plate_1"
+            and step["args"]["object_id"] == "condiment"
+            and step["args"]["reference_object_id"] == "serving_plate"
         ):
             runtime_state.machine_state["hot_dog_setup"][
-                "condiment_placed_next_to_plate"
+                "condiment_placed_next_to_serving_plate"
             ] = True
 
-        runtime_state.public_state["bun_location"] = runtime_state.objects[
-            "hotdog_bun_1"
-        ]["location"]
-        runtime_state.public_state["sausage_location"] = runtime_state.objects[
-            "sausage_1"
-        ]["location"]
-        runtime_state.public_state["condiment_location"] = runtime_state.objects[
-            "condiment_1"
-        ]["location"]
-        runtime_state.public_state["plate_location"] = runtime_state.objects["plate_1"][
+        runtime_state.public_state["bun_location"] = runtime_state.objects["bun"][
             "location"
         ]
-        runtime_state.public_state["condiment_placed_next_to_plate"] = (
+        runtime_state.public_state["sausage_location"] = runtime_state.objects[
+            "sausage"
+        ]["location"]
+        runtime_state.public_state["condiment_location"] = runtime_state.objects[
+            "condiment"
+        ]["location"]
+        runtime_state.public_state["serving_plate_location"] = runtime_state.objects[
+            "serving_plate"
+        ]["location"]
+        runtime_state.public_state["condiment_placed_next_to_serving_plate"] = (
             runtime_state.machine_state["hot_dog_setup"][
-                "condiment_placed_next_to_plate"
+                "condiment_placed_next_to_serving_plate"
             ]
         )
 
@@ -276,6 +283,10 @@ def build_hot_dog_setup_trajectory_record(
         "composite_task": "HotDogSetup",
         "agents": build_canonical_agents(AGENT_IDS),
         "initial_state": task_instance.initial_state,
+        "grounding_map": build_grounding_map_for_task(
+            "HotDogSetup",
+            task_instance.initial_state,
+        ),
         "steps": candidate.get("steps"),
         "validation": validation,
         "generation_usage": generation_usage,

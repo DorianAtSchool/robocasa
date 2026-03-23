@@ -53,7 +53,7 @@ def make_sample_trajectory():
                 "step": 2,
                 "agent": "agent_0",
                 "tool": "navigate_to_fixture",
-                "args": {"fixture_id": "cabinet_1"},
+                "args": {"fixture_id": "mug_source_fixture"},
                 "reasoning": "I need to reach the cabinet.",
             },
             {
@@ -61,8 +61,8 @@ def make_sample_trajectory():
                 "agent": "agent_0",
                 "tool": "pick_up_object",
                 "args": {
-                    "object_id": "mug_1",
-                    "source_id": "cabinet_1",
+                    "object_id": "mug",
+                    "source_id": "mug_source_fixture",
                 },
                 "reasoning": "I should pick up the mug.",
             },
@@ -216,24 +216,22 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
 
     def test_resolve_output_dataset_path_targets_image_copy(self):
         dataset_path = Path(
-            "/tmp/data/raw/gemini-3-flash-preview/prepare_coffee/summary.json"
+            "/tmp/data/raw/prepare_coffee/20260316T022801Z/summary.json"
         )
 
         self.assertEqual(
             resolve_output_dataset_path(dataset_path),
-            Path("/tmp/data/image/gemini-3-flash-preview/prepare_coffee/summary.json"),
+            Path("/tmp/data/image/prepare_coffee/20260316T022801Z/summary.json"),
         )
 
-    def test_resolve_output_dataset_path_preserves_request_layout(self):
+    def test_resolve_output_dataset_path_preserves_multitask_layout(self):
         dataset_path = Path(
-            "/tmp/data/raw/gemini-3-flash-preview/requests/20260316T022801Z/prepare_coffee/summary.json"
+            "/tmp/data/raw/20260316T022801Z/prepare_coffee/summary.json"
         )
 
         self.assertEqual(
             resolve_output_dataset_path(dataset_path),
-            Path(
-                "/tmp/data/image/gemini-3-flash-preview/requests/20260316T022801Z/prepare_coffee/summary.json"
-            ),
+            Path("/tmp/data/image/20260316T022801Z/prepare_coffee/summary.json"),
         )
 
     def test_post_process_dataset_writes_summary_copy_without_mutating_source(self):
@@ -257,8 +255,8 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
                 Path(tmpdir)
                 / "data"
                 / "raw"
-                / "gemini-3-flash-preview"
                 / "prepare_coffee"
+                / "20260310T000000Z"
                 / "summary.json"
             )
             trajectory_path = dataset_path.parent / "trajectories" / "traj_000000.json"

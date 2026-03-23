@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from data_generation.task_level.grounding_specs import build_grounding_map_for_task
 from data_generation.task_level.subatomic_tool_specs import build_allowed_tool_specs
 from data_generation.task_level.tasks.shared.errors import (
     TaskPreconditionSemanticValidationError,
@@ -28,44 +29,44 @@ AGENT_IDS = ("agent_0", "agent_1")
 PREPARE_SANDWICH_STATION_INITIAL_STATE = {
     "agents": {
         "agent_0": {
-            "location": "staging_area",
+            "location": "ingredient_source_fixture",
             "held_object": None,
         },
         "agent_1": {
-            "location": "staging_area",
+            "location": "ingredient_source_fixture",
             "held_object": None,
         },
     },
     "objects": {
-        "ingredient_bowl_1": {
+        "ingredient_bowl": {
             "object_type": "bowl",
-            "location": "fridge_1",
+            "location": "ingredient_source_fixture",
         },
-        "baguette_1": {
+        "baguette": {
             "object_type": "baguette",
-            "location": "fridge_1",
+            "location": "ingredient_source_fixture",
         },
-        "tomato_slice_1": {
+        "tomato_slice": {
             "object_type": "tomato_slice",
-            "location": "ingredient_bowl_1",
+            "location": "ingredient_bowl",
         },
-        "pickle_slice_1": {
+        "pickle_slice": {
             "object_type": "pickle_slice",
-            "location": "ingredient_bowl_1",
+            "location": "ingredient_bowl",
         },
-        "turkey_slice_1": {
+        "turkey_slice": {
             "object_type": "turkey_slice",
-            "location": "ingredient_bowl_1",
+            "location": "ingredient_bowl",
         },
     },
     "fixtures": {
-        "fridge_1": {"fixture_type": "fridge"},
-        "counter_1": {"fixture_type": "counter"},
-        "toaster_oven_1": {"fixture_type": "toaster_oven"},
+        "ingredient_source_fixture": {"fixture_type": "fridge"},
+        "staging_surface": {"fixture_type": "counter"},
+        "toaster_oven": {"fixture_type": "toaster_oven"},
     },
     "machine_state": {
-        "toaster_oven_1": {
-            "adjacent_location_id": "counter_1",
+        "toaster_oven": {
+            "adjacent_location_id": "staging_surface",
         },
         "prepare_sandwich_station": {
             "ingredient_bowl_staged": False,
@@ -83,15 +84,15 @@ PREPARE_SANDWICH_STATION_ALLOWED_TOOL_SPECS = build_allowed_tool_specs(
     ),
     overrides={
         "navigate_to_fixture": {
-            "allowed_fixture_ids": ["fridge_1", "counter_1"],
+            "allowed_fixture_ids": ["ingredient_source_fixture", "staging_surface"],
         },
         "pick_up_object": {
-            "allowed_object_ids": ["ingredient_bowl_1", "baguette_1"],
-            "allowed_source_ids": ["fridge_1", "counter_1"],
+            "allowed_object_ids": ["ingredient_bowl", "baguette"],
+            "allowed_source_ids": ["ingredient_source_fixture", "staging_surface"],
         },
         "place_next_to": {
-            "allowed_object_ids": ["ingredient_bowl_1", "baguette_1"],
-            "allowed_reference_object_ids": ["toaster_oven_1"],
+            "allowed_object_ids": ["ingredient_bowl", "baguette"],
+            "allowed_reference_object_ids": ["toaster_oven"],
         },
     },
 )
@@ -102,8 +103,9 @@ PREPARE_SANDWICH_STATION_RESPONSE_SCHEMA = build_task_response_schema(
 )
 
 PREPARE_SANDWICH_STATION_TASK_GOAL = (
-    "retrieve ingredient_bowl_1 and baguette_1 from fridge_1, then place both "
-    "next to toaster_oven_1 on counter_1 to stage them near the toaster oven."
+    "retrieve ingredient_bowl and baguette from ingredient_source_fixture, then "
+    "place both next to toaster_oven on staging_surface to stage them near the "
+    "toaster oven."
 )
 PREPARE_SANDWICH_STATION_NON_COMMUNICATE_TOOL_NAMES = tuple(
     tool_name
@@ -125,9 +127,9 @@ build_prepare_sandwich_station_prompt = make_task_prompt_builder(
     allowed_tool_specs=PREPARE_SANDWICH_STATION_ALLOWED_TOOL_SPECS,
     non_communicate_tool_names=PREPARE_SANDWICH_STATION_NON_COMMUNICATE_TOOL_NAMES,
     extra_execution_rules=(
-        "Pick up ingredient_bowl_1 and baguette_1 from fridge_1 before staging them on counter_1.",
-        "Use place_next_to with reference_object_id toaster_oven_1 so both items end up on counter_1 near the toaster oven.",
-        "Keep tomato_slice_1, pickle_slice_1, and turkey_slice_1 inside ingredient_bowl_1 throughout the trajectory.",
+        "Pick up ingredient_bowl and baguette from ingredient_source_fixture before staging them on staging_surface.",
+        "Use place_next_to with reference_object_id toaster_oven so both items end up on staging_surface near the toaster oven.",
+        "Keep tomato_slice, pickle_slice, and turkey_slice inside ingredient_bowl throughout the trajectory.",
     ),
 )
 
@@ -159,9 +161,9 @@ class PrepareSandwichStationValidator(FiniteStateTaskValidator):
             max_reasoning_chars=MAX_REASONING_CHARS,
             initial_public_state={
                 "ingredient_bowl_location": effective_initial_state["objects"][
-                    "ingredient_bowl_1"
+                    "ingredient_bowl"
                 ]["location"],
-                "baguette_location": effective_initial_state["objects"]["baguette_1"][
+                "baguette_location": effective_initial_state["objects"]["baguette"][
                     "location"
                 ],
                 "ingredient_bowl_staged": effective_initial_state["machine_state"][
@@ -180,15 +182,15 @@ class PrepareSandwichStationValidator(FiniteStateTaskValidator):
     ) -> None:
         """Checks that the sandwich ingredients remain in the bowl while staging."""
 
-        for ingredient_id in ("tomato_slice_1", "pickle_slice_1", "turkey_slice_1"):
+        for ingredient_id in ("tomato_slice", "pickle_slice", "turkey_slice"):
             ingredient_location = runtime_state.objects[ingredient_id]["location"]
-            if ingredient_location != "ingredient_bowl_1":
+            if ingredient_location != "ingredient_bowl":
                 raise TaskPreconditionSemanticValidationError(
-                    f"{ingredient_id} must remain in ingredient_bowl_1 during PrepareSandwichStation.",
+                    f"{ingredient_id} must remain in ingredient_bowl during PrepareSandwichStation.",
                     details={
                         "tool": step["tool"],
                         "ingredient_id": ingredient_id,
-                        "required_location": "ingredient_bowl_1",
+                        "required_location": "ingredient_bowl",
                         "actual_location": ingredient_location,
                     },
                 )
@@ -197,10 +199,10 @@ class PrepareSandwichStationValidator(FiniteStateTaskValidator):
         """Checks success using the symbolic staging goal state."""
 
         ingredient_bowl_on_counter = (
-            runtime_state.objects["ingredient_bowl_1"]["location"] == "counter_1"
+            runtime_state.objects["ingredient_bowl"]["location"] == "staging_surface"
         )
         baguette_on_counter = (
-            runtime_state.objects["baguette_1"]["location"] == "counter_1"
+            runtime_state.objects["baguette"]["location"] == "staging_surface"
         )
         ingredient_bowl_staged = runtime_state.machine_state[
             "prepare_sandwich_station"
@@ -224,22 +226,22 @@ class PrepareSandwichStationValidator(FiniteStateTaskValidator):
 
         if (
             step["tool"] == "place_next_to"
-            and step["args"]["reference_object_id"] == "toaster_oven_1"
+            and step["args"]["reference_object_id"] == "toaster_oven"
         ):
-            if step["args"]["object_id"] == "ingredient_bowl_1":
+            if step["args"]["object_id"] == "ingredient_bowl":
                 runtime_state.machine_state["prepare_sandwich_station"][
                     "ingredient_bowl_staged"
                 ] = True
-            if step["args"]["object_id"] == "baguette_1":
+            if step["args"]["object_id"] == "baguette":
                 runtime_state.machine_state["prepare_sandwich_station"][
                     "baguette_staged"
                 ] = True
 
         runtime_state.public_state["ingredient_bowl_location"] = runtime_state.objects[
-            "ingredient_bowl_1"
+            "ingredient_bowl"
         ]["location"]
         runtime_state.public_state["baguette_location"] = runtime_state.objects[
-            "baguette_1"
+            "baguette"
         ]["location"]
         runtime_state.public_state["ingredient_bowl_staged"] = (
             runtime_state.machine_state["prepare_sandwich_station"][
@@ -265,6 +267,10 @@ def build_prepare_sandwich_station_trajectory_record(
         "composite_task": "PrepareSandwichStation",
         "agents": build_canonical_agents(AGENT_IDS),
         "initial_state": task_instance.initial_state,
+        "grounding_map": build_grounding_map_for_task(
+            "PrepareSandwichStation",
+            task_instance.initial_state,
+        ),
         "steps": candidate.get("steps"),
         "validation": validation,
         "generation_usage": generation_usage,

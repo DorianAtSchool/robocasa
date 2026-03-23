@@ -46,12 +46,22 @@ from robocasa.utils.trajectory_runner import TrajectoryRunner
 # robot to an edge or side.  For large surfaces (counters, islands) the object
 # position helps pick the right spot along the surface.
 _APPROACH_CENTER_TYPES = {
-    FixtureType.CABINET, FixtureType.CABINET_SINGLE_DOOR,
-    FixtureType.CABINET_DOUBLE_DOOR, FixtureType.CABINET_WITH_DOOR,
-    FixtureType.FRIDGE, FixtureType.MICROWAVE, FixtureType.OVEN,
-    FixtureType.DISHWASHER, FixtureType.TOASTER, FixtureType.TOASTER_OVEN,
-    FixtureType.COFFEE_MACHINE, FixtureType.BLENDER, FixtureType.STAND_MIXER,
-    FixtureType.ELECTRIC_KETTLE, FixtureType.TOP_DRAWER, FixtureType.DRAWER,
+    FixtureType.CABINET,
+    FixtureType.CABINET_SINGLE_DOOR,
+    FixtureType.CABINET_DOUBLE_DOOR,
+    FixtureType.CABINET_WITH_DOOR,
+    FixtureType.FRIDGE,
+    FixtureType.MICROWAVE,
+    FixtureType.OVEN,
+    FixtureType.DISHWASHER,
+    FixtureType.TOASTER,
+    FixtureType.TOASTER_OVEN,
+    FixtureType.COFFEE_MACHINE,
+    FixtureType.BLENDER,
+    FixtureType.STAND_MIXER,
+    FixtureType.ELECTRIC_KETTLE,
+    FixtureType.TOP_DRAWER,
+    FixtureType.DRAWER,
 }
 
 _FRONT_READY_MIN_GAP = 0.05
@@ -132,7 +142,9 @@ class SimToolExecutor:
     def render(self) -> dict[str, np.ndarray]:
         return self.runner.render()
 
-    def save_placement_map(self, output_dir: str | Path, prefix: str = "placement") -> Path:
+    def save_placement_map(
+        self, output_dir: str | Path, prefix: str = "placement"
+    ) -> Path:
         """Render the 2D placement map and save it to *output_dir*.
 
         Uses the grid view for grid mode, continuous view for continuous mode,
@@ -145,6 +157,7 @@ class SimToolExecutor:
     def _save_map_image(self, image_path: str | Path) -> Path:
         """Render the placement map and save it to an explicit output path."""
         import matplotlib
+
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
         from robocasa.utils.placement_map import draw_grid_map, draw_continuous_map
@@ -168,7 +181,9 @@ class SimToolExecutor:
         plt.close(fig)
         return path
 
-    def save_scene_frames(self, output_dir: str | Path, prefix: str = "initial") -> dict[str, Path]:
+    def save_scene_frames(
+        self, output_dir: str | Path, prefix: str = "initial"
+    ) -> dict[str, Path]:
         """Render the current scene and save one image per camera."""
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -207,7 +222,9 @@ class SimToolExecutor:
         imageio.imwrite(path, image)
         return path
 
-    def _camera_name_for_agent_view(self, agent_id: str | int, view: str) -> tuple[int, str]:
+    def _camera_name_for_agent_view(
+        self, agent_id: str | int, view: str
+    ) -> tuple[int, str]:
         robot_idx = self._parse_agent_idx(agent_id)
         view_name = str(view).strip().lower()
         view_aliases = {
@@ -234,7 +251,9 @@ class SimToolExecutor:
             return
         self.env.sim.forward()
 
-    def load_initial_state(self, initial_state: dict[str, Any] | None) -> dict[str, Any]:
+    def load_initial_state(
+        self, initial_state: dict[str, Any] | None
+    ) -> dict[str, Any]:
         """Apply a normalized initial state to the live simulator."""
         if not initial_state:
             return {"loaded": False}
@@ -269,7 +288,9 @@ class SimToolExecutor:
 
         for fixture_id, machine_cfg in machine_state.items():
             if "started" in machine_cfg:
-                self._set_fixture_machine_state(fixture_id, bool(machine_cfg["started"]))
+                self._set_fixture_machine_state(
+                    fixture_id, bool(machine_cfg["started"])
+                )
 
         held_object_ids = set()
         for agent_id, agent_state in agents.items():
@@ -379,9 +400,11 @@ class SimToolExecutor:
                 robot_positions = {}
                 for ri in range(self.runner._num_robots):
                     rp = self.runner._get_robot_position(ri)
-                    robot_positions[f"robot{ri}"] = [round(float(rp[0]), 3),
-                                                      round(float(rp[1]), 3),
-                                                      round(float(rp[2]), 3)]
+                    robot_positions[f"robot{ri}"] = [
+                        round(float(rp[0]), 3),
+                        round(float(rp[1]), 3),
+                        round(float(rp[2]), 3),
+                    ]
 
                 metadata["steps"].append(
                     {
@@ -535,7 +558,10 @@ class SimToolExecutor:
 
     def _get_scene_object_location(self, object_id: str) -> str | None:
         cached_location = self.runner._object_locations.get(object_id)
-        if isinstance(cached_location, str) and cached_location in self.runner._fixtures:
+        if (
+            isinstance(cached_location, str)
+            and cached_location in self.runner._fixtures
+        ):
             return cached_location
 
         scene = self.get_scene_description()
@@ -595,9 +621,9 @@ class SimToolExecutor:
         for fixture_id, info in fixtures.items():
             if not info.get("can_place_objects", False):
                 continue
-            dist = float(np.linalg.norm(
-                np.asarray(info["position"][:2], dtype=float) - ref_pos
-            ))
+            dist = float(
+                np.linalg.norm(np.asarray(info["position"][:2], dtype=float) - ref_pos)
+            )
             if dist < best_dist:
                 best_dist = dist
                 best_id = fixture_id
@@ -629,7 +655,9 @@ class SimToolExecutor:
                     and fixture_info.get("fixture_type") not in preferred_fixture_types
                 ):
                     continue
-                if require_placeable and not fixture_info.get("can_place_objects", False):
+                if require_placeable and not fixture_info.get(
+                    "can_place_objects", False
+                ):
                     continue
                 candidates.append(fixture_id)
             return candidates
@@ -645,7 +673,8 @@ class SimToolExecutor:
             candidates,
             key=lambda fixture_id: float(
                 np.linalg.norm(
-                    object_pos[:2] - np.asarray(fixtures[fixture_id]["position"][:2], dtype=float)
+                    object_pos[:2]
+                    - np.asarray(fixtures[fixture_id]["position"][:2], dtype=float)
                 )
             ),
         )
@@ -682,7 +711,9 @@ class SimToolExecutor:
 
         candidate_ids = []
         if explicit_location is not None:
-            candidate_ids.extend(fixtures.get(explicit_location, {}).get("nearby_fixtures", []))
+            candidate_ids.extend(
+                fixtures.get(explicit_location, {}).get("nearby_fixtures", [])
+            )
         candidate_ids.extend(fixtures.keys())
 
         deduped_candidate_ids = []
@@ -705,7 +736,9 @@ class SimToolExecutor:
             contains_object = False
             if fixture is not None:
                 try:
-                    contains_object = bool(OU.point_in_fixture(object_pos, fixture, only_2d=True))
+                    contains_object = bool(
+                        OU.point_in_fixture(object_pos, fixture, only_2d=True)
+                    )
                 except Exception:
                     contains_object = False
 
@@ -716,7 +749,8 @@ class SimToolExecutor:
             )
             distance = float(
                 np.linalg.norm(
-                    object_pos[:2] - np.asarray(fixtures[fixture_id]["position"][:2], dtype=float)
+                    object_pos[:2]
+                    - np.asarray(fixtures[fixture_id]["position"][:2], dtype=float)
                 )
             )
             return (
@@ -923,11 +957,6 @@ class SimToolExecutor:
                 },
             },
             {
-                "tool": "wait",
-                "robot_idx": 0,
-                "args": {},
-            },
-            {
                 "tool": "place_on_object",
                 "robot_idx": 1,
                 "args": {
@@ -973,11 +1002,6 @@ class SimToolExecutor:
                         object_id="condiment",
                     ),
                 },
-            },
-            {
-                "tool": "wait",
-                "robot_idx": 1,
-                "args": {},
             },
             {
                 "tool": "navigate_to_fixture",
@@ -1051,7 +1075,7 @@ class SimToolExecutor:
                 "args": {
                     "to": "agent_1",
                     "message": "I'll open the fridge and grab the ingredient bowl. "
-                               "You grab the baguette after me.",
+                    "You grab the baguette after me.",
                 },
             },
             {
@@ -1185,9 +1209,11 @@ class SimToolExecutor:
                 continue
             if require_placeable and not finfo.get("can_place_objects", False):
                 continue
-            d = float(np.linalg.norm(
-                np.asarray(finfo["position"][:2], dtype=float) - anchor_pos
-            ))
+            d = float(
+                np.linalg.norm(
+                    np.asarray(finfo["position"][:2], dtype=float) - anchor_pos
+                )
+            )
             if d < best_dist:
                 best_dist = d
                 best_id = fid
@@ -1226,12 +1252,16 @@ class SimToolExecutor:
         if isinstance(value, dict):
             if "$ref" in value:
                 return self._resolve_semantic_ref(value)
-            return {key: self._ground_value(subvalue) for key, subvalue in value.items()}
+            return {
+                key: self._ground_value(subvalue) for key, subvalue in value.items()
+            }
         if isinstance(value, list):
             return [self._ground_value(item) for item in value]
         return value
 
-    def ground_plan_template(self, tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def ground_plan_template(
+        self, tool_calls: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
         grounded_tool_calls = deepcopy(tool_calls)
         for tool_call in grounded_tool_calls:
             tool_call["args"] = self._ground_value(tool_call.get("args", {}))
@@ -1335,9 +1365,7 @@ class SimToolExecutor:
                 "get_image requires image_paths to match the number of requested views."
             )
 
-        resolved_agent_id = (
-            agent_id if agent_id is not None else f"agent_{robot_idx}"
-        )
+        resolved_agent_id = agent_id if agent_id is not None else f"agent_{robot_idx}"
         resolved_robot_idx = self._parse_agent_idx(resolved_agent_id)
         saved_paths: list[str] = []
         camera_names: list[str] = []
@@ -1412,7 +1440,9 @@ class SimToolExecutor:
         else:
             joint_name = self._resolve_joint_name(fixture, part_id)
             self._set_named_joint(fixture, joint_name, 1.0)
-        return ToolResult("open_hinged_part", True, {"target_id": target_id, "part_id": part_id})
+        return ToolResult(
+            "open_hinged_part", True, {"target_id": target_id, "part_id": part_id}
+        )
 
     def close_hinged_part(
         self,
@@ -1434,7 +1464,9 @@ class SimToolExecutor:
         else:
             joint_name = self._resolve_joint_name(fixture, part_id)
             self._set_named_joint(fixture, joint_name, 0.0)
-        return ToolResult("close_hinged_part", True, {"target_id": target_id, "part_id": part_id})
+        return ToolResult(
+            "close_hinged_part", True, {"target_id": target_id, "part_id": part_id}
+        )
 
     def open_sliding_part(
         self,
@@ -1451,9 +1483,13 @@ class SimToolExecutor:
             )
             if moved:
                 self._sync_held_object(robot_idx)
-        joint_name = self._resolve_joint_name(fixture, part_id if part_id != "sliding" else "slide")
+        joint_name = self._resolve_joint_name(
+            fixture, part_id if part_id != "sliding" else "slide"
+        )
         self._set_named_joint(fixture, joint_name, 1.0)
-        return ToolResult("open_sliding_part", True, {"target_id": target_id, "part_id": part_id})
+        return ToolResult(
+            "open_sliding_part", True, {"target_id": target_id, "part_id": part_id}
+        )
 
     def close_sliding_part(
         self,
@@ -1470,11 +1506,17 @@ class SimToolExecutor:
             )
             if moved:
                 self._sync_held_object(robot_idx)
-        joint_name = self._resolve_joint_name(fixture, part_id if part_id != "sliding" else "slide")
+        joint_name = self._resolve_joint_name(
+            fixture, part_id if part_id != "sliding" else "slide"
+        )
         self._set_named_joint(fixture, joint_name, 0.0)
-        return ToolResult("close_sliding_part", True, {"target_id": target_id, "part_id": part_id})
+        return ToolResult(
+            "close_sliding_part", True, {"target_id": target_id, "part_id": part_id}
+        )
 
-    def _robot_near_fixture(self, robot_idx: int, fixture_id: str, threshold: float = 1.5) -> bool:
+    def _robot_near_fixture(
+        self, robot_idx: int, fixture_id: str, threshold: float = 1.5
+    ) -> bool:
         """Return True if the robot is ready to interact with the fixture."""
         fxtr = self.runner._fixtures.get(fixture_id)
         if fxtr is None:
@@ -1491,7 +1533,8 @@ class SimToolExecutor:
                 and metrics["within_span"]
                 and metrics["lateral_offset"] <= MAX_FRONT_WORKING_LATERAL_OFFSET
                 and _FRONT_READY_MIN_GAP <= metrics["front_gap"] <= _FRONT_READY_MAX_GAP
-                and float(np.linalg.norm(pos - fixture_center)) <= _FRONT_READY_MAX_CENTER_DISTANCE
+                and float(np.linalg.norm(pos - fixture_center))
+                <= _FRONT_READY_MAX_CENTER_DISTANCE
             )
         fxtr_pos = np.asarray(fxtr.pos[:2], dtype=float)
         return float(np.linalg.norm(pos - fxtr_pos)) < threshold
@@ -1585,7 +1628,9 @@ class SimToolExecutor:
 
         current_holder = self._held_by_robot(object_id)
         if current_holder is not None and current_holder != robot_idx:
-            raise ValueError(f"Object {object_id!r} is already held by robot {current_holder}")
+            raise ValueError(
+                f"Object {object_id!r} is already held by robot {current_holder}"
+            )
 
         # Skip navigation only if the robot is already in a usable working
         # pose for the fixture.
@@ -1594,14 +1639,18 @@ class SimToolExecutor:
             if _is_approach_center(source_fxtr):
                 # Interactive fixture (fridge, cabinet) — must approach from front
                 moved = self._move_robot_near_fixture_with_retries(
-                    robot_idx, source_id, require_front=True,
+                    robot_idx,
+                    source_id,
+                    require_front=True,
                 )
             else:
                 # Surface — pre-compute object position, pick closest face
                 obj_pos, _ = self._get_object_pose(object_id)
                 ref_pos = obj_pos[:2].copy()
                 moved = self._move_robot_near_fixture_with_retries(
-                    robot_idx, source_id, ref_pos_override=ref_pos,
+                    robot_idx,
+                    source_id,
+                    ref_pos_override=ref_pos,
                 )
             if moved:
                 self._sync_held_object(robot_idx)
@@ -1628,7 +1677,9 @@ class SimToolExecutor:
         # Pre-compute where the object will land so the robot stands near it.
         target_pos = self._safe_compute_object_target_pos(support_id, object_id)
         self.runner._move_robot_near_fixture(
-            robot_idx, support_id, ref_pos_override=target_pos[:2],
+            robot_idx,
+            support_id,
+            ref_pos_override=target_pos[:2],
         )
         self.runner.move_object(object_id, support_id, target_pos=target_pos)
         self._held_objects.pop(robot_idx, None)
@@ -1652,7 +1703,9 @@ class SimToolExecutor:
         if receptacle_id in self.runner._fixtures:
             target_pos = self._safe_compute_object_target_pos(receptacle_id, object_id)
             self.runner._move_robot_near_fixture(
-                robot_idx, receptacle_id, ref_pos_override=target_pos[:2],
+                robot_idx,
+                receptacle_id,
+                ref_pos_override=target_pos[:2],
             )
             self.runner.move_object(object_id, receptacle_id, target_pos=target_pos)
         else:
@@ -1669,7 +1722,11 @@ class SimToolExecutor:
         return ToolResult(
             "place_in_receptacle",
             True,
-            {"object_id": object_id, "receptacle_id": receptacle_id, "robot_idx": robot_idx},
+            {
+                "object_id": object_id,
+                "receptacle_id": receptacle_id,
+                "robot_idx": robot_idx,
+            },
         )
 
     def place_next_to(
@@ -1773,7 +1830,9 @@ class SimToolExecutor:
             target_pos = self.env.sim.data.site_xpos[site_id].copy()
             contained = self._find_contained_objects(object_id)
             self._set_object_pose(object_id, target_pos)
-            support_fixture_id = self._find_placeable_surface_near_fixture(reference_fixture_id)
+            support_fixture_id = self._find_placeable_surface_near_fixture(
+                reference_fixture_id
+            )
             self.runner._set_object_location(object_id, support_fixture_id)
             for child_id in contained:
                 self.runner._set_object_location(child_id, support_fixture_id)
@@ -1783,7 +1842,9 @@ class SimToolExecutor:
             target_pos = self.env.sim.data.site_xpos[site_id].copy()
             contained = self._find_contained_objects(object_id)
             self._set_object_pose(object_id, target_pos)
-            support_fixture_id = self._find_placeable_surface_near_fixture(reference_fixture_id)
+            support_fixture_id = self._find_placeable_surface_near_fixture(
+                reference_fixture_id
+            )
             self.runner._set_object_location(object_id, support_fixture_id)
             for child_id in contained:
                 self.runner._set_object_location(child_id, support_fixture_id)
@@ -1839,7 +1900,11 @@ class SimToolExecutor:
         if anchor_fixture_id is None:
             anchor_fixture_id = self._resolve_object_anchor_fixture(
                 support_object_id,
-                preferred_fixture_types=["dining_counter", "island", "counter_non_dining"],
+                preferred_fixture_types=[
+                    "dining_counter",
+                    "island",
+                    "counter_non_dining",
+                ],
                 require_placeable=True,
             )
         self._require_fixture(anchor_fixture_id)
@@ -1895,7 +1960,9 @@ class SimToolExecutor:
             self._set_named_joint(fixture, joint_name, 1.0)
 
         self.env.sim.forward()
-        return ToolResult("press_button", True, {"target_id": target_id, "control_id": control_id})
+        return ToolResult(
+            "press_button", True, {"target_id": target_id, "control_id": control_id}
+        )
 
     def press_lever(
         self,
@@ -1925,7 +1992,9 @@ class SimToolExecutor:
             self._set_named_joint(fixture, joint_name, 1.0)
 
         self.env.sim.forward()
-        return ToolResult("press_lever", True, {"target_id": target_id, "control_id": control_id})
+        return ToolResult(
+            "press_lever", True, {"target_id": target_id, "control_id": control_id}
+        )
 
     def set_rotary_control(
         self,
@@ -1994,9 +2063,14 @@ class SimToolExecutor:
         self._require_fixture(fixture_id)
         self.runner.give_space(robot_idx, fixture_id)
         self._sync_held_object(robot_idx)
-        return ToolResult("give_space", True, {
-            "fixture_id": fixture_id, "robot_idx": robot_idx,
-        })
+        return ToolResult(
+            "give_space",
+            True,
+            {
+                "fixture_id": fixture_id,
+                "robot_idx": robot_idx,
+            },
+        )
 
     def wait(self, robot_idx: int = 0) -> ToolResult:
         return ToolResult(
@@ -2119,7 +2193,11 @@ def _main():
     )
     args = parser.parse_args()
 
-    provided_inputs = [args.plan is not None, args.demo_plan is not None, args.trajectory is not None]
+    provided_inputs = [
+        args.plan is not None,
+        args.demo_plan is not None,
+        args.trajectory is not None,
+    ]
     if sum(provided_inputs) > 1:
         parser.error("Use only one of --plan, --demo-plan, or --trajectory.")
 
@@ -2155,7 +2233,10 @@ def _main():
                 parser.error(
                     "Unknown demo plan. Available: cooperative_hotdog_setup, sandwich_station"
                 )
-        elif trajectory_payload is not None and trajectory_payload.get("composite_task") is not None:
+        elif (
+            trajectory_payload is not None
+            and trajectory_payload.get("composite_task") is not None
+        ):
             task_name = trajectory_payload["composite_task"]
         else:
             task_name = "MicrowaveThawing"

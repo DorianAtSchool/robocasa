@@ -72,7 +72,9 @@ class TestSimToolExecutor(unittest.TestCase):
         self.assertIn("objects", context)
         self.assertIn("fixtures", context)
         self.assertTrue(any(obj["object_id"] == "plate" for obj in context["objects"]))
-        self.assertTrue(any(fx["fixture_type"] == "fridge" for fx in context["fixtures"]))
+        self.assertTrue(
+            any(fx["fixture_type"] == "fridge" for fx in context["fixtures"])
+        )
 
         prompt_text = render_llm_prompt(context)
         self.assertIn("Task:", prompt_text)
@@ -110,7 +112,7 @@ class TestSimToolExecutor(unittest.TestCase):
                 tools = {step["tool"] for step in metadata["steps"]}
                 self.assertEqual(robot_indices, {0, 1})
                 self.assertIn("communicate", tools)
-                self.assertIn("wait", tools)
+                self.assertNotIn("wait", tools)
 
                 with open(output_dir / "metadata.json", "r") as f:
                     saved_metadata = json.load(f)
@@ -149,12 +151,15 @@ class TestSimToolExecutor(unittest.TestCase):
             fixture_ids = [
                 step["args"]["fixture_id"]
                 for step in plan
-                if step["tool"] == "navigate_to_fixture" and "fixture_id" in step["args"]
+                if step["tool"] == "navigate_to_fixture"
+                and "fixture_id" in step["args"]
             ]
             place_steps = [step for step in plan if step["tool"] == "place_on_object"]
             self.assertIn("island_island_group_1", fixture_ids)
             self.assertTrue(any("fridge" in fixture_id for fixture_id in fixture_ids))
-            self.assertTrue(all("anchor_fixture_id" in step["args"] for step in place_steps))
+            self.assertTrue(
+                all("anchor_fixture_id" in step["args"] for step in place_steps)
+            )
         finally:
             executor.close()
 
@@ -188,25 +193,37 @@ class TestSimToolExecutor(unittest.TestCase):
             fixture_ids_a = {
                 step["args"]["fixture_id"]
                 for step in grounded_a
-                if step["tool"] == "navigate_to_fixture" and "fixture_id" in step["args"]
+                if step["tool"] == "navigate_to_fixture"
+                and "fixture_id" in step["args"]
             }
             fixture_ids_b = {
                 step["args"]["fixture_id"]
                 for step in grounded_b
-                if step["tool"] == "navigate_to_fixture" and "fixture_id" in step["args"]
+                if step["tool"] == "navigate_to_fixture"
+                and "fixture_id" in step["args"]
             }
 
             self.assertIn("dining_dining_group", fixture_ids_a)
             self.assertIn("island_island_group_1", fixture_ids_b)
             self.assertNotEqual(fixture_ids_a, fixture_ids_b)
 
-            place_steps_a = [step for step in grounded_a if step["tool"] == "place_on_object"]
-            place_steps_b = [step for step in grounded_b if step["tool"] == "place_on_object"]
+            place_steps_a = [
+                step for step in grounded_a if step["tool"] == "place_on_object"
+            ]
+            place_steps_b = [
+                step for step in grounded_b if step["tool"] == "place_on_object"
+            ]
             self.assertTrue(
-                all(step["args"]["anchor_fixture_id"] == "dining_dining_group" for step in place_steps_a)
+                all(
+                    step["args"]["anchor_fixture_id"] == "dining_dining_group"
+                    for step in place_steps_a
+                )
             )
             self.assertTrue(
-                all(step["args"]["anchor_fixture_id"] == "island_island_group_1" for step in place_steps_b)
+                all(
+                    step["args"]["anchor_fixture_id"] == "island_island_group_1"
+                    for step in place_steps_b
+                )
             )
         finally:
             executor_a.close()
@@ -233,14 +250,18 @@ class TestSimToolExecutor(unittest.TestCase):
         )
         try:
             plate_body_id = executor_fixture.env.obj_body_id["plate"]
-            plate_xy_fixture = executor_fixture.env.sim.data.body_xpos[plate_body_id][:2].copy()
+            plate_xy_fixture = executor_fixture.env.sim.data.body_xpos[plate_body_id][
+                :2
+            ].copy()
             plate_xy_object = executor_object.env.sim.data.body_xpos[
                 executor_object.env.obj_body_id["plate"]
             ][:2].copy()
 
             executor_fixture.runner._move_robot_near_fixture(0, "island_island_group_1")
             robot_xy_fixture = executor_fixture.runner._get_robot_position(0)[:2]
-            dist_fixture = float(((robot_xy_fixture - plate_xy_fixture) ** 2).sum() ** 0.5)
+            dist_fixture = float(
+                ((robot_xy_fixture - plate_xy_fixture) ** 2).sum() ** 0.5
+            )
 
             executor_object.runner._move_robot_near_fixture(
                 0,
@@ -286,9 +307,7 @@ class TestToolsFunctional(unittest.TestCase):
         return pos.copy()
 
     def _fixture_pos(self, fixture_id):
-        return np.array(
-            self._scene["fixtures"][fixture_id]["position"], dtype=float
-        )
+        return np.array(self._scene["fixtures"][fixture_id]["position"], dtype=float)
 
     def _robot_pos(self, robot_idx=0):
         return self._executor.runner._get_robot_position(robot_idx)
@@ -327,7 +346,9 @@ class TestToolsFunctional(unittest.TestCase):
         # Find a counter to place on
         target_fixture = None
         for fid, info in self._scene["fixtures"].items():
-            if info.get("can_place_objects") and "counter" in info.get("fixture_type", ""):
+            if info.get("can_place_objects") and "counter" in info.get(
+                "fixture_type", ""
+            ):
                 target_fixture = fid
                 break
         self.assertIsNotNone(target_fixture)
@@ -350,8 +371,9 @@ class TestToolsFunctional(unittest.TestCase):
 
         sausage_z = self._object_pos("sausage")[2]
         plate_z = self._object_pos("plate")[2]
-        self.assertGreater(sausage_z, plate_z - 0.01,
-                           "Sausage should be at or above plate level")
+        self.assertGreater(
+            sausage_z, plate_z - 0.01, "Sausage should be at or above plate level"
+        )
 
     # -- place_next_to --
 
@@ -379,7 +401,9 @@ class TestToolsFunctional(unittest.TestCase):
         for fid, info in scene["fixtures"].items():
             ftype = info.get("fixture_type", "")
             if not info.get("can_place_objects", False) and ftype not in (
-                "coffee_machine", "sink", ""
+                "coffee_machine",
+                "sink",
+                "",
             ):
                 ref_fixture = fid
                 break
@@ -462,6 +486,7 @@ class TestPlaceUnderDispenser(unittest.TestCase):
 
             # Verify position is at the receptacle_place_site
             from robocasa.models.fixtures.coffee_machine import CoffeeMachine
+
             fixture_obj = executor.runner._fixtures[coffee_fixture]
             self.assertIsInstance(fixture_obj, CoffeeMachine)
 
@@ -499,6 +524,7 @@ class TestPlaceUnderDispenser(unittest.TestCase):
                 self.skipTest("No sink fixture in this layout")
 
             from robocasa.models.fixtures.sink import Sink
+
             fixture_obj = executor.runner._fixtures[sink_fixture]
             if not isinstance(fixture_obj, Sink):
                 self.skipTest("Sink fixture is not a Sink instance")
@@ -603,12 +629,22 @@ class TestEnclosingFixtureFrontAlignment(unittest.TestCase):
             target_offset = MAX_FRONT_WORKING_LATERAL_OFFSET + 0.08
             if front_face in {"neg_y", "pos_y"}:
                 off_center_pos[0] = min(front_target[0] + target_offset, fmax[0] - 0.02)
-                if abs(off_center_pos[0] - front_target[0]) <= MAX_FRONT_WORKING_LATERAL_OFFSET:
-                    self.skipTest("Fixture front span too narrow for off-center recenter test")
+                if (
+                    abs(off_center_pos[0] - front_target[0])
+                    <= MAX_FRONT_WORKING_LATERAL_OFFSET
+                ):
+                    self.skipTest(
+                        "Fixture front span too narrow for off-center recenter test"
+                    )
             else:
                 off_center_pos[1] = min(front_target[1] + target_offset, fmax[1] - 0.02)
-                if abs(off_center_pos[1] - front_target[1]) <= MAX_FRONT_WORKING_LATERAL_OFFSET:
-                    self.skipTest("Fixture front span too narrow for off-center recenter test")
+                if (
+                    abs(off_center_pos[1] - front_target[1])
+                    <= MAX_FRONT_WORKING_LATERAL_OFFSET
+                ):
+                    self.skipTest(
+                        "Fixture front span too narrow for off-center recenter test"
+                    )
 
             executor.runner._set_robot_pose(1, off_center_pos, 0.0)
             self.assertFalse(executor._robot_near_fixture(1, source_id))
@@ -645,7 +681,9 @@ class TestCollisionAwareObjectPlacement(unittest.TestCase):
             result = executor.place_on_surface("hotdog_bun", support_id, robot_idx=0)
 
             self.assertTrue(result.success)
-            self.assertEqual(executor._get_scene_object_location("hotdog_bun"), support_id)
+            self.assertEqual(
+                executor._get_scene_object_location("hotdog_bun"), support_id
+            )
             self.assertFalse(
                 _objects_intersect(executor, "hotdog_bun", "plate"),
                 "Collision-aware surface placement should avoid the existing plate",
@@ -671,7 +709,9 @@ class TestCollisionAwareObjectPlacement(unittest.TestCase):
             if reference_fixture_id is None:
                 self.skipTest("No generic reference fixture for place_under test")
 
-            support_fixture_id = executor._find_placeable_surface_near_fixture(reference_fixture_id)
+            support_fixture_id = executor._find_placeable_surface_near_fixture(
+                reference_fixture_id
+            )
             reference_xy = np.asarray(
                 scene["fixtures"][reference_fixture_id]["position"][:2],
                 dtype=float,
@@ -687,10 +727,14 @@ class TestCollisionAwareObjectPlacement(unittest.TestCase):
 
             bun_source = scene["objects"]["hotdog_bun"]["location"]
             executor.pick_up_object("hotdog_bun", bun_source, robot_idx=0)
-            result = executor.place_under("hotdog_bun", reference_fixture_id, robot_idx=0)
+            result = executor.place_under(
+                "hotdog_bun", reference_fixture_id, robot_idx=0
+            )
 
             self.assertTrue(result.success)
-            self.assertEqual(executor._get_scene_object_location("hotdog_bun"), support_fixture_id)
+            self.assertEqual(
+                executor._get_scene_object_location("hotdog_bun"), support_fixture_id
+            )
             self.assertFalse(
                 _objects_intersect(executor, "hotdog_bun", "plate"),
                 "Generic place_under should slide to a nearby free pose when center is blocked",
@@ -757,9 +801,13 @@ class TestReceptacleCarrySemantics(unittest.TestCase):
             plate_source = executor._get_scene_object_location("plate")
             target_fixture_id = None
             for fixture_id, info in scene["fixtures"].items():
-                if fixture_id == plate_source or not info.get("can_place_objects", False):
+                if fixture_id == plate_source or not info.get(
+                    "can_place_objects", False
+                ):
                     continue
-                if "counter" in info.get("fixture_type", "") or "island" in info.get("fixture_type", ""):
+                if "counter" in info.get("fixture_type", "") or "island" in info.get(
+                    "fixture_type", ""
+                ):
                     target_fixture_id = fixture_id
                     break
 
@@ -779,8 +827,12 @@ class TestReceptacleCarrySemantics(unittest.TestCase):
                 ),
                 "Runner-level receptacle moves should carry contained contents",
             )
-            self.assertEqual(executor._get_scene_object_location("plate"), target_fixture_id)
-            self.assertEqual(executor._get_scene_object_location("sausage"), target_fixture_id)
+            self.assertEqual(
+                executor._get_scene_object_location("plate"), target_fixture_id
+            )
+            self.assertEqual(
+                executor._get_scene_object_location("sausage"), target_fixture_id
+            )
         finally:
             executor.close()
 
