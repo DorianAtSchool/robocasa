@@ -1,0 +1,431 @@
+{
+  "trajectory_id": "traj_000000",
+  "composite_task": "HotDogSetup",
+  "agents": [
+    {
+      "agent": "agent_0"
+    },
+    {
+      "agent": "agent_1"
+    }
+  ],
+  "initial_state": {
+    "agents": {
+      "agent_0": {
+        "location": "bun_source_fixture",
+        "held_object": null
+      },
+      "agent_1": {
+        "location": "bun_source_fixture",
+        "held_object": null
+      }
+    },
+    "objects": {
+      "bun": {
+        "object_type": "hotdog_bun",
+        "location": "bun_source_fixture"
+      },
+      "sausage": {
+        "object_type": "sausage",
+        "location": "sausage_source_fixture"
+      },
+      "condiment": {
+        "object_type": "condiment_bottle",
+        "location": "condiment_source_fixture"
+      },
+      "serving_plate": {
+        "object_type": "plate",
+        "location": "serving_surface"
+      }
+    },
+    "fixtures": {
+      "condiment_source_fixture": {
+        "fixture_type": "cabinet",
+        "parts": {
+          "door": {
+            "part_type": "hinged_part",
+            "state": "open"
+          }
+        }
+      },
+      "bun_source_fixture": {
+        "fixture_type": "counter"
+      },
+      "sausage_source_fixture": {
+        "fixture_type": "fridge"
+      },
+      "serving_surface": {
+        "fixture_type": "dining_table"
+      }
+    },
+    "machine_state": {
+      "hot_dog_setup": {
+        "condiment_placed_next_to_serving_plate": false
+      }
+    }
+  },
+  "grounding_map": {
+    "version": 2,
+    "map_kind": "scene_agnostic",
+    "composite_task": "HotDogSetup",
+    "symbols": {
+      "bun": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "role": "bun",
+        "object_type": "hotdog_bun",
+        "symbolic_location": "bun_source_fixture",
+        "preferred_fixture_types": [
+          "counter",
+          "counter_non_corner",
+          "counter_non_dining"
+        ]
+      },
+      "sausage": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "role": "sausage",
+        "object_type": "sausage",
+        "symbolic_location": "sausage_source_fixture",
+        "preferred_fixture_types": [
+          "fridge"
+        ]
+      },
+      "condiment": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "role": "condiment",
+        "object_type": "condiment_bottle",
+        "symbolic_location": "condiment_source_fixture",
+        "preferred_fixture_types": [
+          "cabinet",
+          "cabinet_single_door",
+          "cabinet_double_door",
+          "cabinet_with_door"
+        ]
+      },
+      "serving_plate": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "role": "serving_plate",
+        "object_type": "plate",
+        "symbolic_location": "serving_surface",
+        "preferred_fixture_types": [
+          "dining_counter",
+          "island",
+          "counter_non_dining"
+        ]
+      },
+      "bun_source_fixture": {
+        "entity_type": "fixture",
+        "resolver": "source_fixture_for_object",
+        "role": "bun_source_fixture",
+        "fixture_type": "counter",
+        "object_symbol": "bun",
+        "preferred_fixture_types": [
+          "counter",
+          "counter_non_corner",
+          "counter_non_dining"
+        ]
+      },
+      "sausage_source_fixture": {
+        "entity_type": "fixture",
+        "resolver": "source_fixture_for_object",
+        "role": "sausage_source_fixture",
+        "fixture_type": "fridge",
+        "object_symbol": "sausage",
+        "preferred_fixture_types": [
+          "fridge"
+        ]
+      },
+      "condiment_source_fixture": {
+        "entity_type": "fixture",
+        "resolver": "source_fixture_for_object",
+        "role": "condiment_source_fixture",
+        "fixture_type": "cabinet",
+        "object_symbol": "condiment",
+        "preferred_fixture_types": [
+          "cabinet",
+          "cabinet_single_door",
+          "cabinet_double_door",
+          "cabinet_with_door"
+        ]
+      },
+      "serving_surface": {
+        "entity_type": "fixture",
+        "resolver": "support_fixture_for_object",
+        "role": "serving_surface",
+        "fixture_type": "dining_table",
+        "object_symbol": "serving_plate",
+        "preferred_fixture_types": [
+          "dining_counter",
+          "island",
+          "counter_non_dining"
+        ]
+      }
+    }
+  },
+  "steps": [
+    {
+      "step": 0,
+      "agent": "agent_0",
+      "tool": "communicate",
+      "args": {
+        "to": "agent_1",
+        "message": "agent_0 will take the bun to the serving plate."
+      },
+      "reasoning": "agent_0 is coordinating the first task assignment."
+    },
+    {
+      "step": 1,
+      "agent": "agent_1",
+      "tool": "communicate",
+      "args": {
+        "to": "agent_0",
+        "message": "agent_1 will fetch the sausage from the fridge."
+      },
+      "reasoning": "agent_1 agrees to the plan and identifies the next item."
+    },
+    {
+      "step": 2,
+      "agent": "agent_0",
+      "tool": "pick_up_object",
+      "args": {
+        "object_id": "bun",
+        "source_id": "bun_source_fixture"
+      },
+      "reasoning": "agent_0 is picking up the bun from its starting location."
+    },
+    {
+      "step": 3,
+      "agent": "agent_1",
+      "tool": "navigate_to_fixture",
+      "args": {
+        "fixture_id": "sausage_source_fixture"
+      },
+      "reasoning": "agent_1 moves to the fridge to retrieve the sausage."
+    },
+    {
+      "step": 4,
+      "agent": "agent_0",
+      "tool": "navigate_to_fixture",
+      "args": {
+        "fixture_id": "serving_surface"
+      },
+      "reasoning": "agent_0 moves to the table to place the bun."
+    },
+    {
+      "step": 5,
+      "agent": "agent_1",
+      "tool": "pick_up_object",
+      "args": {
+        "object_id": "sausage",
+        "source_id": "sausage_source_fixture"
+      },
+      "reasoning": "agent_1 retrieves the sausage from the fridge."
+    },
+    {
+      "step": 6,
+      "agent": "agent_0",
+      "tool": "place_on_object",
+      "args": {
+        "object_id": "bun",
+        "support_object_id": "serving_plate"
+      },
+      "reasoning": "agent_0 places the bun onto the plate as planned."
+    },
+    {
+      "step": 7,
+      "agent": "agent_1",
+      "tool": "communicate",
+      "args": {
+        "to": "agent_0",
+        "message": "agent_1 is heading to the serving surface now."
+      },
+      "reasoning": "agent_1 informs agent_0 of the upcoming move to avoid a collision."
+    },
+    {
+      "step": 8,
+      "agent": "agent_0",
+      "tool": "give_space",
+      "args": {
+        "fixture_id": "serving_surface"
+      },
+      "reasoning": "agent_0 yields space so agent_1 can reach the plate."
+    },
+    {
+      "step": 9,
+      "agent": "agent_1",
+      "tool": "navigate_to_fixture",
+      "args": {
+        "fixture_id": "serving_surface"
+      },
+      "reasoning": "agent_1 arrives at the table to finish the hot dog assembly."
+    },
+    {
+      "step": 10,
+      "agent": "agent_0",
+      "tool": "navigate_to_fixture",
+      "args": {
+        "fixture_id": "condiment_source_fixture"
+      },
+      "reasoning": "agent_0 moves to get the final ingredient."
+    },
+    {
+      "step": 11,
+      "agent": "agent_1",
+      "tool": "place_on_object",
+      "args": {
+        "object_id": "sausage",
+        "support_object_id": "serving_plate"
+      },
+      "reasoning": "agent_1 places the sausage onto the bun on the plate."
+    },
+    {
+      "step": 12,
+      "agent": "agent_0",
+      "tool": "pick_up_object",
+      "args": {
+        "object_id": "condiment",
+        "source_id": "condiment_source_fixture"
+      },
+      "reasoning": "agent_0 picks up the condiment bottle."
+    },
+    {
+      "step": 13,
+      "agent": "agent_0",
+      "tool": "communicate",
+      "args": {
+        "to": "agent_1",
+        "message": "agent_0 is returning with the condiment."
+      },
+      "reasoning": "agent_0 warns agent_1 of the return to the table."
+    },
+    {
+      "step": 14,
+      "agent": "agent_1",
+      "tool": "give_space",
+      "args": {
+        "fixture_id": "serving_surface"
+      },
+      "reasoning": "agent_1 steps back to let agent_0 place the condiment."
+    },
+    {
+      "step": 15,
+      "agent": "agent_0",
+      "tool": "navigate_to_fixture",
+      "args": {
+        "fixture_id": "serving_surface"
+      },
+      "reasoning": "agent_0 returns to the serving area."
+    },
+    {
+      "step": 16,
+      "agent": "agent_0",
+      "tool": "place_next_to",
+      "args": {
+        "object_id": "condiment",
+        "reference_object_id": "serving_plate"
+      },
+      "reasoning": "agent_0 completes the setup by placing the condiment."
+    }
+  ],
+  "validation": {
+    "is_valid": true,
+    "checks": [
+      "initial_communication",
+      "allowed_tools",
+      "navigation_preconditions",
+      "manipulation_preconditions",
+      "effects",
+      "final_success"
+    ],
+    "final_state": {
+      "bun_location": "serving_plate",
+      "sausage_location": "serving_plate",
+      "condiment_location": "serving_surface",
+      "serving_plate_location": "serving_surface",
+      "condiment_placed_next_to_serving_plate": true,
+      "agents": {
+        "agent_0": {
+          "location": "serving_surface",
+          "held_object": null
+        },
+        "agent_1": {
+          "location": "serving_surface",
+          "held_object": null
+        }
+      },
+      "objects": {
+        "bun": {
+          "object_type": "hotdog_bun",
+          "location": "serving_plate"
+        },
+        "sausage": {
+          "object_type": "sausage",
+          "location": "serving_plate"
+        },
+        "condiment": {
+          "object_type": "condiment_bottle",
+          "location": "serving_surface"
+        },
+        "serving_plate": {
+          "object_type": "plate",
+          "location": "serving_surface"
+        }
+      },
+      "fixtures": {
+        "condiment_source_fixture": {
+          "fixture_type": "cabinet",
+          "parts": {
+            "door": {
+              "part_type": "hinged_part",
+              "state": "open"
+            }
+          }
+        },
+        "bun_source_fixture": {
+          "fixture_type": "counter"
+        },
+        "sausage_source_fixture": {
+          "fixture_type": "fridge"
+        },
+        "serving_surface": {
+          "fixture_type": "dining_table"
+        }
+      },
+      "machine_state": {
+        "hot_dog_setup": {
+          "condiment_placed_next_to_serving_plate": true
+        }
+      }
+    },
+    "signature": "359a7bb0df2bbaee509b69781daa4da99395ab5cbd85d7b73e2efc32cf476f72"
+  },
+  "generation_usage": {
+    "prompt_tokens": 566,
+    "cached_input_tokens": 0,
+    "output_tokens": 1412,
+    "reasoning_tokens": 1269,
+    "total_tokens": 3247,
+    "usage_source": "api_usage_metadata",
+    "traffic_type": "ON_DEMAND",
+    "observed_cost_usd": 0.0083,
+    "pricing": {
+      "model": "gemini-3-flash-preview",
+      "input_usd_per_million_tokens": 0.5,
+      "cached_input_usd_per_million_tokens": 0.05,
+      "output_usd_per_million_tokens": 3.0
+    }
+  },
+  "task": "HotDogSetup",
+  "layout": null,
+  "style": null,
+  "seed": null,
+  "sampling_metadata": {
+    "strategy": "verbalized",
+    "probability": 0.95,
+    "candidate_index": 0,
+    "run_index": 0
+  }
+}

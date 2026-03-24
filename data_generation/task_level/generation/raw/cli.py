@@ -294,6 +294,24 @@ def parse_args(argv: list[str] | None = None) -> RuntimeConfig:
         ),
     )
     parser.add_argument(
+        "--layout",
+        type=int,
+        default=None,
+        help="Optional kitchen layout id to persist on saved trajectories.",
+    )
+    parser.add_argument(
+        "--style",
+        type=int,
+        default=None,
+        help="Optional kitchen style id to persist on saved trajectories.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Optional scene seed to persist on saved trajectories.",
+    )
+    parser.add_argument(
         "--model",
         type=str,
         default=DEFAULT_MODEL,
@@ -443,6 +461,9 @@ def parse_args(argv: list[str] | None = None) -> RuntimeConfig:
         disable_validation=args.disable_validation,
         batch_processing=args.batch_processing,
         batch_gcs_prefix=args.batch_gcs_prefix,
+        layout=args.layout,
+        style=args.style,
+        seed=args.seed,
         composite_tasks=parsed_tasks,
     )
 

@@ -1,0 +1,161 @@
+{
+  "probability": 0.9,
+  "trajectory": {
+    "steps": [
+      {
+        "agent": "agent_0",
+        "args": {
+          "message": "agent_0 will start by getting the bun while agent_1 gets the sausage.",
+          "to": "agent_1"
+        },
+        "reasoning": "Initial coordination is required to assign roles for the hot dog setup.",
+        "step": 0,
+        "tool": "communicate"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "message": "agent_1 agrees and will pick up the sausage now.",
+          "to": "agent_0"
+        },
+        "reasoning": "agent_1 confirms the plan to start the task.",
+        "step": 1,
+        "tool": "communicate"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "object_id": "sausage",
+          "source_id": "sausage_source_fixture"
+        },
+        "reasoning": "agent_1 is already at the sausage source and picks it up.",
+        "step": 2,
+        "tool": "pick_up_object"
+      },
+      {
+        "agent": "agent_0",
+        "args": {
+          "fixture_id": "bun_source_fixture"
+        },
+        "reasoning": "agent_0 needs to move to the bun source to retrieve the bun.",
+        "step": 3,
+        "tool": "navigate_to_fixture"
+      },
+      {
+        "agent": "agent_0",
+        "args": {
+          "object_id": "bun",
+          "source_id": "bun_source_fixture"
+        },
+        "reasoning": "agent_0 picks up the bun from the counter.",
+        "step": 4,
+        "tool": "pick_up_object"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "fixture_id": "serving_surface"
+        },
+        "reasoning": "agent_1 moves to the serving surface to place the sausage.",
+        "step": 5,
+        "tool": "navigate_to_fixture"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "object_id": "sausage",
+          "support_object_id": "serving_plate"
+        },
+        "reasoning": "agent_1 places the sausage onto the plate.",
+        "step": 6,
+        "tool": "place_on_object"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "message": "The plate is ready for the bun, agent_0.",
+          "to": "agent_0"
+        },
+        "reasoning": "agent_1 informs agent_0 that the first item is placed.",
+        "step": 7,
+        "tool": "communicate"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "fixture_id": "serving_surface"
+        },
+        "reasoning": "agent_1 yields space so agent_0 can approach the plate.",
+        "step": 8,
+        "tool": "give_space"
+      },
+      {
+        "agent": "agent_0",
+        "args": {
+          "fixture_id": "serving_surface"
+        },
+        "reasoning": "agent_0 moves to the serving surface to place the bun.",
+        "step": 9,
+        "tool": "navigate_to_fixture"
+      },
+      {
+        "agent": "agent_0",
+        "args": {
+          "object_id": "bun",
+          "support_object_id": "serving_plate"
+        },
+        "reasoning": "agent_0 places the bun onto the plate with the sausage.",
+        "step": 10,
+        "tool": "place_on_object"
+      },
+      {
+        "agent": "agent_0",
+        "args": {
+          "fixture_id": "condiment_source_fixture"
+        },
+        "reasoning": "agent_0 moves to the cabinet to get the condiment bottle.",
+        "step": 11,
+        "tool": "navigate_to_fixture"
+      },
+      {
+        "agent": "agent_0",
+        "args": {
+          "object_id": "condiment",
+          "source_id": "condiment_source_fixture"
+        },
+        "reasoning": "agent_0 picks up the condiment bottle.",
+        "step": 12,
+        "tool": "pick_up_object"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "message": "agent_1 is waiting for the condiment to finish the setup.",
+          "to": "agent_0"
+        },
+        "reasoning": "agent_1 acknowledges the final step of the task.",
+        "step": 13,
+        "tool": "communicate"
+      },
+      {
+        "agent": "agent_0",
+        "args": {
+          "fixture_id": "serving_surface"
+        },
+        "reasoning": "agent_0 returns to the serving surface with the condiment.",
+        "step": 14,
+        "tool": "navigate_to_fixture"
+      },
+      {
+        "agent": "agent_0",
+        "args": {
+          "object_id": "condiment",
+          "reference_object_id": "serving_plate"
+        },
+        "reasoning": "agent_0 finishes the task by placing the condiment next to the plate.",
+        "step": 15,
+        "tool": "place_next_to"
+      }
+    ]
+  }
+}

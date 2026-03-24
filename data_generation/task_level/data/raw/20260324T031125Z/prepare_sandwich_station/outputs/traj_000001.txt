@@ -1,0 +1,151 @@
+{
+  "probability": 0.9,
+  "trajectory": {
+    "steps": [
+      {
+        "agent": "agent_1",
+        "args": {
+          "message": "I will handle the ingredient bowl first.",
+          "to": "agent_0"
+        },
+        "reasoning": "agent_1 initiates coordination to divide the tasks.",
+        "step": 0,
+        "tool": "communicate"
+      },
+      {
+        "agent": "agent_0",
+        "args": {
+          "message": "Understood, I will get the baguette once you are done.",
+          "to": "agent_1"
+        },
+        "reasoning": "agent_0 confirms the plan and role assignment.",
+        "step": 1,
+        "tool": "communicate"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "fixture_id": "ingredient_source_fixture"
+        },
+        "reasoning": "agent_1 moves to the fridge to collect the bowl.",
+        "step": 2,
+        "tool": "navigate_to_fixture"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "object_id": "ingredient_bowl",
+          "source_id": "ingredient_source_fixture"
+        },
+        "reasoning": "agent_1 picks up the bowl from the source fixture.",
+        "step": 3,
+        "tool": "pick_up_object"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "message": "I am bringing the bowl to the counter now.",
+          "to": "agent_0"
+        },
+        "reasoning": "agent_1 signals the return to manage fixture occupancy.",
+        "step": 4,
+        "tool": "communicate"
+      },
+      {
+        "agent": "agent_0",
+        "args": {
+          "fixture_id": "staging_surface"
+        },
+        "reasoning": "agent_0 yields the counter space for agent_1.",
+        "step": 5,
+        "tool": "give_space"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "fixture_id": "staging_surface"
+        },
+        "reasoning": "agent_1 moves to the counter with the bowl.",
+        "step": 6,
+        "tool": "navigate_to_fixture"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "object_id": "ingredient_bowl",
+          "reference_object_id": "toaster_oven"
+        },
+        "reasoning": "agent_1 stages the bowl as required.",
+        "step": 7,
+        "tool": "place_next_to"
+      },
+      {
+        "agent": "agent_0",
+        "args": {
+          "message": "My turn, I am going for the baguette.",
+          "to": "agent_1"
+        },
+        "reasoning": "agent_0 communicates the next step in the sequence.",
+        "step": 8,
+        "tool": "communicate"
+      },
+      {
+        "agent": "agent_0",
+        "args": {
+          "fixture_id": "ingredient_source_fixture"
+        },
+        "reasoning": "agent_0 moves to the fridge to get the baguette.",
+        "step": 9,
+        "tool": "navigate_to_fixture"
+      },
+      {
+        "agent": "agent_0",
+        "args": {
+          "object_id": "baguette",
+          "source_id": "ingredient_source_fixture"
+        },
+        "reasoning": "agent_0 retrieves the baguette.",
+        "step": 10,
+        "tool": "pick_up_object"
+      },
+      {
+        "agent": "agent_0",
+        "args": {
+          "message": "I have the baguette, please clear the counter.",
+          "to": "agent_1"
+        },
+        "reasoning": "agent_0 requests space at the staging surface.",
+        "step": 11,
+        "tool": "communicate"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "fixture_id": "staging_surface"
+        },
+        "reasoning": "agent_1 moves aside for agent_0's return.",
+        "step": 12,
+        "tool": "give_space"
+      },
+      {
+        "agent": "agent_0",
+        "args": {
+          "fixture_id": "staging_surface"
+        },
+        "reasoning": "agent_0 returns to the staging surface.",
+        "step": 13,
+        "tool": "navigate_to_fixture"
+      },
+      {
+        "agent": "agent_0",
+        "args": {
+          "object_id": "baguette",
+          "reference_object_id": "toaster_oven"
+        },
+        "reasoning": "agent_0 completes the station preparation.",
+        "step": 14,
+        "tool": "place_next_to"
+      }
+    ]
+  }
+}

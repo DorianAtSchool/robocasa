@@ -1,0 +1,388 @@
+{
+  "trajectory_id": "traj_000006",
+  "composite_task": "PrepareCoffee",
+  "agents": [
+    {
+      "agent": "agent_0"
+    },
+    {
+      "agent": "agent_1"
+    }
+  ],
+  "initial_state": {
+    "agents": {
+      "agent_0": {
+        "location": "staging_surface",
+        "held_object": null
+      },
+      "agent_1": {
+        "location": "mug_source_fixture",
+        "held_object": null
+      }
+    },
+    "objects": {
+      "mug": {
+        "object_type": "mug",
+        "location": "mug_source_fixture"
+      }
+    },
+    "fixtures": {
+      "mug_source_fixture": {
+        "fixture_type": "cabinet",
+        "parts": {
+          "door": {
+            "part_type": "hinged_part",
+            "state": "closed"
+          }
+        }
+      },
+      "staging_surface": {
+        "fixture_type": "counter"
+      },
+      "coffee_machine": {
+        "fixture_type": "coffee_machine",
+        "controls": {
+          "start_button": {
+            "control_type": "button"
+          }
+        }
+      }
+    },
+    "machine_state": {
+      "coffee_machine": {
+        "started": false,
+        "dispenser_id": "coffee_machine_dispenser"
+      }
+    }
+  },
+  "grounding_map": {
+    "version": 2,
+    "map_kind": "scene_agnostic",
+    "composite_task": "PrepareCoffee",
+    "symbols": {
+      "mug": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "role": "mug",
+        "object_type": "mug",
+        "symbolic_location": "mug_source_fixture",
+        "preferred_fixture_types": [
+          "cabinet",
+          "cabinet_single_door",
+          "cabinet_double_door",
+          "cabinet_with_door",
+          "counter",
+          "counter_non_corner",
+          "counter_non_dining",
+          "dining_counter",
+          "island"
+        ]
+      },
+      "mug_source_fixture": {
+        "entity_type": "fixture",
+        "resolver": "source_fixture_for_object",
+        "role": "mug_source_fixture",
+        "fixture_type": "cabinet",
+        "object_symbol": "mug",
+        "preferred_fixture_types": [
+          "cabinet",
+          "cabinet_single_door",
+          "cabinet_double_door",
+          "cabinet_with_door"
+        ]
+      },
+      "coffee_machine": {
+        "entity_type": "fixture",
+        "resolver": "unique_fixture_type",
+        "role": "coffee_machine",
+        "fixture_type": "coffee_machine"
+      },
+      "staging_surface": {
+        "entity_type": "fixture",
+        "resolver": "nearest_placeable_surface_to_fixture",
+        "role": "staging_surface",
+        "fixture_type": "counter",
+        "anchor_fixture_symbol": "coffee_machine",
+        "preferred_fixture_types": [
+          "counter",
+          "counter_non_corner",
+          "counter_non_dining",
+          "dining_counter",
+          "island"
+        ]
+      }
+    }
+  },
+  "steps": [
+    {
+      "step": 0,
+      "agent": "agent_0",
+      "tool": "communicate",
+      "args": {
+        "to": "agent_1",
+        "message": "I will handle the coffee machine controls. Can you bring the mug to the counter?"
+      },
+      "reasoning": "agent_0 establishes roles for the task."
+    },
+    {
+      "step": 1,
+      "agent": "agent_1",
+      "tool": "communicate",
+      "args": {
+        "to": "agent_0",
+        "message": "Yes, I will get the mug from the cabinet now."
+      },
+      "reasoning": "agent_1 agrees to the role assignment."
+    },
+    {
+      "step": 2,
+      "agent": "agent_1",
+      "tool": "open_hinged_part",
+      "args": {
+        "target_id": "mug_source_fixture",
+        "part_id": "door"
+      },
+      "reasoning": "agent_1 opens the cabinet door."
+    },
+    {
+      "step": 3,
+      "agent": "agent_1",
+      "tool": "pick_up_object",
+      "args": {
+        "object_id": "mug",
+        "source_id": "mug_source_fixture"
+      },
+      "reasoning": "agent_1 takes the mug from the cabinet."
+    },
+    {
+      "step": 4,
+      "agent": "agent_1",
+      "tool": "communicate",
+      "args": {
+        "to": "agent_0",
+        "message": "I'm coming to the staging surface. Please move aside."
+      },
+      "reasoning": "agent_1 requests space at the staging surface."
+    },
+    {
+      "step": 5,
+      "agent": "agent_0",
+      "tool": "communicate",
+      "args": {
+        "to": "agent_1",
+        "message": "Moving to the coffee machine now to make room."
+      },
+      "reasoning": "agent_0 acknowledges and prepares to vacate the staging area."
+    },
+    {
+      "step": 6,
+      "agent": "agent_0",
+      "tool": "give_space",
+      "args": {
+        "fixture_id": "staging_surface"
+      },
+      "reasoning": "agent_0 yields the staging surface area."
+    },
+    {
+      "step": 7,
+      "agent": "agent_0",
+      "tool": "navigate_to_fixture",
+      "args": {
+        "fixture_id": "coffee_machine"
+      },
+      "reasoning": "agent_0 moves to the machine."
+    },
+    {
+      "step": 8,
+      "agent": "agent_1",
+      "tool": "navigate_to_fixture",
+      "args": {
+        "fixture_id": "staging_surface"
+      },
+      "reasoning": "agent_1 moves to the staging surface."
+    },
+    {
+      "step": 9,
+      "agent": "agent_1",
+      "tool": "place_on_surface",
+      "args": {
+        "object_id": "mug",
+        "support_id": "staging_surface"
+      },
+      "reasoning": "agent_1 places the mug on the surface."
+    },
+    {
+      "step": 10,
+      "agent": "agent_1",
+      "tool": "communicate",
+      "args": {
+        "to": "agent_0",
+        "message": "The mug is on the surface. I'll go back to the cabinet."
+      },
+      "reasoning": "agent_1 announces completion of its subtask."
+    },
+    {
+      "step": 11,
+      "agent": "agent_1",
+      "tool": "navigate_to_fixture",
+      "args": {
+        "fixture_id": "mug_source_fixture"
+      },
+      "reasoning": "agent_1 moves away to allow agent_0 to proceed."
+    },
+    {
+      "step": 12,
+      "agent": "agent_0",
+      "tool": "communicate",
+      "args": {
+        "to": "agent_1",
+        "message": "Picking up the mug from the staging surface."
+      },
+      "reasoning": "agent_0 informs agent_1 of its current action."
+    },
+    {
+      "step": 13,
+      "agent": "agent_0",
+      "tool": "navigate_to_fixture",
+      "args": {
+        "fixture_id": "staging_surface"
+      },
+      "reasoning": "agent_0 moves to the staging surface."
+    },
+    {
+      "step": 14,
+      "agent": "agent_0",
+      "tool": "pick_up_object",
+      "args": {
+        "object_id": "mug",
+        "source_id": "staging_surface"
+      },
+      "reasoning": "agent_0 picks up the mug."
+    },
+    {
+      "step": 15,
+      "agent": "agent_0",
+      "tool": "communicate",
+      "args": {
+        "to": "agent_1",
+        "message": "Mug is ready. Placing it under the dispenser."
+      },
+      "reasoning": "agent_0 updates agent_1 on the final steps."
+    },
+    {
+      "step": 16,
+      "agent": "agent_0",
+      "tool": "navigate_to_fixture",
+      "args": {
+        "fixture_id": "coffee_machine"
+      },
+      "reasoning": "agent_0 moves to the final location."
+    },
+    {
+      "step": 17,
+      "agent": "agent_0",
+      "tool": "place_under",
+      "args": {
+        "object_id": "mug",
+        "reference_fixture_id": "coffee_machine"
+      },
+      "reasoning": "agent_0 places the mug under the coffee machine."
+    },
+    {
+      "step": 18,
+      "agent": "agent_0",
+      "tool": "press_button",
+      "args": {
+        "target_id": "coffee_machine",
+        "control_id": "start_button"
+      },
+      "reasoning": "agent_0 starts the machine."
+    }
+  ],
+  "validation": {
+    "is_valid": true,
+    "checks": [
+      "initial_communication",
+      "allowed_tools",
+      "navigation_preconditions",
+      "manipulation_preconditions",
+      "effects",
+      "final_success"
+    ],
+    "final_state": {
+      "mug_location": "coffee_machine_dispenser",
+      "coffee_machine_started": true,
+      "agents": {
+        "agent_0": {
+          "location": "coffee_machine",
+          "held_object": null
+        },
+        "agent_1": {
+          "location": "mug_source_fixture",
+          "held_object": null
+        }
+      },
+      "objects": {
+        "mug": {
+          "object_type": "mug",
+          "location": "coffee_machine_dispenser"
+        }
+      },
+      "fixtures": {
+        "mug_source_fixture": {
+          "fixture_type": "cabinet",
+          "parts": {
+            "door": {
+              "part_type": "hinged_part",
+              "state": "open"
+            }
+          }
+        },
+        "staging_surface": {
+          "fixture_type": "counter"
+        },
+        "coffee_machine": {
+          "fixture_type": "coffee_machine",
+          "controls": {
+            "start_button": {
+              "control_type": "button"
+            }
+          }
+        }
+      },
+      "machine_state": {
+        "coffee_machine": {
+          "started": true,
+          "dispenser_id": "coffee_machine_dispenser"
+        }
+      }
+    },
+    "signature": "662ded1bfeb0b8f5513ddb922a2f9d2a063222731d8cd206a89d648af7bbcdbe"
+  },
+  "generation_usage": {
+    "prompt_tokens": 602,
+    "cached_input_tokens": 0,
+    "output_tokens": 1576,
+    "reasoning_tokens": 562,
+    "total_tokens": 2740,
+    "usage_source": "api_usage_metadata",
+    "traffic_type": "ON_DEMAND",
+    "observed_cost_usd": 0.0067,
+    "pricing": {
+      "model": "gemini-3-flash-preview",
+      "input_usd_per_million_tokens": 0.5,
+      "cached_input_usd_per_million_tokens": 0.05,
+      "output_usd_per_million_tokens": 3.0
+    }
+  },
+  "task": "PrepareCoffee",
+  "layout": null,
+  "style": null,
+  "seed": null,
+  "sampling_metadata": {
+    "strategy": "verbalized",
+    "probability": 0.85,
+    "candidate_index": 2,
+    "run_index": 1
+  }
+}

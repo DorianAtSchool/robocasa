@@ -170,7 +170,9 @@ class TrajectoryAdapter:
             resolved_fixture_state = deepcopy(fixture_state)
             parts = {}
             for part_id, part_state in fixture_state.get("parts", {}).items():
-                parts[self._normalize_part_id(part_id, part_state)] = deepcopy(part_state)
+                parts[self._normalize_part_id(part_id, part_state)] = deepcopy(
+                    part_state
+                )
             if parts:
                 resolved_fixture_state["parts"] = parts
             resolved_fixtures[resolved_fixture_id] = resolved_fixture_state
@@ -300,20 +302,21 @@ class TrajectoryAdapter:
                 resolved_args[arg_name] = self._resolve_fixture_id(
                     value,
                     requested_fixture_state=(
-                        resolved_initial_state.get("fixtures", {}).get(value)
-                        or None
+                        resolved_initial_state.get("fixtures", {}).get(value) or None
                     ),
                 )
             elif arg_name in self._OBJECT_ARG_NAMES:
                 resolved_args[arg_name] = self._resolve_object_id(
                     value,
                     requested_object_state=(
-                        resolved_initial_state.get("objects", {}).get(value)
-                        or None
+                        resolved_initial_state.get("objects", {}).get(value) or None
                     ),
                 )
             elif arg_name == "receptacle_id":
-                if value in self.scene.get("fixtures", {}) or value in self._fixture_aliases:
+                if (
+                    value in self.scene.get("fixtures", {})
+                    or value in self._fixture_aliases
+                ):
                     resolved_args[arg_name] = self._resolve_fixture_id(value)
                 else:
                     resolved_args[arg_name] = self._resolve_object_id(value)
@@ -462,7 +465,8 @@ class TrajectoryAdapter:
             )
 
         exact_like = [
-            candidate_id for candidate_id in candidate_ids
+            candidate_id
+            for candidate_id in candidate_ids
             if self._base_token(candidate_id) == self._base_token(requested_id)
         ]
         if len(exact_like) == 1:

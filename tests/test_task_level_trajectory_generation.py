@@ -1325,6 +1325,13 @@ class DotenvLoadingTests(unittest.TestCase):
 
         self.assertEqual(runtime_config.resume_path, Path("/tmp/existing-run"))
 
+    def test_parse_args_accepts_scene_metadata_flags(self):
+        runtime_config = parse_args(["--layout", "11", "--style", "34", "--seed", "42"])
+
+        self.assertEqual(runtime_config.layout, 11)
+        self.assertEqual(runtime_config.style, 34)
+        self.assertEqual(runtime_config.seed, 42)
+
     def test_parse_args_rejects_removed_output_flag(self):
         with self.assertRaises(SystemExit):
             parse_args(["--output", "/tmp/trajectories.json"])
@@ -2813,6 +2820,9 @@ class PrepareCoffeeValidatorTests(unittest.TestCase):
             max_retries=1,
             sampling="verbalized",
             verbalized_k=2,
+            layout=11,
+            style=34,
+            seed=42,
         )
 
         with self.assertRaises(VerbalizedSamplingValidationError):
@@ -3971,6 +3981,9 @@ class GenerationTests(unittest.TestCase):
             max_retries=1,
             sampling="verbalized",
             verbalized_k=2,
+            layout=11,
+            style=34,
+            seed=42,
         )
         raw_response = make_verbalized_response(
             make_valid_candidate(include_agents=False),
@@ -4817,6 +4830,34 @@ class GenerationTests(unittest.TestCase):
             "done attempts=1/3 total=$0.0013 avg=$0.0013 calls=12",
         )
 
+    def test_generate_single_trajectory_persists_task_and_scene_metadata(self):
+        runtime_config = RuntimeConfig(
+            composite_task="PrepareCoffee",
+            num_runs=1,
+            model="gemini-3-flash-preview",
+            sdk="google-genai",
+            project="demo-project",
+            location="global",
+            temperature=0.5,
+            max_workers=1,
+            max_retries=1,
+            layout=11,
+            style=34,
+            seed=42,
+        )
+
+        trajectory = generate_single_trajectory(
+            trajectory_index=0,
+            runtime_config=runtime_config,
+            task_definition=PREPARE_COFFEE_TASK,
+            client_factory=lambda: SequencedFakeClient([make_valid_candidate()]),
+        )
+
+        self.assertEqual(trajectory["task"], "PrepareCoffee")
+        self.assertEqual(trajectory["layout"], 11)
+        self.assertEqual(trajectory["style"], 34)
+        self.assertEqual(trajectory["seed"], 42)
+
     def test_generate_single_trajectory_retry_status_includes_tool_call_count(self):
         runtime_config = RuntimeConfig(
             composite_task="PrepareCoffee",
@@ -5331,6 +5372,9 @@ class GenerationTests(unittest.TestCase):
             max_retries=1,
             sampling="verbalized",
             verbalized_k=2,
+            layout=11,
+            style=34,
+            seed=42,
         )
 
         trajectories = generate_single_trajectory(
@@ -5370,6 +5414,18 @@ class GenerationTests(unittest.TestCase):
                 for trajectory in trajectories
             ],
             [0.6, 0.4],
+        )
+        self.assertEqual(
+            [
+                (
+                    trajectory["task"],
+                    trajectory["layout"],
+                    trajectory["style"],
+                    trajectory["seed"],
+                )
+                for trajectory in trajectories
+            ],
+            [("PrepareCoffee", 11, 34, 42), ("PrepareCoffee", 11, 34, 42)],
         )
 
     def test_generate_single_trajectory_reports_success_fraction_for_mixed_verbalized_run(

@@ -1,0 +1,142 @@
+{
+  "probability": 0.9,
+  "trajectory": {
+    "steps": [
+      {
+        "agent": "agent_0",
+        "args": {
+          "message": "agent_0 will prepare the coffee machine while agent_1 gets the mug.",
+          "to": "agent_1"
+        },
+        "reasoning": "agent_0 is establishing a plan for the task.",
+        "step": 0,
+        "tool": "communicate"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "message": "agent_1 is opening the cabinet now.",
+          "to": "agent_0"
+        },
+        "reasoning": "agent_1 is acknowledging the plan and stating its first action.",
+        "step": 1,
+        "tool": "communicate"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "part_id": "door",
+          "target_id": "mug_source_fixture"
+        },
+        "reasoning": "agent_1 must open the cabinet to access the mug.",
+        "step": 2,
+        "tool": "open_hinged_part"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "object_id": "mug",
+          "source_id": "mug_source_fixture"
+        },
+        "reasoning": "agent_1 is retrieving the mug from the cabinet.",
+        "step": 3,
+        "tool": "pick_up_object"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "message": "agent_1 is bringing the mug to the staging surface.",
+          "to": "agent_0"
+        },
+        "reasoning": "agent_1 is informing agent_0 of its movement to avoid a collision.",
+        "step": 4,
+        "tool": "communicate"
+      },
+      {
+        "agent": "agent_0",
+        "args": {
+          "fixture_id": "staging_surface"
+        },
+        "reasoning": "agent_0 is yielding space at the staging surface for agent_1.",
+        "step": 5,
+        "tool": "give_space"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "fixture_id": "staging_surface"
+        },
+        "reasoning": "agent_1 moves to the staging surface to place the mug.",
+        "step": 6,
+        "tool": "navigate_to_fixture"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "object_id": "mug",
+          "support_id": "staging_surface"
+        },
+        "reasoning": "agent_1 places the mug on the counter for agent_0.",
+        "step": 7,
+        "tool": "place_on_surface"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "fixture_id": "staging_surface"
+        },
+        "reasoning": "agent_1 clears the area so agent_0 can retrieve the mug.",
+        "step": 8,
+        "tool": "give_space"
+      },
+      {
+        "agent": "agent_0",
+        "args": {
+          "fixture_id": "staging_surface"
+        },
+        "reasoning": "agent_0 returns to the staging surface to pick up the mug.",
+        "step": 9,
+        "tool": "navigate_to_fixture"
+      },
+      {
+        "agent": "agent_0",
+        "args": {
+          "object_id": "mug",
+          "source_id": "staging_surface"
+        },
+        "reasoning": "agent_0 takes the mug from the counter.",
+        "step": 10,
+        "tool": "pick_up_object"
+      },
+      {
+        "agent": "agent_0",
+        "args": {
+          "fixture_id": "coffee_machine"
+        },
+        "reasoning": "agent_0 moves to the coffee machine to prepare the drink.",
+        "step": 11,
+        "tool": "navigate_to_fixture"
+      },
+      {
+        "agent": "agent_0",
+        "args": {
+          "object_id": "mug",
+          "reference_fixture_id": "coffee_machine"
+        },
+        "reasoning": "agent_0 positions the mug under the dispenser.",
+        "step": 12,
+        "tool": "place_under"
+      },
+      {
+        "agent": "agent_0",
+        "args": {
+          "control_id": "start_button",
+          "target_id": "coffee_machine"
+        },
+        "reasoning": "agent_0 starts the coffee machine to complete the task.",
+        "step": 13,
+        "tool": "press_button"
+      }
+    ]
+  }
+}

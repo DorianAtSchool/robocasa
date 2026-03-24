@@ -1,0 +1,142 @@
+{
+  "probability": 0.8,
+  "trajectory": {
+    "steps": [
+      {
+        "agent": "agent_0",
+        "args": {
+          "message": "agent_0 is ready at the counter for the mug handoff.",
+          "to": "agent_1"
+        },
+        "reasoning": "agent_0 is signaling readiness.",
+        "step": 0,
+        "tool": "communicate"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "message": "agent_1 is opening the cabinet.",
+          "to": "agent_0"
+        },
+        "reasoning": "agent_1 is beginning the retrieval.",
+        "step": 1,
+        "tool": "communicate"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "part_id": "door",
+          "target_id": "mug_source_fixture"
+        },
+        "reasoning": "agent_1 opens the cabinet.",
+        "step": 2,
+        "tool": "open_hinged_part"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "object_id": "mug",
+          "source_id": "mug_source_fixture"
+        },
+        "reasoning": "agent_1 gets the mug.",
+        "step": 3,
+        "tool": "pick_up_object"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "message": "agent_1 is moving to the staging surface.",
+          "to": "agent_0"
+        },
+        "reasoning": "agent_1 coordinates the move to the shared surface.",
+        "step": 4,
+        "tool": "communicate"
+      },
+      {
+        "agent": "agent_0",
+        "args": {
+          "fixture_id": "staging_surface"
+        },
+        "reasoning": "agent_0 makes room for agent_1.",
+        "step": 5,
+        "tool": "give_space"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "fixture_id": "staging_surface"
+        },
+        "reasoning": "agent_1 moves to the counter.",
+        "step": 6,
+        "tool": "navigate_to_fixture"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "object_id": "mug",
+          "support_id": "staging_surface"
+        },
+        "reasoning": "agent_1 places the mug.",
+        "step": 7,
+        "tool": "place_on_surface"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "fixture_id": "mug_source_fixture"
+        },
+        "reasoning": "agent_1 moves away to clear the staging surface.",
+        "step": 8,
+        "tool": "navigate_to_fixture"
+      },
+      {
+        "agent": "agent_0",
+        "args": {
+          "fixture_id": "staging_surface"
+        },
+        "reasoning": "agent_0 moves to pick up the mug.",
+        "step": 9,
+        "tool": "navigate_to_fixture"
+      },
+      {
+        "agent": "agent_0",
+        "args": {
+          "object_id": "mug",
+          "source_id": "staging_surface"
+        },
+        "reasoning": "agent_0 picks up the mug.",
+        "step": 10,
+        "tool": "pick_up_object"
+      },
+      {
+        "agent": "agent_0",
+        "args": {
+          "fixture_id": "coffee_machine"
+        },
+        "reasoning": "agent_0 moves to the machine.",
+        "step": 11,
+        "tool": "navigate_to_fixture"
+      },
+      {
+        "agent": "agent_0",
+        "args": {
+          "object_id": "mug",
+          "reference_fixture_id": "coffee_machine"
+        },
+        "reasoning": "agent_0 places the mug.",
+        "step": 12,
+        "tool": "place_under"
+      },
+      {
+        "agent": "agent_0",
+        "args": {
+          "control_id": "start_button",
+          "target_id": "coffee_machine"
+        },
+        "reasoning": "agent_0 completes the task by starting the machine.",
+        "step": 13,
+        "tool": "press_button"
+      }
+    ]
+  }
+}

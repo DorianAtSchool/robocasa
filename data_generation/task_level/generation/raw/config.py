@@ -58,6 +58,9 @@ class RuntimeConfig:
     disable_validation: bool = False
     batch_processing: bool = False
     batch_gcs_prefix: str | None = None
+    layout: int | None = None
+    style: int | None = None
+    seed: int | None = None
     run_indices: tuple[int, ...] = ()
     composite_tasks: tuple[str, ...] = ()
 

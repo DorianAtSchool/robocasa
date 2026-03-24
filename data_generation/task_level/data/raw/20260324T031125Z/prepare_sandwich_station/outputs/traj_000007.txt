@@ -1,0 +1,132 @@
+{
+  "probability": 0.8,
+  "trajectory": {
+    "steps": [
+      {
+        "agent": "agent_0",
+        "args": {
+          "message": "I'll take the bowl to the station first.",
+          "to": "agent_1"
+        },
+        "reasoning": "agent_0 starts the coordination.",
+        "step": 0,
+        "tool": "communicate"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "message": "Okay, I'll head to the fridge as soon as you leave.",
+          "to": "agent_0"
+        },
+        "reasoning": "agent_1 plans to swap locations with agent_0.",
+        "step": 1,
+        "tool": "communicate"
+      },
+      {
+        "agent": "agent_0",
+        "args": {
+          "object_id": "ingredient_bowl",
+          "source_id": "ingredient_source_fixture"
+        },
+        "reasoning": "agent_0 picks up the bowl.",
+        "step": 2,
+        "tool": "pick_up_object"
+      },
+      {
+        "agent": "agent_0",
+        "args": {
+          "message": "I am leaving the fridge now.",
+          "to": "agent_1"
+        },
+        "reasoning": "agent_0 signals that the fridge area is becoming vacant.",
+        "step": 3,
+        "tool": "communicate"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "fixture_id": "staging_surface"
+        },
+        "reasoning": "agent_1 prepares for agent_0's arrival at the staging surface.",
+        "step": 4,
+        "tool": "give_space"
+      },
+      {
+        "agent": "agent_0",
+        "args": {
+          "fixture_id": "staging_surface"
+        },
+        "reasoning": "agent_0 moves to the staging surface.",
+        "step": 5,
+        "tool": "navigate_to_fixture"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "fixture_id": "ingredient_source_fixture"
+        },
+        "reasoning": "agent_1 moves to the fridge while agent_0 is at the counter.",
+        "step": 6,
+        "tool": "navigate_to_fixture"
+      },
+      {
+        "agent": "agent_0",
+        "args": {
+          "object_id": "ingredient_bowl",
+          "reference_object_id": "toaster_oven"
+        },
+        "reasoning": "agent_0 places the bowl.",
+        "step": 7,
+        "tool": "place_next_to"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "object_id": "baguette",
+          "source_id": "ingredient_source_fixture"
+        },
+        "reasoning": "agent_1 retrieves the baguette.",
+        "step": 8,
+        "tool": "pick_up_object"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "message": "I have the baguette. Please move so I can place it.",
+          "to": "agent_0"
+        },
+        "reasoning": "agent_1 notifies agent_0 of its return.",
+        "step": 9,
+        "tool": "communicate"
+      },
+      {
+        "agent": "agent_0",
+        "args": {
+          "fixture_id": "staging_surface"
+        },
+        "reasoning": "agent_0 yields the fixture for agent_1.",
+        "step": 10,
+        "tool": "give_space"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "fixture_id": "staging_surface"
+        },
+        "reasoning": "agent_1 returns to the staging surface.",
+        "step": 11,
+        "tool": "navigate_to_fixture"
+      },
+      {
+        "agent": "agent_1",
+        "args": {
+          "object_id": "baguette",
+          "reference_object_id": "toaster_oven"
+        },
+        "reasoning": "agent_1 completes the sandwich station preparation.",
+        "step": 12,
+        "tool": "place_next_to"
+      }
+    ]
+  }
+}

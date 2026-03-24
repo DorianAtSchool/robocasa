@@ -1,0 +1,130 @@
+{
+  "composite_tasks": [
+    "HotDogSetup",
+    "PrepareCoffee",
+    "PrepareSandwichStation"
+  ],
+  "sdk": "google-genai",
+  "model": "gemini-3-flash-preview",
+  "model_config": {
+    "reasoning": {
+      "thinking_level": "medium"
+    },
+    "sampling": {
+      "temperature": 0.6,
+      "strategy": "verbalized",
+      "verbalized_k": 4
+    }
+  },
+  "num_tasks": 3,
+  "num_runs_per_task": 2,
+  "total_requested_runs": 6,
+  "num_trajectories": 24,
+  "generated_at": "2026-03-24T03:14:20.110148+00:00",
+  "summary_output_path": "/home/smahmud/Documents/robocasa/data_generation/task_level/data/raw/20260324T031125Z/summary.json",
+  "cost_summary": {
+    "prompt_tokens": 13578,
+    "cached_input_tokens": 0,
+    "output_tokens": 32515,
+    "reasoning_tokens": 27671,
+    "total_tokens": 73764,
+    "input_cost_usd": 0.0068,
+    "output_cost_usd": 0.1806,
+    "total_cost_usd": 0.1873,
+    "average_trajectory_cost_usd": 0.0078,
+    "notes": [
+      "Cost summary scales each saved trajectory by its successful attempt number.",
+      "Retry-inclusive totals assume earlier failed attempts used the same token profile as the successful attempt.",
+      "For verbalized sampling, token and cost totals are counted once per model response and apportioned across the saved trajectories from that response."
+    ],
+    "pricing": {
+      "model": "gemini-3-flash-preview",
+      "input_usd_per_million_tokens": 0.5,
+      "cached_input_usd_per_million_tokens": 0.05,
+      "output_usd_per_million_tokens": 3.0
+    }
+  },
+  "task_cost_summaries": [
+    {
+      "composite_task": "HotDogSetup",
+      "summary_path": "hot_dog_setup/summary.json",
+      "cost_summary_path": "hot_dog_setup/cost_summary.json",
+      "cost_summary": {
+        "prompt_tokens": 4528,
+        "cached_input_tokens": 0,
+        "output_tokens": 11289,
+        "reasoning_tokens": 9995,
+        "total_tokens": 25812,
+        "input_cost_usd": 0.0023,
+        "output_cost_usd": 0.0639,
+        "total_cost_usd": 0.0661,
+        "average_trajectory_cost_usd": 0.0083,
+        "notes": [
+          "Cost summary scales each saved trajectory by its successful attempt number.",
+          "Retry-inclusive totals assume earlier failed attempts used the same token profile as the successful attempt.",
+          "For verbalized sampling, token and cost totals are counted once per model response and apportioned across the saved trajectories from that response."
+        ],
+        "pricing": {
+          "model": "gemini-3-flash-preview",
+          "input_usd_per_million_tokens": 0.5,
+          "cached_input_usd_per_million_tokens": 0.05,
+          "output_usd_per_million_tokens": 3.0
+        }
+      }
+    },
+    {
+      "composite_task": "PrepareCoffee",
+      "summary_path": "prepare_coffee/summary.json",
+      "cost_summary_path": "prepare_coffee/cost_summary.json",
+      "cost_summary": {
+        "prompt_tokens": 4820,
+        "cached_input_tokens": 0,
+        "output_tokens": 11479,
+        "reasoning_tokens": 7357,
+        "total_tokens": 23656,
+        "input_cost_usd": 0.0024,
+        "output_cost_usd": 0.0565,
+        "total_cost_usd": 0.0589,
+        "average_trajectory_cost_usd": 0.0074,
+        "notes": [
+          "Cost summary scales each saved trajectory by its successful attempt number.",
+          "Retry-inclusive totals assume earlier failed attempts used the same token profile as the successful attempt.",
+          "For verbalized sampling, token and cost totals are counted once per model response and apportioned across the saved trajectories from that response."
+        ],
+        "pricing": {
+          "model": "gemini-3-flash-preview",
+          "input_usd_per_million_tokens": 0.5,
+          "cached_input_usd_per_million_tokens": 0.05,
+          "output_usd_per_million_tokens": 3.0
+        }
+      }
+    },
+    {
+      "composite_task": "PrepareSandwichStation",
+      "summary_path": "prepare_sandwich_station/summary.json",
+      "cost_summary_path": "prepare_sandwich_station/cost_summary.json",
+      "cost_summary": {
+        "prompt_tokens": 4230,
+        "cached_input_tokens": 0,
+        "output_tokens": 9747,
+        "reasoning_tokens": 10319,
+        "total_tokens": 24296,
+        "input_cost_usd": 0.0021,
+        "output_cost_usd": 0.0602,
+        "total_cost_usd": 0.0623,
+        "average_trajectory_cost_usd": 0.0078,
+        "notes": [
+          "Cost summary scales each saved trajectory by its successful attempt number.",
+          "Retry-inclusive totals assume earlier failed attempts used the same token profile as the successful attempt.",
+          "For verbalized sampling, token and cost totals are counted once per model response and apportioned across the saved trajectories from that response."
+        ],
+        "pricing": {
+          "model": "gemini-3-flash-preview",
+          "input_usd_per_million_tokens": 0.5,
+          "cached_input_usd_per_million_tokens": 0.05,
+          "output_usd_per_million_tokens": 3.0
+        }
+      }
+    }
+  ]
+}

@@ -383,6 +383,12 @@ def generate_single_run(
                         generation_usage=generation_usage,
                         task_instance=task_instance,
                     )
+                    trajectory_record.update(
+                        _runtime_support.build_saved_trajectory_metadata(
+                            runtime_config=runtime_config,
+                            task_definition=task_definition,
+                        )
+                    )
                     if sampled_candidate.probability is not None:
                         trajectory_record["sampling_metadata"] = {
                             "strategy": runtime_config.sampling,

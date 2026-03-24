@@ -70,6 +70,21 @@ def format_trajectory_progress_label(trajectory_index: int) -> str:
     )
 
 
+def build_saved_trajectory_metadata(
+    *,
+    runtime_config: RuntimeConfig,
+    task_definition: TaskDefinition,
+) -> dict[str, Any]:
+    """Builds top-level metadata persisted on each saved raw trajectory."""
+
+    return {
+        "task": task_definition.composite_task,
+        "layout": runtime_config.layout,
+        "style": runtime_config.style,
+        "seed": runtime_config.seed,
+    }
+
+
 def _retry_feedback_step_lines(
     candidate: dict[str, Any] | None,
     *,
@@ -729,6 +744,12 @@ def _build_trajectory_records_from_sampled_candidates(
             trajectory_id=trajectory_id,
             generation_usage=generation_usage,
             task_instance=task_instance,
+        )
+        trajectory_record.update(
+            build_saved_trajectory_metadata(
+                runtime_config=runtime_config,
+                task_definition=task_definition,
+            )
         )
         if sampled_candidate.probability is not None:
             trajectory_record["sampling_metadata"] = {
