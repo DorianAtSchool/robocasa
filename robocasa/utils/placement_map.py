@@ -4,11 +4,9 @@
 Reusable drawing functions consumed by ``SimToolExecutor.save_placement_map``
 and ``experiments/visualize_grid.py``.
 
-Object rendering – current approach: **numbered callouts** (option 4).
-Small numbered circles at each object's (x,y) with a legend in the margin.
-Alternative: **icon markers** (option 1) – draw a distinct marker (star /
-diamond) at each object position, colored by category.  To switch, replace
-``_draw_objects`` with an icon-based variant and drop the legend text.
+Object rendering – current approach: **colored labels** (option 1).
+Each object gets a colored text label placed at its position, using the
+same overlap-avoidance logic as fixture labels.
 """
 
 from __future__ import annotations
@@ -316,55 +314,46 @@ def _get_object_positions(runner):
     return entries
 
 
-def _draw_objects(ax, runner):
-    """Draw numbered callout circles at object positions.
+_OBJECT_COLORS = [
+    "#dd55ff", "#ff8800", "#00aadd", "#dd2255", "#44bb44", "#8866cc",
+]
 
-    Returns a list of legend lines (``["1: obj_name", ...]``) so callers can
-    render a legend outside the plot area.
 
-    NOTE (option 4 vs option 1): This implements *numbered callouts*.  To
-    switch to *icon markers* instead, replace the numbered ``ax.text`` call
-    with a shaped scatter marker (e.g. ``ax.plot(..., marker="*")``) colored
-    by object category, and drop the legend return value.
+def _draw_objects(ax, runner, placed_label_boxes=None):
+    """Draw colored labels at each object's position, avoiding collisions.
+
+    Labels are placed using the same overlap-avoidance logic as fixture
+    labels so they don't collide with fixtures, robots, or each other.
     """
+    if placed_label_boxes is None:
+        placed_label_boxes = []
+
     entries = _get_object_positions(runner)
     if not entries:
-        return []
-
-    legend_lines = []
-    for idx, (obj_name, x, y) in enumerate(entries, start=1):
-        num_label = str(idx)
-        ax.plot(x, y, "o", color="#dd55ff", markersize=10, zorder=7, alpha=0.8)
-        ax.text(
-            x, y, num_label,
-            fontsize=5, ha="center", va="center",
-            color="white", fontweight="bold", zorder=8,
-        )
-        legend_lines.append(f"{idx}: {obj_name}")
-
-    return legend_lines
-
-
-def _add_object_legend(ax, legend_lines):
-    """Place the object legend as a text box anchored to the bottom-right."""
-    if not legend_lines:
         return
-    legend_text = "Objects\n" + "\n".join(legend_lines)
-    ax.text(
-        1.0, 0.0, legend_text,
-        transform=ax.transAxes,
-        fontsize=5, fontfamily="monospace",
-        verticalalignment="bottom",
-        horizontalalignment="right",
-        bbox={
-            "boxstyle": "round,pad=0.4",
-            "facecolor": "#f8f0ff",
-            "edgecolor": "#dd55ff",
-            "linewidth": 0.6,
-            "alpha": 0.92,
-        },
-        zorder=9,
-    )
+
+    label_fontsize = 5
+    for idx, (obj_name, x, y) in enumerate(entries):
+        color = _OBJECT_COLORS[idx % len(_OBJECT_COLORS)]
+        label = str(obj_name)
+        fmin = np.array([x, y])
+        fmax = np.array([x, y])
+        (label_x, label_y), label_box = _pick_label_position(
+            fmin, fmax, label, placed_label_boxes, label_fontsize,
+        )
+        ax.text(
+            label_x, label_y, label,
+            fontsize=label_fontsize, ha="center", va="center",
+            color=color, fontweight="bold", zorder=8,
+            bbox={
+                "boxstyle": "round,pad=0.15",
+                "facecolor": "white",
+                "edgecolor": color,
+                "linewidth": 0.5,
+                "alpha": 0.88,
+            },
+        )
+        placed_label_boxes.append(label_box)
 
 
 def draw_grid_map(ax, runner):
@@ -385,8 +374,7 @@ def draw_grid_map(ax, runner):
 
     placed_label_boxes = _draw_fixtures(ax, runner._fixtures)
     _draw_robots(ax, runner, placed_label_boxes=placed_label_boxes)
-    legend_lines = _draw_objects(ax, runner)
-    _add_object_legend(ax, legend_lines)
+    _draw_objects(ax, runner, placed_label_boxes=placed_label_boxes)
 
     x_min = grid._origin[0]
     x_max = grid._origin[0] + grid._cols * grid.cell_size
@@ -467,8 +455,7 @@ def draw_continuous_map(ax, runner):
                         zorder=3, alpha=0.7)
 
     _draw_robots(ax, runner, placed_label_boxes=placed_label_boxes)
-    legend_lines = _draw_objects(ax, runner)
-    _add_object_legend(ax, legend_lines)
+    _draw_objects(ax, runner, placed_label_boxes=placed_label_boxes)
 
     ax.set_xlim(x_min - 0.2, x_max + 0.2)
     ax.set_ylim(y_min - 0.2, y_max + 0.2)
