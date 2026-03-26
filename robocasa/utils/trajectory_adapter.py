@@ -123,10 +123,13 @@ class TrajectoryAdapter:
 
         for symbol, obj_state in traj_objects.items():
             obj_type = obj_state.get("object_type", "")
-            # Try: exact key match, then type match, then substring match
+            # Try: exact symbolic key match, then exact object_type-as-id match,
+            # then generic type match, then substring match.
             resolved = None
             if symbol in env_object_ids:
                 resolved = symbol
+            elif obj_type in env_object_ids:
+                resolved = obj_type
             elif obj_type in type_to_env_key:
                 resolved = type_to_env_key[obj_type]
             else:

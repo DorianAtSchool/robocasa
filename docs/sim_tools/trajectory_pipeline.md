@@ -175,7 +175,7 @@ To build training data from the pipeline output:
 
 Symbolic IDs are resolved using sim ground truth (confidence 1.0) by tracing through:
 
-- `env.objects` keys (from task's `_get_obj_cfgs()`)
+- `env.objects` keys (from task's `_get_obj_cfgs()`), first by exact symbol match, then by exact `object_type`-as-id match, then by generic type match
 - `env.object_cfgs` placement fixtures
 - `env.fixture_refs` (from task's `_setup_kitchen_references()`)
 

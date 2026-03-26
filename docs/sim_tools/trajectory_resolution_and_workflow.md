@@ -24,7 +24,13 @@ The adapter now uses **sim ground truth** as the primary resolution strategy, re
 
 The adapter's `_apply_sim_ground_truth()` method resolves ids using data the simulator already knows:
 
-**Objects** are resolved by matching the trajectory's `object_type` against `env.objects` keys. The keys come from `_get_obj_cfgs()` name fields and are the task's semantic role names (e.g. `hotdog_bun`, `sausage`, `condiment`, `plate`). There is no ambiguity because each task role maps to exactly one env.objects key.
+**Objects** are resolved in this order:
+
+1. **Exact symbolic id match**: if the trajectory symbol already exists in `env.objects`, use it directly
+2. **Exact object-type-as-id match**: if the trajectory's `object_type` is itself a concrete `env.objects` key, prefer that
+3. **Generic object-type match**: otherwise match by `object_type`
+
+The keys come from `_get_obj_cfgs()` name fields and are the task's semantic role names (e.g. `hotdog_bun`, `sausage`, `condiment`, `plate`). The object-type-as-id step matters in scenes like HotDogSetup, where both `plate` and `hotdog_bun_container` have `object_type == "plate"`: a symbolic role like `serving_plate` now prefers the concrete object id `plate` when that id exists.
 
 **Fixtures** are resolved via two strategies:
 
@@ -191,7 +197,8 @@ Important implications:
 
 - `fridge_1` is relatively safe because only one fridge exists
 - `sausage_1` is relatively safe because only one sausage exists
-- `plate_1` is dangerous because there are two `plate`-typed objects
+- a symbolic role with `object_type == "plate"` now prefers the concrete object id `plate`
+- `plate_1` is still dangerous because there are two `plate`-typed objects
 - `cabinet_1` is dangerous because several cabinets exist
 - `counter_1` is dangerous because several counters exist
 - `dining_table_1` currently fails because the scene uses `dining_counter`, not `dining_table`
@@ -233,7 +240,8 @@ These are risky because several same-family candidates exist.
 
 - `plate_1 -> ?`
   - hotdog scene has both `hotdog_bun_container` and `plate` with object type `plate`
-  - current logic could guess the wrong one depending on sort order
+  - exact `object_type == "plate"` now prefers the concrete object id `plate`
+  - abstract aliases like `plate_1` can still be ambiguous because neither the symbol nor the type uniquely identifies one candidate
 
 
 ### Failing Resolutions
