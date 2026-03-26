@@ -1,0 +1,791 @@
+{
+  "trajectory_id": "traj_000001",
+  "composite_task": "HotDogSetup",
+  "agents": [
+    {
+      "agent": "agent_0"
+    },
+    {
+      "agent": "agent_1"
+    }
+  ],
+  "initial_state": {
+    "agents": {
+      "agent_0": {
+        "location": "bun_source_fixture",
+        "held_object": null
+      },
+      "agent_1": {
+        "location": "bun_source_fixture",
+        "held_object": null
+      }
+    },
+    "objects": {
+      "bun": {
+        "object_type": "hotdog_bun",
+        "location": "bun_source_fixture"
+      },
+      "sausage": {
+        "object_type": "sausage",
+        "location": "sausage_source_fixture"
+      },
+      "condiment": {
+        "object_type": "condiment_bottle",
+        "location": "condiment_source_fixture"
+      },
+      "serving_plate": {
+        "object_type": "plate",
+        "location": "serving_surface"
+      }
+    },
+    "fixtures": {
+      "condiment_source_fixture": {
+        "fixture_type": "cabinet",
+        "parts": {
+          "door": {
+            "part_type": "hinged_part",
+            "state": "open"
+          }
+        }
+      },
+      "bun_source_fixture": {
+        "fixture_type": "counter"
+      },
+      "sausage_source_fixture": {
+        "fixture_type": "fridge"
+      },
+      "serving_surface": {
+        "fixture_type": "dining_table"
+      }
+    },
+    "machine_state": {
+      "hot_dog_setup": {
+        "condiment_placed_next_to_serving_plate": false
+      }
+    }
+  },
+  "grounding_map": {
+    "version": 2,
+    "map_kind": "scene_agnostic",
+    "composite_task": "HotDogSetup",
+    "symbols": {
+      "bun": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "role": "bun",
+        "object_type": "hotdog_bun",
+        "symbolic_location": "bun_source_fixture",
+        "preferred_fixture_types": [
+          "counter",
+          "counter_non_corner",
+          "counter_non_dining"
+        ]
+      },
+      "sausage": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "role": "sausage",
+        "object_type": "sausage",
+        "symbolic_location": "sausage_source_fixture",
+        "preferred_fixture_types": [
+          "fridge"
+        ]
+      },
+      "condiment": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "role": "condiment",
+        "object_type": "condiment_bottle",
+        "symbolic_location": "condiment_source_fixture",
+        "preferred_fixture_types": [
+          "cabinet",
+          "cabinet_single_door",
+          "cabinet_double_door",
+          "cabinet_with_door"
+        ]
+      },
+      "serving_plate": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "role": "serving_plate",
+        "object_type": "plate",
+        "symbolic_location": "serving_surface",
+        "preferred_fixture_types": [
+          "dining_counter",
+          "island",
+          "counter_non_dining"
+        ]
+      },
+      "bun_source_fixture": {
+        "entity_type": "fixture",
+        "resolver": "source_fixture_for_object",
+        "role": "bun_source_fixture",
+        "fixture_type": "counter",
+        "object_symbol": "bun",
+        "preferred_fixture_types": [
+          "counter",
+          "counter_non_corner",
+          "counter_non_dining"
+        ]
+      },
+      "sausage_source_fixture": {
+        "entity_type": "fixture",
+        "resolver": "source_fixture_for_object",
+        "role": "sausage_source_fixture",
+        "fixture_type": "fridge",
+        "object_symbol": "sausage",
+        "preferred_fixture_types": [
+          "fridge"
+        ]
+      },
+      "condiment_source_fixture": {
+        "entity_type": "fixture",
+        "resolver": "source_fixture_for_object",
+        "role": "condiment_source_fixture",
+        "fixture_type": "cabinet",
+        "object_symbol": "condiment",
+        "preferred_fixture_types": [
+          "cabinet",
+          "cabinet_single_door",
+          "cabinet_double_door",
+          "cabinet_with_door"
+        ]
+      },
+      "serving_surface": {
+        "entity_type": "fixture",
+        "resolver": "support_fixture_for_object",
+        "role": "serving_surface",
+        "fixture_type": "dining_table",
+        "object_symbol": "serving_plate",
+        "preferred_fixture_types": [
+          "dining_counter",
+          "island",
+          "counter_non_dining"
+        ]
+      }
+    }
+  },
+  "steps": [
+    {
+      "step": 0,
+      "agent": "agent_1",
+      "tool": "get_image",
+      "args": {
+        "views": [
+          "top_view",
+          "room_view",
+          "map"
+        ]
+      },
+      "reasoning": "I need top-view, room-view, and map images before the task begins.",
+      "image_paths": [
+        "images/traj_000001/0_top_view_agent_1.png",
+        "images/traj_000001/0_room_view_agent_1.png",
+        "images/traj_000001/0_map_agent_1.png"
+      ]
+    },
+    {
+      "step": 1,
+      "agent": "agent_1",
+      "tool": "communicate",
+      "args": {
+        "to": "agent_0",
+        "message": "agent_1 will take the bun first."
+      },
+      "reasoning": "agent_1 initiates communication to coordinate tasks."
+    },
+    {
+      "step": 2,
+      "agent": "agent_0",
+      "tool": "communicate",
+      "args": {
+        "to": "agent_1",
+        "message": "agent_0 will go get the sausage."
+      },
+      "reasoning": "agent_0 confirms the plan and their own role."
+    },
+    {
+      "step": 3,
+      "agent": "agent_1",
+      "tool": "get_image",
+      "args": {
+        "views": [
+          "wrist",
+          "agentview_center"
+        ]
+      },
+      "reasoning": "I need wrist and center agent-view images to observe the current scene before I execute pick_up_object.",
+      "image_paths": [
+        "images/traj_000001/3_wrist_agent_1.png",
+        "images/traj_000001/3_agentview_center_agent_1.png"
+      ]
+    },
+    {
+      "step": 4,
+      "agent": "agent_1",
+      "tool": "pick_up_object",
+      "args": {
+        "object_id": "bun",
+        "source_id": "bun_source_fixture"
+      },
+      "reasoning": "agent_1 picks up the bun at the current location."
+    },
+    {
+      "step": 5,
+      "agent": "agent_1",
+      "tool": "get_image",
+      "args": {
+        "views": [
+          "wrist",
+          "agentview_center"
+        ]
+      },
+      "reasoning": "I need wrist and center agent-view images to observe the current scene after I executed pick_up_object.",
+      "image_paths": [
+        "images/traj_000001/5_wrist_agent_1.png",
+        "images/traj_000001/5_agentview_center_agent_1.png"
+      ]
+    },
+    {
+      "step": 6,
+      "agent": "agent_0",
+      "tool": "get_image",
+      "args": {
+        "views": [
+          "agentview_center",
+          "agentview_left",
+          "agentview_right"
+        ]
+      },
+      "reasoning": "I need center agent-view, left agent-view, and right agent-view images to observe the current scene before I execute navigate_to_fixture.",
+      "image_paths": [
+        "images/traj_000001/6_agentview_center_agent_0.png",
+        "images/traj_000001/6_agentview_left_agent_0.png",
+        "images/traj_000001/6_agentview_right_agent_0.png"
+      ]
+    },
+    {
+      "step": 7,
+      "agent": "agent_0",
+      "tool": "navigate_to_fixture",
+      "args": {
+        "fixture_id": "sausage_source_fixture"
+      },
+      "reasoning": "agent_0 moves to the fridge for the sausage."
+    },
+    {
+      "step": 8,
+      "agent": "agent_0",
+      "tool": "get_image",
+      "args": {
+        "views": [
+          "agentview_center",
+          "agentview_left",
+          "agentview_right"
+        ]
+      },
+      "reasoning": "I need center agent-view, left agent-view, and right agent-view images to observe the current scene after I executed navigate_to_fixture.",
+      "image_paths": [
+        "images/traj_000001/8_agentview_center_agent_0.png",
+        "images/traj_000001/8_agentview_left_agent_0.png",
+        "images/traj_000001/8_agentview_right_agent_0.png"
+      ]
+    },
+    {
+      "step": 9,
+      "agent": "agent_1",
+      "tool": "get_image",
+      "args": {
+        "views": [
+          "agentview_center",
+          "agentview_left",
+          "agentview_right"
+        ]
+      },
+      "reasoning": "I need center agent-view, left agent-view, and right agent-view images to observe the current scene before I execute navigate_to_fixture.",
+      "image_paths": [
+        "images/traj_000001/9_agentview_center_agent_1.png",
+        "images/traj_000001/9_agentview_left_agent_1.png",
+        "images/traj_000001/9_agentview_right_agent_1.png"
+      ]
+    },
+    {
+      "step": 10,
+      "agent": "agent_1",
+      "tool": "navigate_to_fixture",
+      "args": {
+        "fixture_id": "serving_surface"
+      },
+      "reasoning": "agent_1 moves the bun to the table."
+    },
+    {
+      "step": 11,
+      "agent": "agent_1",
+      "tool": "get_image",
+      "args": {
+        "views": [
+          "agentview_center",
+          "agentview_left",
+          "agentview_right"
+        ]
+      },
+      "reasoning": "I need center agent-view, left agent-view, and right agent-view images to observe the current scene after I executed navigate_to_fixture.",
+      "image_paths": [
+        "images/traj_000001/11_agentview_center_agent_1.png",
+        "images/traj_000001/11_agentview_left_agent_1.png",
+        "images/traj_000001/11_agentview_right_agent_1.png"
+      ]
+    },
+    {
+      "step": 12,
+      "agent": "agent_0",
+      "tool": "get_image",
+      "args": {
+        "views": [
+          "wrist",
+          "agentview_center"
+        ]
+      },
+      "reasoning": "I need wrist and center agent-view images to observe the current scene before I execute pick_up_object.",
+      "image_paths": [
+        "images/traj_000001/12_wrist_agent_0.png",
+        "images/traj_000001/12_agentview_center_agent_0.png"
+      ]
+    },
+    {
+      "step": 13,
+      "agent": "agent_0",
+      "tool": "pick_up_object",
+      "args": {
+        "object_id": "sausage",
+        "source_id": "sausage_source_fixture"
+      },
+      "reasoning": "agent_0 retrieves the sausage."
+    },
+    {
+      "step": 14,
+      "agent": "agent_0",
+      "tool": "get_image",
+      "args": {
+        "views": [
+          "wrist",
+          "agentview_center"
+        ]
+      },
+      "reasoning": "I need wrist and center agent-view images to observe the current scene after I executed pick_up_object.",
+      "image_paths": [
+        "images/traj_000001/14_wrist_agent_0.png",
+        "images/traj_000001/14_agentview_center_agent_0.png"
+      ]
+    },
+    {
+      "step": 15,
+      "agent": "agent_1",
+      "tool": "get_image",
+      "args": {
+        "views": [
+          "wrist",
+          "agentview_center"
+        ]
+      },
+      "reasoning": "I need wrist and center agent-view images to observe the current scene before I execute place_on_object.",
+      "image_paths": [
+        "images/traj_000001/15_wrist_agent_1.png",
+        "images/traj_000001/15_agentview_center_agent_1.png"
+      ]
+    },
+    {
+      "step": 16,
+      "agent": "agent_1",
+      "tool": "place_on_object",
+      "args": {
+        "object_id": "bun",
+        "support_object_id": "serving_plate"
+      },
+      "reasoning": "agent_1 puts the bun on the plate."
+    },
+    {
+      "step": 17,
+      "agent": "agent_1",
+      "tool": "get_image",
+      "args": {
+        "views": [
+          "wrist",
+          "agentview_center"
+        ]
+      },
+      "reasoning": "I need wrist and center agent-view images to observe the current scene after I executed place_on_object.",
+      "image_paths": [
+        "images/traj_000001/17_wrist_agent_1.png",
+        "images/traj_000001/17_agentview_center_agent_1.png"
+      ]
+    },
+    {
+      "step": 18,
+      "agent": "agent_1",
+      "tool": "communicate",
+      "args": {
+        "to": "agent_0",
+        "message": "agent_1 is going to get the condiment now."
+      },
+      "reasoning": "agent_1 informs agent_0 of the next subtask."
+    },
+    {
+      "step": 19,
+      "agent": "agent_0",
+      "tool": "communicate",
+      "args": {
+        "to": "agent_1",
+        "message": "agent_0 is coming to the table with the sausage."
+      },
+      "reasoning": "agent_0 prepares to move to the table."
+    },
+    {
+      "step": 20,
+      "agent": "agent_1",
+      "tool": "get_image",
+      "args": {
+        "views": [
+          "agentview_center",
+          "agentview_left",
+          "agentview_right"
+        ]
+      },
+      "reasoning": "I need center agent-view, left agent-view, and right agent-view images to observe the current scene before I execute navigate_to_fixture.",
+      "image_paths": [
+        "images/traj_000001/20_agentview_center_agent_1.png",
+        "images/traj_000001/20_agentview_left_agent_1.png",
+        "images/traj_000001/20_agentview_right_agent_1.png"
+      ]
+    },
+    {
+      "step": 21,
+      "agent": "agent_1",
+      "tool": "navigate_to_fixture",
+      "args": {
+        "fixture_id": "condiment_source_fixture"
+      },
+      "reasoning": "agent_1 leaves the table to get the condiment."
+    },
+    {
+      "step": 22,
+      "agent": "agent_1",
+      "tool": "get_image",
+      "args": {
+        "views": [
+          "agentview_center",
+          "agentview_left",
+          "agentview_right"
+        ]
+      },
+      "reasoning": "I need center agent-view, left agent-view, and right agent-view images to observe the current scene after I executed navigate_to_fixture.",
+      "image_paths": [
+        "images/traj_000001/22_agentview_center_agent_1.png",
+        "images/traj_000001/22_agentview_left_agent_1.png",
+        "images/traj_000001/22_agentview_right_agent_1.png"
+      ]
+    },
+    {
+      "step": 23,
+      "agent": "agent_0",
+      "tool": "get_image",
+      "args": {
+        "views": [
+          "agentview_center",
+          "agentview_left",
+          "agentview_right"
+        ]
+      },
+      "reasoning": "I need center agent-view, left agent-view, and right agent-view images to observe the current scene before I execute navigate_to_fixture.",
+      "image_paths": [
+        "images/traj_000001/23_agentview_center_agent_0.png",
+        "images/traj_000001/23_agentview_left_agent_0.png",
+        "images/traj_000001/23_agentview_right_agent_0.png"
+      ]
+    },
+    {
+      "step": 24,
+      "agent": "agent_0",
+      "tool": "navigate_to_fixture",
+      "args": {
+        "fixture_id": "serving_surface"
+      },
+      "reasoning": "agent_0 arrives at the table since agent_1 has left."
+    },
+    {
+      "step": 25,
+      "agent": "agent_0",
+      "tool": "get_image",
+      "args": {
+        "views": [
+          "agentview_center",
+          "agentview_left",
+          "agentview_right"
+        ]
+      },
+      "reasoning": "I need center agent-view, left agent-view, and right agent-view images to observe the current scene after I executed navigate_to_fixture.",
+      "image_paths": [
+        "images/traj_000001/25_agentview_center_agent_0.png",
+        "images/traj_000001/25_agentview_left_agent_0.png",
+        "images/traj_000001/25_agentview_right_agent_0.png"
+      ]
+    },
+    {
+      "step": 26,
+      "agent": "agent_0",
+      "tool": "get_image",
+      "args": {
+        "views": [
+          "wrist",
+          "agentview_center"
+        ]
+      },
+      "reasoning": "I need wrist and center agent-view images to observe the current scene before I execute place_on_object.",
+      "image_paths": [
+        "images/traj_000001/26_wrist_agent_0.png",
+        "images/traj_000001/26_agentview_center_agent_0.png"
+      ]
+    },
+    {
+      "step": 27,
+      "agent": "agent_0",
+      "tool": "place_on_object",
+      "args": {
+        "object_id": "sausage",
+        "support_object_id": "serving_plate"
+      },
+      "reasoning": "agent_0 adds the sausage to the setup."
+    },
+    {
+      "step": 28,
+      "agent": "agent_0",
+      "tool": "get_image",
+      "args": {
+        "views": [
+          "wrist",
+          "agentview_center"
+        ]
+      },
+      "reasoning": "I need wrist and center agent-view images to observe the current scene after I executed place_on_object.",
+      "image_paths": [
+        "images/traj_000001/28_wrist_agent_0.png",
+        "images/traj_000001/28_agentview_center_agent_0.png"
+      ]
+    },
+    {
+      "step": 29,
+      "agent": "agent_1",
+      "tool": "get_image",
+      "args": {
+        "views": [
+          "wrist",
+          "agentview_center"
+        ]
+      },
+      "reasoning": "I need wrist and center agent-view images to observe the current scene before I execute pick_up_object.",
+      "image_paths": [
+        "images/traj_000001/29_wrist_agent_1.png",
+        "images/traj_000001/29_agentview_center_agent_1.png"
+      ]
+    },
+    {
+      "step": 30,
+      "agent": "agent_1",
+      "tool": "pick_up_object",
+      "args": {
+        "object_id": "condiment",
+        "source_id": "condiment_source_fixture"
+      },
+      "reasoning": "agent_1 picks up the condiment bottle."
+    },
+    {
+      "step": 31,
+      "agent": "agent_1",
+      "tool": "get_image",
+      "args": {
+        "views": [
+          "wrist",
+          "agentview_center"
+        ]
+      },
+      "reasoning": "I need wrist and center agent-view images to observe the current scene after I executed pick_up_object.",
+      "image_paths": [
+        "images/traj_000001/31_wrist_agent_1.png",
+        "images/traj_000001/31_agentview_center_agent_1.png"
+      ]
+    },
+    {
+      "step": 32,
+      "agent": "agent_1",
+      "tool": "communicate",
+      "args": {
+        "to": "agent_0",
+        "message": "agent_1 is returning to the table."
+      },
+      "reasoning": "agent_1 signals the return to the serving area."
+    },
+    {
+      "step": 33,
+      "agent": "agent_0",
+      "tool": "get_image",
+      "args": {
+        "views": [
+          "wrist",
+          "agentview_center"
+        ]
+      },
+      "reasoning": "I need wrist and center agent-view images to observe the current scene before I execute give_space.",
+      "image_paths": [
+        "images/traj_000001/33_wrist_agent_0.png",
+        "images/traj_000001/33_agentview_center_agent_0.png"
+      ]
+    },
+    {
+      "step": 34,
+      "agent": "agent_0",
+      "tool": "give_space",
+      "args": {
+        "fixture_id": "serving_surface"
+      },
+      "reasoning": "agent_0 yields the workspace for the final placement."
+    },
+    {
+      "step": 35,
+      "agent": "agent_0",
+      "tool": "get_image",
+      "args": {
+        "views": [
+          "wrist",
+          "agentview_center"
+        ]
+      },
+      "reasoning": "I need wrist and center agent-view images to observe the current scene after I executed give_space.",
+      "image_paths": [
+        "images/traj_000001/35_wrist_agent_0.png",
+        "images/traj_000001/35_agentview_center_agent_0.png"
+      ]
+    },
+    {
+      "step": 36,
+      "agent": "agent_1",
+      "tool": "get_image",
+      "args": {
+        "views": [
+          "agentview_center",
+          "agentview_left",
+          "agentview_right"
+        ]
+      },
+      "reasoning": "I need center agent-view, left agent-view, and right agent-view images to observe the current scene before I execute navigate_to_fixture.",
+      "image_paths": [
+        "images/traj_000001/36_agentview_center_agent_1.png",
+        "images/traj_000001/36_agentview_left_agent_1.png",
+        "images/traj_000001/36_agentview_right_agent_1.png"
+      ]
+    },
+    {
+      "step": 37,
+      "agent": "agent_1",
+      "tool": "navigate_to_fixture",
+      "args": {
+        "fixture_id": "serving_surface"
+      },
+      "reasoning": "agent_1 returns to the table."
+    },
+    {
+      "step": 38,
+      "agent": "agent_1",
+      "tool": "get_image",
+      "args": {
+        "views": [
+          "agentview_center",
+          "agentview_left",
+          "agentview_right"
+        ]
+      },
+      "reasoning": "I need center agent-view, left agent-view, and right agent-view images to observe the current scene after I executed navigate_to_fixture.",
+      "image_paths": [
+        "images/traj_000001/38_agentview_center_agent_1.png",
+        "images/traj_000001/38_agentview_left_agent_1.png",
+        "images/traj_000001/38_agentview_right_agent_1.png"
+      ]
+    },
+    {
+      "step": 39,
+      "agent": "agent_1",
+      "tool": "get_image",
+      "args": {
+        "views": [
+          "wrist",
+          "agentview_center"
+        ]
+      },
+      "reasoning": "I need wrist and center agent-view images to observe the current scene before I execute place_next_to.",
+      "image_paths": [
+        "images/traj_000001/39_wrist_agent_1.png",
+        "images/traj_000001/39_agentview_center_agent_1.png"
+      ]
+    },
+    {
+      "step": 40,
+      "agent": "agent_1",
+      "tool": "place_next_to",
+      "args": {
+        "object_id": "condiment",
+        "reference_object_id": "serving_plate"
+      },
+      "reasoning": "agent_1 finishes the task by placing the condiment."
+    },
+    {
+      "step": 41,
+      "agent": "agent_1",
+      "tool": "get_image",
+      "args": {
+        "views": [
+          "wrist",
+          "agentview_center"
+        ]
+      },
+      "reasoning": "I need wrist and center agent-view images to observe the current scene after I executed place_next_to.",
+      "image_paths": [
+        "images/traj_000001/41_wrist_agent_1.png",
+        "images/traj_000001/41_agentview_center_agent_1.png"
+      ]
+    }
+  ],
+  "validation": {
+    "is_valid": false,
+    "checks": [],
+    "final_state": null,
+    "error_type": "PostProcessingValidationRequired",
+    "error": "Trajectory was post-processed after validation and must be revalidated.",
+    "step": null,
+    "signature": "db2098e9c6b6e748bad34733d30367be6226b52b1785c312db5639f551a06b17"
+  },
+  "generation_usage": {
+    "prompt_tokens": 566,
+    "cached_input_tokens": 0,
+    "output_tokens": 1412,
+    "reasoning_tokens": 1269,
+    "total_tokens": 3247,
+    "usage_source": "api_usage_metadata",
+    "traffic_type": "ON_DEMAND",
+    "observed_cost_usd": 0.0083,
+    "pricing": {
+      "model": "gemini-3-flash-preview",
+      "input_usd_per_million_tokens": 0.5,
+      "cached_input_usd_per_million_tokens": 0.05,
+      "output_usd_per_million_tokens": 3.0
+    }
+  },
+  "task": "HotDogSetup",
+  "layout": null,
+  "style": null,
+  "seed": null,
+  "sampling_metadata": {
+    "strategy": "verbalized",
+    "probability": 0.9,
+    "candidate_index": 1,
+    "run_index": 0
+  }
+}
