@@ -3,6 +3,10 @@
 
 Reusable drawing functions consumed by ``SimToolExecutor.save_placement_map``
 and ``experiments/visualize_grid.py``.
+
+Object rendering – current approach: **colored labels** (option 1).
+Each object gets a colored text label placed at its position, using the
+same overlap-avoidance logic as fixture labels.
 """
 
 from __future__ import annotations
@@ -38,7 +42,7 @@ _FRONT_ONLY_FIXTURE_TYPES = [
 
 def _format_fixture_label(name: str, wrap_width: int = 18) -> str:
     """Render a readable fixture label from an internal fixture id."""
-    label = " ".join(str(name).replace("_", " ").split())
+    label = str(name).strip()
     if len(label) <= wrap_width:
         return label
     return textwrap.fill(
@@ -59,6 +63,13 @@ def _aabb_overlaps(box_a, box_b, margin: float = 0.0) -> bool:
     )
 
 
+def _aabb_overlap_area(box_a, box_b, margin: float = 0.0) -> float:
+    """Return the overlap area between two AABBs (with optional margin)."""
+    ox = max(0.0, min(box_a[2], box_b[2]) - max(box_a[0], box_b[0]) + margin)
+    oy = max(0.0, min(box_a[3], box_b[3]) - max(box_a[1], box_b[1]) + margin)
+    return ox * oy
+
+
 def _estimate_label_extent(label: str, label_fontsize: int) -> tuple[float, float]:
     """Approximate label size in world coordinates for collision avoidance."""
     lines = label.splitlines() or [label]
@@ -69,33 +80,33 @@ def _estimate_label_extent(label: str, label_fontsize: int) -> tuple[float, floa
 
 
 def _label_candidate_positions(fmin, fmax):
-    """Return candidate anchor points for a fixture label."""
+    """Return candidate anchor points for a fixture label (two rings + center)."""
     cx, cy = (fmin[0] + fmax[0]) / 2, (fmin[1] + fmax[1]) / 2
-    dx = max((fmax[0] - fmin[0]) * 0.5 + 0.12, 0.18)
-    dy = max((fmax[1] - fmin[1]) * 0.5 + 0.12, 0.18)
-    return [
-        (cx, fmax[1] + dy),
-        (fmax[0] + dx, cy),
-        (fmin[0] - dx, cy),
-        (cx, fmin[1] - dy),
-        (fmax[0] + dx, fmax[1] + dy),
-        (fmin[0] - dx, fmax[1] + dy),
-        (fmax[0] + dx, fmin[1] - dy),
-        (fmin[0] - dx, fmin[1] - dy),
-        (cx, cy),
-    ]
+    candidates = [(cx, cy)]
+    for scale in (1.0, 2.0):
+        dx = max((fmax[0] - fmin[0]) * 0.5 + 0.12 * scale, 0.18 * scale)
+        dy = max((fmax[1] - fmin[1]) * 0.5 + 0.12 * scale, 0.18 * scale)
+        candidates.extend([
+            (cx, fmax[1] + dy),
+            (fmax[0] + dx, cy),
+            (fmin[0] - dx, cy),
+            (cx, fmin[1] - dy),
+            (fmax[0] + dx, fmax[1] + dy),
+            (fmin[0] - dx, fmax[1] + dy),
+            (fmax[0] + dx, fmin[1] - dy),
+            (fmin[0] - dx, fmin[1] - dy),
+        ])
+    return candidates
 
 
 def _pick_label_position(
-    fixture_id: str,
     fmin,
     fmax,
     label: str,
     placed_label_boxes,
-    fixture_boxes,
     label_fontsize: int,
 ):
-    """Pick a label anchor with minimal overlap against other labels and fixtures."""
+    """Pick a label anchor with minimal overlap against other labels."""
     cx, cy = (fmin[0] + fmax[0]) / 2, (fmin[1] + fmax[1]) / 2
     label_width, label_height = _estimate_label_extent(label, label_fontsize)
     best_position = (cx, cy)
@@ -114,22 +125,14 @@ def _pick_label_position(
             x + label_width / 2,
             y + label_height / 2,
         )
-        label_overlap_count = sum(
-            _aabb_overlaps(candidate_box, other_box, margin=0.03)
+        label_overlap_area = sum(
+            _aabb_overlap_area(candidate_box, other_box, margin=0.03)
             for other_box in placed_label_boxes
         )
-        fixture_overlap_count = sum(
-            other_fixture_id != fixture_id
-            and _aabb_overlaps(candidate_box, other_box, margin=0.02)
-            for other_fixture_id, other_box in fixture_boxes
-        )
         distance_penalty = float(np.linalg.norm(np.array([x - cx, y - cy])))
-        center_penalty = 0.2 if np.allclose([x, y], [cx, cy]) else 0.0
         score = (
-            100.0 * label_overlap_count
-            + 12.0 * fixture_overlap_count
+            500.0 * label_overlap_area
             + distance_penalty
-            + center_penalty
         )
         if score < best_score:
             best_score = score
@@ -137,6 +140,19 @@ def _pick_label_position(
             best_box = candidate_box
 
     return best_position, best_box
+
+
+def _should_skip_fixture_label(name: str) -> bool:
+    """Return True for fixture labels that should not be rendered."""
+    name_lower = str(name).lower()
+    if "floor" in name_lower or "wall" in name_lower or name_lower.startswith("stack_"):
+        return True
+
+    # Skip counter stack helper labels while keeping regular counter labels.
+    if "counter" in name_lower and "stack" in name_lower:
+        return True
+
+    return False
 
 
 def _draw_fixtures(ax, fixtures, label_fontsize=5):
@@ -148,17 +164,8 @@ def _draw_fixtures(ax, fixtures, label_fontsize=5):
             continue
         fixture_entries.append((name, fxtr, *aabb))
 
-    fixture_boxes = [(name, (fmin[0], fmin[1], fmax[0], fmax[1])) for name, _, fmin, fmax in fixture_entries]
-    placed_label_boxes = []
-
-    for name, fxtr, fmin, fmax in sorted(
-        fixture_entries,
-        key=lambda entry: (
-            -float((entry[3][0] - entry[2][0]) * (entry[3][1] - entry[2][1])),
-            entry[0],
-        ),
-    ):
-
+    # Draw all fixture rectangles first.
+    for name, fxtr, fmin, fmax in fixture_entries:
         obstacle = is_ground_obstacle(name, fxtr)
         color = "red" if obstacle else "green"
         alpha = 0.35 if obstacle else 0.15
@@ -169,15 +176,25 @@ def _draw_fixtures(ax, fixtures, label_fontsize=5):
         )
         ax.add_patch(rect)
 
+    # Filter to only fixtures that need labels, then place labels.
+    label_entries = [e for e in fixture_entries if not _should_skip_fixture_label(e[0])]
+    placed_label_boxes = []
+
+    for name, fxtr, fmin, fmax in sorted(
+        label_entries,
+        key=lambda entry: (
+            -float((entry[3][0] - entry[2][0]) * (entry[3][1] - entry[2][1])),
+            entry[0],
+        ),
+    ):
+
         label = _format_fixture_label(name)
         cx, cy = (fmin[0] + fmax[0]) / 2, (fmin[1] + fmax[1]) / 2
         (label_x, label_y), label_box = _pick_label_position(
-            name,
             fmin,
             fmax,
             label,
             placed_label_boxes,
-            fixture_boxes,
             label_fontsize,
         )
         if not np.allclose([label_x, label_y], [cx, cy]):
@@ -278,6 +295,67 @@ def _draw_robots(ax, runner, placed_label_boxes=None):
         placed_label_boxes.append(best_box)
 
 
+def _get_object_positions(runner):
+    """Return list of (object_name, x, y) for all task objects in the scene.
+
+    Objects live in ``env.objects`` / ``env.obj_body_id``; their world
+    positions come from the MuJoCo simulation state.
+    """
+    entries = []
+    env = runner.env
+    if not hasattr(env, "objects") or not env.objects:
+        return entries
+    for obj_name in env.objects:
+        body_id = env.obj_body_id.get(obj_name)
+        if body_id is None:
+            continue
+        pos = env.sim.data.body_xpos[body_id]
+        entries.append((obj_name, float(pos[0]), float(pos[1])))
+    return entries
+
+
+_OBJECT_COLORS = [
+    "#dd55ff", "#ff8800", "#00aadd", "#dd2255", "#44bb44", "#8866cc",
+]
+
+
+def _draw_objects(ax, runner, placed_label_boxes=None):
+    """Draw colored labels at each object's position, avoiding collisions.
+
+    Labels are placed using the same overlap-avoidance logic as fixture
+    labels so they don't collide with fixtures, robots, or each other.
+    """
+    if placed_label_boxes is None:
+        placed_label_boxes = []
+
+    entries = _get_object_positions(runner)
+    if not entries:
+        return
+
+    label_fontsize = 5
+    for idx, (obj_name, x, y) in enumerate(entries):
+        color = _OBJECT_COLORS[idx % len(_OBJECT_COLORS)]
+        label = str(obj_name)
+        fmin = np.array([x, y])
+        fmax = np.array([x, y])
+        (label_x, label_y), label_box = _pick_label_position(
+            fmin, fmax, label, placed_label_boxes, label_fontsize,
+        )
+        ax.text(
+            label_x, label_y, label,
+            fontsize=label_fontsize, ha="center", va="center",
+            color=color, fontweight="bold", zorder=8,
+            bbox={
+                "boxstyle": "round,pad=0.15",
+                "facecolor": "white",
+                "edgecolor": color,
+                "linewidth": 0.5,
+                "alpha": 0.88,
+            },
+        )
+        placed_label_boxes.append(label_box)
+
+
 def draw_grid_map(ax, runner):
     """Draw the occupancy grid on axes."""
     grid = runner._occupancy_grid
@@ -296,6 +374,7 @@ def draw_grid_map(ax, runner):
 
     placed_label_boxes = _draw_fixtures(ax, runner._fixtures)
     _draw_robots(ax, runner, placed_label_boxes=placed_label_boxes)
+    _draw_objects(ax, runner, placed_label_boxes=placed_label_boxes)
 
     x_min = grid._origin[0]
     x_max = grid._origin[0] + grid._cols * grid.cell_size
@@ -376,6 +455,7 @@ def draw_continuous_map(ax, runner):
                         zorder=3, alpha=0.7)
 
     _draw_robots(ax, runner, placed_label_boxes=placed_label_boxes)
+    _draw_objects(ax, runner, placed_label_boxes=placed_label_boxes)
 
     ax.set_xlim(x_min - 0.2, x_max + 0.2)
     ax.set_ylim(y_min - 0.2, y_max + 0.2)

@@ -102,7 +102,7 @@ class SimToolExecutor:
         render_height: int = 512,
         gl_backend: str = "osmesa",
         placement: str = "grid",
-        cell_size: float = 0.10,
+        cell_size: float = 0.05,
         align_to_wall: bool = True,
         standoff: float = 0.40,
         sample_spacing: float = 0.08,
@@ -308,10 +308,18 @@ class SimToolExecutor:
             if isinstance(location, str):
                 self.runner.move_object(object_id, location)
 
+        # Use the sim's placement-system spawn (init_robot_base_ref) as ground
+        # truth.  Only navigate robots whose trajectory location differs from
+        # the sim spawn fixture — otherwise the placement system already put
+        # them in the right spot with correct facing direction.
+        scene = self.runner.get_scene_description()
+        sim_spawn_fixture = scene.get("init_robot_base_ref")
         for agent_id, agent_state in agents.items():
             location = agent_state.get("location")
             if not isinstance(location, str):
                 continue
+            if location == sim_spawn_fixture:
+                continue  # sim already placed this robot here
             robot_idx = self._parse_agent_idx(agent_id)
             self.navigate_to_fixture(location, robot_idx=robot_idx)
 
@@ -406,6 +414,14 @@ class SimToolExecutor:
                         round(float(rp[2]), 3),
                     ]
 
+                # Build per-camera frame paths for this step
+                step_image_paths = {}
+                for cam in camera_names:
+                    step_image_paths[cam] = {
+                        "before": str(frames_dir / cam / f"step_{step_idx:03d}_before.png"),
+                        "after": str(frames_dir / cam / f"step_{step_idx:03d}_after.png"),
+                    }
+
                 metadata["steps"].append(
                     {
                         "step_index": step_idx,
@@ -415,6 +431,7 @@ class SimToolExecutor:
                         "success": result.success,
                         "details": result.details,
                         "robot_positions": robot_positions,
+                        "image_paths": step_image_paths,
                     }
                 )
         finally:
@@ -1652,8 +1669,13 @@ class SimToolExecutor:
                     source_id,
                     ref_pos_override=ref_pos,
                 )
-            if moved:
-                self._sync_held_object(robot_idx)
+            if not moved:
+                return ToolResult(
+                    "pick_up_object",
+                    False,
+                    {"object_id": object_id, "source_id": source_id, "robot_idx": robot_idx},
+                )
+            self._sync_held_object(robot_idx)
         self._held_objects[robot_idx] = object_id
         self._sync_held_object(robot_idx)
         return ToolResult(
@@ -2164,8 +2186,8 @@ def _main():
     parser.add_argument(
         "--cell-size",
         type=float,
-        default=0.50,
-        help="Grid cell size in meters (only used when --placement=grid). Default: 0.50",
+        default=0.05,
+        help="Grid cell size in meters (only used when --placement=grid). Default: 0.05",
     )
     parser.add_argument(
         "--align-to-wall",
@@ -2276,6 +2298,7 @@ def _main():
                     executor=executor,
                     trajectory=trajectory_payload,
                     output_dir=args.output_dir,
+                    fps=args.fps,
                 )
             elif args.demo_plan is not None:
                 tool_calls = executor.build_demo_plan(args.demo_plan)

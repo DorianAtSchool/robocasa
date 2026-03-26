@@ -101,8 +101,8 @@ would have sealed it as an enclosed pocket.
 
 ### Weaknesses
 
-- quantization error: a small fixture overlap can block an entire cell
-- coarse discretization can reject poses that are physically valid
+- quantization error: a small fixture overlap can block an entire cell (mitigated by the 5 cm default cell size)
+- discretization can reject poses that are physically valid
 - flood-fill can be too conservative in narrow teleport-valid gaps if the
   fixture-only exception is not used
 - cell occupancy is only an approximation of physical base collision

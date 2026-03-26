@@ -137,6 +137,43 @@ class TestTrajectoryAdapter(unittest.TestCase):
             ["counter_main"],
         )
 
+    def test_sim_ground_truth_prefers_object_type_as_object_id(self):
+        executor = FakeExecutor()
+        executor.scene = {
+            "fixtures": {
+                "counter_main": {"fixture_type": "counter_non_dining"},
+                "dining_main": {"fixture_type": "dining_table"},
+            },
+            "objects": {
+                "hotdog_bun_container": {"object_type": "plate"},
+                "plate": {"object_type": "plate"},
+            },
+            "fixture_refs": {
+                "dining_table": "dining_main",
+            },
+            "object_placements": {
+                "hotdog_bun_container": "counter_main",
+                "plate": "dining_main",
+            },
+        }
+        adapter = TrajectoryAdapter(executor=executor)
+
+        adapter._apply_sim_ground_truth(
+            {
+                "objects": {
+                    "serving_plate": {
+                        "object_type": "plate",
+                        "location": "serving_surface",
+                    }
+                },
+                "fixtures": {
+                    "serving_surface": {"fixture_type": "dining_table"},
+                },
+            }
+        )
+
+        self.assertEqual(adapter._object_aliases["serving_plate"], "plate")
+
     def test_execute_loads_state_then_runs_steps(self):
         executor = FakeExecutor()
         adapter = TrajectoryAdapter(executor=executor)

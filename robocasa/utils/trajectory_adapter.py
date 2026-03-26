@@ -1,12 +1,27 @@
-"""Adapter for external full-trajectory JSON into executor tool calls."""
+"""Adapter for external full-trajectory JSON into executor tool calls.
+
+Symbolic IDs in trajectory steps (e.g. "bun", "serving_surface") are resolved
+to concrete sim IDs (e.g. "hotdog_bun", "dining_dining_group") via:
+
+  1. **Sim ground truth** (preferred) — uses ``env.fixture_refs`` and
+     ``env.object_cfgs`` placement info exposed in the scene description.
+     Combined with the trajectory's ``initial_state`` type information,
+     this resolves all symbols unambiguously.
+
+  2. **Heuristic fallback** — any symbols not resolved by ground truth
+     fall through to the existing type-match / token-match / ordinal heuristics.
+"""
 
 from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
 import json
+import logging
 from pathlib import Path
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -78,6 +93,121 @@ class TrajectoryAdapter:
         self._dispenser_aliases: dict[str, str] = {}
         self._resolution_log: list[ResolutionRecord] = []
 
+    def _apply_sim_ground_truth(self, initial_state: dict[str, Any]) -> None:
+        """Pre-populate alias caches from sim ground truth.
+
+        Uses the trajectory's ``initial_state`` (object types and fixture
+        types) combined with ``scene["object_placements"]`` and
+        ``scene["fixture_refs"]`` to resolve symbolic IDs to concrete sim
+        IDs with full confidence.
+        """
+        object_placements = self.scene.get("object_placements", {})
+        fixture_refs = self.scene.get("fixture_refs", {})
+        env_object_ids = set(self.scene.get("objects", {}).keys())
+
+        if not object_placements and not fixture_refs:
+            log.warning("No sim ground truth available; falling back to heuristics")
+            return
+
+        # --- Objects: match trajectory symbol → env.objects key by type ---
+        traj_objects = initial_state.get("objects", {})
+        # Build reverse map: object_type → env.objects key
+        # env.objects keys are the task's obj_cfg names (e.g. "hotdog_bun")
+        type_to_env_key = {}
+        for env_key in env_object_ids:
+            obj_info = self.scene.get("objects", {}).get(env_key, {})
+            obj_type = obj_info.get("object_type", "")
+            # Map both the type and the key itself
+            type_to_env_key[obj_type] = env_key
+            type_to_env_key[env_key] = env_key
+
+        for symbol, obj_state in traj_objects.items():
+            obj_type = obj_state.get("object_type", "")
+            # Try: exact symbolic key match, then exact object_type-as-id match,
+            # then generic type match, then substring match.
+            resolved = None
+            if symbol in env_object_ids:
+                resolved = symbol
+            elif obj_type in env_object_ids:
+                resolved = obj_type
+            elif obj_type in type_to_env_key:
+                resolved = type_to_env_key[obj_type]
+            else:
+                for env_key in env_object_ids:
+                    if obj_type in env_key or env_key in obj_type:
+                        resolved = env_key
+                        break
+
+            if resolved is not None:
+                self._object_aliases[symbol] = resolved
+                self._resolution_log.append(ResolutionRecord(
+                    entity_type="object",
+                    requested_id=symbol,
+                    resolved_id=resolved,
+                    method="sim_ground_truth",
+                    confidence=1.0,
+                    reason=f"Matched object_type {obj_type!r} to env.objects[{resolved!r}]",
+                ))
+
+        # --- Fixtures: resolve via object placements and fixture refs ---
+        traj_fixtures = initial_state.get("fixtures", {})
+
+        # Build map: symbolic fixture → concrete ID by tracing object locations
+        # If trajectory says object X is at fixture Y, and we resolved X to
+        # env key K, then object_placements[K] gives the concrete fixture ID.
+        traj_obj_locations = {}
+        for symbol, obj_state in traj_objects.items():
+            loc = obj_state.get("location")
+            if isinstance(loc, str):
+                traj_obj_locations.setdefault(loc, []).append(symbol)
+
+        for fixture_symbol, fixture_state in traj_fixtures.items():
+            fixture_type = fixture_state.get("fixture_type", "")
+
+            # Strategy 1: trace via object that lives at this fixture
+            obj_symbols_here = traj_obj_locations.get(fixture_symbol, [])
+            for obj_sym in obj_symbols_here:
+                resolved_obj = self._object_aliases.get(obj_sym)
+                if resolved_obj and resolved_obj in object_placements:
+                    concrete_fixture = object_placements[resolved_obj]
+                    self._fixture_aliases[fixture_symbol] = concrete_fixture
+                    self._resolution_log.append(ResolutionRecord(
+                        entity_type="fixture",
+                        requested_id=fixture_symbol,
+                        resolved_id=concrete_fixture,
+                        method="sim_ground_truth",
+                        confidence=1.0,
+                        reason=f"Object {resolved_obj!r} placed on {concrete_fixture!r} by task config",
+                    ))
+                    break
+
+            if fixture_symbol in self._fixture_aliases:
+                continue
+
+            # Strategy 2: match fixture_refs by type
+            for role, fxtr_id in fixture_refs.items():
+                if role == fixture_type or fixture_type in role or role in fixture_type:
+                    self._fixture_aliases[fixture_symbol] = fxtr_id
+                    self._resolution_log.append(ResolutionRecord(
+                        entity_type="fixture",
+                        requested_id=fixture_symbol,
+                        resolved_id=fxtr_id,
+                        method="sim_ground_truth",
+                        confidence=1.0,
+                        reason=f"fixture_refs[{role!r}] matched fixture_type {fixture_type!r}",
+                    ))
+                    break
+
+        resolved_count = len([r for r in self._resolution_log if r.method == "sim_ground_truth"])
+        total_symbols = len(traj_objects) + len(traj_fixtures)
+        if resolved_count == total_symbols:
+            log.info("Sim ground truth resolved all %d symbols", resolved_count)
+        else:
+            log.warning(
+                "Sim ground truth resolved %d/%d symbols; remaining will use heuristics",
+                resolved_count, total_symbols,
+            )
+
     def adapt(
         self,
         trajectory: dict[str, Any],
@@ -85,7 +215,9 @@ class TrajectoryAdapter:
     ) -> dict[str, Any]:
         """Return a normalized executor-facing trajectory."""
         trajectory = deepcopy(trajectory)
+
         initial_state = trajectory.get("initial_state") or {}
+        self._apply_sim_ground_truth(initial_state)
         resolved_initial_state = self._adapt_initial_state(initial_state)
         tool_calls = []
 
@@ -112,41 +244,38 @@ class TrajectoryAdapter:
         self,
         trajectory: dict[str, Any],
         output_dir: str | Path | None = None,
+        fps: int = 2,
     ) -> dict[str, Any]:
-        """Adapt, load initial state, then execute the normalized plan."""
+        """Adapt, load initial state, then execute with frames and video.
+
+        Delegates to ``executor.run_tool_plan()`` so that before/after frames
+        and per-camera MP4 videos are generated automatically.
+        """
         adapted = self.adapt(trajectory, output_dir=output_dir)
         load_summary = self.executor.load_initial_state(adapted["initial_state"])
-        metadata = {
-            "trajectory_id": adapted.get("trajectory_id"),
-            "composite_task": adapted.get("composite_task"),
-            "load_initial_state": load_summary,
-            "resolution_log": adapted["resolution_log"],
-            "steps": [],
-        }
-
-        for step in adapted["tool_calls"]:
-            result = self.executor.execute(
-                step["tool"],
-                robot_idx=step["robot_idx"],
-                **step.get("args", {}),
-            )
-            metadata["steps"].append(
-                {
-                    "step_index": step["metadata"].get("step_index"),
-                    "tool": step["tool"],
-                    "robot_idx": step["robot_idx"],
-                    "args": deepcopy(step.get("args", {})),
-                    "success": result.success,
-                    "details": deepcopy(result.details),
-                    "metadata": deepcopy(step.get("metadata", {})),
-                }
-            )
 
         if output_dir is not None:
             output_path = Path(output_dir)
             output_path.mkdir(parents=True, exist_ok=True)
             with open(output_path / "adapted_trajectory.json", "w") as f:
                 json.dump(adapted, f, indent=2)
+
+        # run_tool_plan handles rendering, frame saving, and video generation.
+        plan_metadata = self.executor.run_tool_plan(
+            tool_calls=adapted["tool_calls"],
+            output_dir=output_dir or ".",
+            fps=fps,
+        )
+
+        metadata = {
+            "trajectory_id": adapted.get("trajectory_id"),
+            "composite_task": adapted.get("composite_task"),
+            "load_initial_state": load_summary,
+            "resolution_log": adapted["resolution_log"],
+            **plan_metadata,
+        }
+
+        if output_dir is not None:
             with open(output_path / "trajectory_execution_metadata.json", "w") as f:
                 json.dump(metadata, f, indent=2)
 
@@ -178,10 +307,20 @@ class TrajectoryAdapter:
             resolved_fixtures[resolved_fixture_id] = resolved_fixture_state
 
         for requested_fixture_id, machine_cfg in machine_state.items():
-            resolved_fixture_id = self._resolve_fixture_id(
-                requested_fixture_id,
-                requested_fixture_state=fixture_context.get(requested_fixture_id),
-            )
+            # machine_state keys may be task-state namespaces (e.g.
+            # "hot_dog_setup") rather than fixture references.  Only attempt
+            # resolution when the key looks like a known fixture or alias.
+            if (
+                requested_fixture_id in self.scene.get("fixtures", {})
+                or requested_fixture_id in self._fixture_aliases
+                or requested_fixture_id in fixture_context
+            ):
+                resolved_fixture_id = self._resolve_fixture_id(
+                    requested_fixture_id,
+                    requested_fixture_state=fixture_context.get(requested_fixture_id),
+                )
+            else:
+                resolved_fixture_id = requested_fixture_id
             resolved_machine_state[resolved_fixture_id] = deepcopy(machine_cfg)
             dispenser_id = machine_cfg.get("dispenser_id")
             if isinstance(dispenser_id, str):
@@ -570,12 +709,13 @@ def execute_trajectory(
     trajectory: dict[str, Any],
     output_dir: str | Path | None = None,
     allow_approximate_ids: bool = True,
+    fps: int = 2,
 ) -> dict[str, Any]:
     """Adapt and execute one external trajectory."""
     return TrajectoryAdapter(
         executor=executor,
         allow_approximate_ids=allow_approximate_ids,
-    ).execute(trajectory, output_dir=output_dir)
+    ).execute(trajectory, output_dir=output_dir, fps=fps)
 
 
 __all__ = [

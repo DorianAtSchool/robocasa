@@ -1,8 +1,8 @@
-# Trajectory Guessing And Recommended Generation Workflow
+# Trajectory ID Resolution And Recommended Generation Workflow
 
 This note explains two things:
 
-1. How the current trajectory adapter "guesses" scene ids when a trajectory uses abstract ids like `cabinet_1` or `counter_1`
+1. How the trajectory adapter resolves symbolic ids to concrete scene ids
 2. What workflow is recommended if the goal is to generate full trajectories with images reliably
 
 The current implementation lives primarily in:
@@ -13,46 +13,63 @@ The current implementation lives primarily in:
 
 ## Why This Matters
 
-The current symbolic executor can run a full trajectory and save images, but it is only reliable when the trajectory already uses the real scene ids.
-
-When the trajectory uses invented or abstract ids such as:
-
-- `cabinet_1`
-- `counter_1`
-- `coffee_machine_1`
-- `mug_1`
-
-the adapter has to map them to whatever ids actually exist in the current RoboCasa scene. That mapping is currently heuristic, not semantic.
+The symbolic executor can run a full trajectory and save images, but it needs to map symbolic ids from the trajectory (like `bun`, `serving_surface`, `condiment_source_fixture`) to concrete scene ids (like `hotdog_bun`, `counter_2_main_group`, `cab_3_main_group`).
 
 
-## Current Guessing Algorithm
+## Current Resolution: Sim Ground Truth
 
-When the adapter sees a requested id that does not exist in the live scene, it resolves it in roughly this order.
+The adapter now uses **sim ground truth** as the primary resolution strategy, replacing the old heuristic guessing algorithm. This was necessary because heuristic resolution (type-family filtering, ordinal guessing, alphabetical fallback) produced semantically wrong results in multi-cabinet and multi-counter scenes.
+
+### How It Works
+
+The adapter's `_apply_sim_ground_truth()` method resolves ids using data the simulator already knows:
+
+**Objects** are resolved in this order:
+
+1. **Exact symbolic id match**: if the trajectory symbol already exists in `env.objects`, use it directly
+2. **Exact object-type-as-id match**: if the trajectory's `object_type` is itself a concrete `env.objects` key, prefer that
+3. **Generic object-type match**: otherwise match by `object_type`
+
+The keys come from `_get_obj_cfgs()` name fields and are the task's semantic role names (e.g. `hotdog_bun`, `sausage`, `condiment`, `plate`). The object-type-as-id step matters in scenes like HotDogSetup, where both `plate` and `hotdog_bun_container` have `object_type == "plate"`: a symbolic role like `serving_plate` now prefers the concrete object id `plate` when that id exists.
+
+**Fixtures** are resolved via two strategies:
+
+1. **Object placement tracing**: If a fixture symbol is the location of a resolved object, look up `object_placements[resolved_obj_key]` to get the concrete fixture id. This uses `env.object_cfgs` which records which fixture each object was placed on.
+
+2. **Fixture refs by type**: If no object traces to this fixture, match against `env.fixture_refs` (registered via `register_fixture_ref()` in each task's `_setup_kitchen_references()`).
+
+All sim ground truth resolutions have confidence 1.0 and method `"sim_ground_truth"` in the resolution log.
+
+### Scene Description Ground Truth
+
+The scene description (`get_scene_description()`) now exposes:
+
+- `fixture_refs`: maps task role names to concrete fixture ids (from `env.fixture_refs`)
+- `object_placements`: maps object names to the fixture they were placed on (from `env.object_cfgs`)
+- `init_robot_base_ref`: the concrete fixture id where the task says robots should start (from `env.init_robot_base_ref`)
+
+These are built using reverse-lookup from `env.fixture_refs` and `env.object_cfgs`, not from the heuristic `_find_object_fixture()` 2D-distance method.
+
+### Robot Spawn
+
+Robot initial positions are determined by the sim's placement system, not overridden by the trajectory. The executor's `load_initial_state()` skips agent navigation when the trajectory's resolved agent location matches the sim's `init_robot_base_ref` fixture, preserving the placement system's computed position and facing direction.
+
+### Heuristic Fallback
+
+The old heuristic resolution methods (type filtering, token match, ordinal guess, first-candidate fallback) still exist as fallback for any symbols not resolved by ground truth. These are the same methods documented in the "Legacy Guessing Algorithm" section below and produce lower-confidence results.
+
+
+## Legacy Guessing Algorithm
+
+When ground truth cannot resolve a symbol (e.g., legacy trajectories without `initial_state` type hints, or tasks without `fixture_refs`), the adapter falls back to heuristic resolution.
 
 ### 1. Exact Match
 
 If the requested id already exists in the scene, it is used directly.
 
-Examples:
-
-- `fridge_main_group`
-- `coffee_machine_left_group`
-- `counter_1_left_group`
-
-This is the safe case.
-
-
 ### 2. Type / Type-Family Filtering
 
-If exact match fails, the adapter looks at the type hint from `initial_state`.
-
-Examples:
-
-- `fixture_type = cabinet`
-- `fixture_type = counter`
-- `object_type = mug`
-
-It then filters the live scene to candidates of the same type or type family.
+The adapter looks at the type hint from `initial_state` and filters to candidates of the same type family.
 
 Current fixture-family handling includes:
 
@@ -60,67 +77,28 @@ Current fixture-family handling includes:
 - `counter` -> `counter`, `counter_non_dining`, `counter_non_corner`, `dining_counter`, `island`
 - `drawer` -> `drawer`, `top_drawer`
 
-This step narrows the search, but it does not decide which candidate is semantically correct.
-
-
 ### 3. Token Match
 
-The adapter removes purely numeric underscore-separated chunks and compares the remaining token strings.
-
-Examples:
-
-- `cabinet_1` -> `cabinet`
-- `coffee_machine_1` -> `coffee_machine`
-- `cab_1_main_group` -> `cab_main_group`
-- `coffee_machine_left_group` -> `coffee_machine_left_group`
-
-This helps only when the scene id differs mostly by numbering. In practice it rarely helps with RoboCasa fixture ids because real ids often contain:
-
-- abbreviations like `cab`
-- spatial suffixes like `left_group`, `main_group`, `right_group`
-- corner or group tags
-
-So token match is usually bypassed.
-
+Removes numeric chunks and compares token strings. Rarely helps with RoboCasa ids due to abbreviations and spatial suffixes.
 
 ### 4. Ordinal Guess
 
-If the requested id ends with `_N`, the adapter picks candidate number `N` from the sorted candidate list.
-
-This is what happened in the current coffee run.
-
-Examples from `tmp/trajectory_run/adapted_trajectory.json`:
-
-- `cabinet_1 -> cab_1_main_group`
-  - method: `ordinal_guess`
-  - reason: `Selected candidate #1 among 2 candidates`
-
-- `counter_1 -> counter_1_left_group`
-  - method: `ordinal_guess`
-  - reason: `Selected candidate #1 among 6 candidates`
-
-This is the main source of bad grounding right now.
-
+If the requested id ends with `_N`, picks candidate number `N` from sorted candidates. This was the main source of bad grounding in earlier versions.
 
 ### 5. First Candidate Fallback
 
-If there is still no better signal and approximate matching is allowed, the adapter picks the first sorted candidate.
-
-This is extremely weak. It is effectively "alphabetical fallback."
+Picks the first sorted candidate. Effectively alphabetical fallback.
 
 
-## What The Guesser Is Not Using
+## What The Legacy Guesser Does Not Use
 
-The current guesser does not reason over:
+The heuristic guesser does not reason over:
 
-- which cabinet actually contains the mug
-- which counter is near the coffee machine
-- which fixture is closest to another selected fixture
-- object adjacency
+- which cabinet actually contains the relevant object
+- which counter is near another selected fixture
+- object adjacency or spatial relations
 - task semantics like `dining_table` vs `dining_counter`
-- step-to-step consistency across the whole trajectory
-
-So the guesser is not really solving a planning problem. It is solving a string-and-type matching problem.
+- step-to-step consistency across the trajectory
 
 
 ## Naming Patterns In RoboCasa Scene Ids
@@ -219,7 +197,8 @@ Important implications:
 
 - `fridge_1` is relatively safe because only one fridge exists
 - `sausage_1` is relatively safe because only one sausage exists
-- `plate_1` is dangerous because there are two `plate`-typed objects
+- a symbolic role with `object_type == "plate"` now prefers the concrete object id `plate`
+- `plate_1` is still dangerous because there are two `plate`-typed objects
 - `cabinet_1` is dangerous because several cabinets exist
 - `counter_1` is dangerous because several counters exist
 - `dining_table_1` currently fails because the scene uses `dining_counter`, not `dining_table`
@@ -261,7 +240,8 @@ These are risky because several same-family candidates exist.
 
 - `plate_1 -> ?`
   - hotdog scene has both `hotdog_bun_container` and `plate` with object type `plate`
-  - current logic could guess the wrong one depending on sort order
+  - exact `object_type == "plate"` now prefers the concrete object id `plate`
+  - abstract aliases like `plate_1` can still be ambiguous because neither the symbol nor the type uniquely identifies one candidate
 
 
 ### Failing Resolutions
@@ -277,9 +257,9 @@ These fail because the current family logic is incomplete or the state key is no
   - this is task-level state, not fixture-level state
 
 
-## Why The Current Guessing Produces Bad Trajectories
+## Why Heuristic Guessing Produces Bad Trajectories
 
-The most common bad pattern is:
+When ground truth is unavailable and the adapter falls back to heuristics, the most common bad pattern is:
 
 1. filter to all counters or all cabinets
 2. sort alphabetically
@@ -288,6 +268,8 @@ The most common bad pattern is:
 That can produce ids that look plausible but are semantically wrong.
 
 For example, in a coffee trajectory, `counter_1` might resolve to a counter near the fridge instead of the counter near the coffee machine. The trajectory still becomes executable, but the behavior looks wrong because the symbolic grounding was wrong before any motion happened.
+
+The sim ground truth approach eliminates this class of errors for trajectories that include `initial_state` type hints, because it traces through the task's actual object placement configs rather than guessing by name.
 
 
 ## Recommended Workflow For Generating Trajectories With Images
@@ -379,13 +361,13 @@ For each run, save:
 This makes debugging possible.
 
 
-## What Guessing Should Be Used For
+## What Heuristic Guessing Should Be Used For
 
-Guessing is still useful, but only as fallback.
+Heuristic guessing is still useful, but only as fallback for legacy trajectories without `initial_state` type hints.
 
 Good uses:
 
-- legacy trajectories
+- legacy trajectories without type hints
 - quick experiments
 - partial recovery when only one id is abstract
 
@@ -402,8 +384,16 @@ For reliable trajectory generation with images:
 
 - generate against the real scene description
 - use canonical scene ids in the planner output
-- keep adapter guessing only as a fallback
+- ensure trajectories include `initial_state` with object/fixture type hints so sim ground truth can resolve them
+- keep heuristic guessing only as a fallback for legacy data
 - reject low-confidence or failed grounding
 - save scene + execution metadata with each run
 
-The current guessing approach is acceptable for quick bootstrapping, but it is not a strong enough basis for producing clean large-scale trajectory data.
+Sim ground truth resolution is now the primary path and handles most cases with full confidence. Heuristic fallback remains for edge cases.
+
+
+## Known Limitations
+
+### Fixture articulation (opening fridges, cabinets)
+
+Opening enclosing fixtures before picking up objects inside them is not yet handled automatically by the executor. Trajectories that require opening a fridge or cabinet door must include explicit `open_hinged_part` steps. If the trajectory omits these steps (e.g., the LLM planner forgets), the robot will navigate to the fixture but the door will remain closed. This is a trajectory generation issue, not an executor bug — the executor faithfully executes whatever steps are provided but does not infer missing open/close actions. A reliable solution (e.g., auto-opening fixtures when pick_up_object targets an enclosing fixture) is still to be determined.
