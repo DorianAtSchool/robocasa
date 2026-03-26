@@ -55,7 +55,7 @@ Implemented behaviors:
 - support front-only placement for interactive fixtures
 - allow front poses to use the fixture-only grid so narrow but physically valid front gaps are not lost to reachability sealing
 
-The final grid cell size used in practice was coarser than the original 5 cm sketch in the plan. The implementation settled on a configurable grid, commonly used at 10 cm, with continuous placement available as a higher-fidelity alternative.
+The grid cell size is configurable. The default is now 5 cm (0.05 m), which provides finer-grained candidate sampling near tight fixtures like cabinets. Continuous placement is available as an alternative backend.
 
 ### 3. TrajectoryRunner Placement Integration
 

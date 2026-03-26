@@ -59,7 +59,7 @@ class OccupancyGrid:
     def __init__(
         self,
         fixtures: dict[str, Fixture],
-        cell_size: float = 0.10,
+        cell_size: float = 0.05,
         align_to_wall: bool = True,
         standoff: float = 0.40,
         sample_spacing: float = 0.08,

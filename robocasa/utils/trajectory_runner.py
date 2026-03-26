@@ -361,7 +361,7 @@ class TrajectoryRunner:
         render_height: int = 512,
         gl_backend: str = "osmesa",
         placement: str = "grid",
-        cell_size: float = 0.10,
+        cell_size: float = 0.05,
         align_to_wall: bool = True,
         standoff: float = 0.40,
         sample_spacing: float = 0.08,
@@ -1210,7 +1210,7 @@ class TrajectoryRunner:
                 if anchor_ori is not None:
                     self.env.sim.data.qpos[addr] = yaw - anchor_ori[2]
                 else:
-                    self.env.sim.data.qpos[addr] = 0.0
+                    self.env.sim.data.qpos[addr] = yaw
             else:
                 self.env.sim.data.qpos[addr] = 0.0
             self.env.sim.forward()
@@ -1307,12 +1307,33 @@ class TrajectoryRunner:
             for cfg in ep_meta.get("object_cfgs", []):
                 obj_cfg_map[cfg["name"]] = cfg
 
+        # Ground truth: fixture refs and object placements from the task
+        fixture_obj_to_id = {id(fxtr): fid for fid, fxtr in self._fixtures.items()}
+
+        fixture_refs_info = {}
+        if hasattr(self.env, "fixture_refs"):
+            for role, ref_value in self.env.fixture_refs.items():
+                fxtr_obj = ref_value[0] if isinstance(ref_value, tuple) else ref_value
+                fxtr_id = fixture_obj_to_id.get(id(fxtr_obj))
+                if fxtr_id is not None:
+                    fixture_refs_info[role] = fxtr_id
+
+        object_placements = {}
+        if hasattr(self.env, "object_cfgs"):
+            for cfg in self.env.object_cfgs:
+                obj_name = cfg.get("name")
+                placement_fxtr = (cfg.get("placement") or {}).get("fixture")
+                if obj_name and placement_fxtr is not None:
+                    fxtr_id = fixture_obj_to_id.get(id(placement_fxtr))
+                    if fxtr_id is not None:
+                        object_placements[obj_name] = fxtr_id
+
         if hasattr(self.env, "objects") and self.env.objects:
             for obj_name in self.env.objects:
                 obj_pos = self.env.sim.data.body_xpos[
                     self.env.obj_body_id[obj_name]
                 ]
-                location = self._find_object_fixture(obj_pos)
+                location = object_placements.get(obj_name) or self._find_object_fixture(obj_pos)
 
                 cfg = obj_cfg_map.get(obj_name, {})
                 info = cfg.get("info", {})
@@ -1341,10 +1362,22 @@ class TrajectoryRunner:
         if hasattr(self.env, "get_ep_meta"):
             task_lang = self.env.get_ep_meta().get("lang")
 
+        # Robot spawn fixture (ground truth from the task definition)
+        init_robot_base_ref_id = None
+        if hasattr(self.env, "init_robot_base_ref") and self.env.init_robot_base_ref is not None:
+            ref = self.env.init_robot_base_ref
+            if isinstance(ref, str):
+                init_robot_base_ref_id = ref
+            else:
+                init_robot_base_ref_id = fixture_obj_to_id.get(id(ref))
+
         self._scene = {
             "task": task_lang,
             "fixtures": {k: v.to_dict() for k, v in fixtures_info.items()},
             "objects": {k: v.to_dict() for k, v in objects_info.items()},
+            "fixture_refs": fixture_refs_info,
+            "object_placements": object_placements,
+            "init_robot_base_ref": init_robot_base_ref_id,
             "cameras": self.camera_names,
             "robots": robots_info,
         }

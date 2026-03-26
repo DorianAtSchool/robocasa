@@ -271,12 +271,17 @@ depending on the target fixture type.
 
 - validates object and source ids
 - moves the robot near the source fixture if it is not already in a usable pose
+- **returns failure if the robot cannot navigate to the source fixture**
 - marks the object as held
 - snaps it near the end effector
 
 For enclosing fixtures, the readiness check is stricter than simple proximity:
 the robot must be on the correct front face and within a reasonable working
 standoff.
+
+Note: the executor does not automatically open enclosing fixtures (fridges,
+cabinets) before picking. Trajectories must include explicit `open_hinged_part`
+steps. This is still to be determined as a future improvement.
 
 ### Placement on Fixtures
 

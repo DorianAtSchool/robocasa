@@ -89,6 +89,21 @@ python -m robocasa.utils.sim_tool_executor \
   --output-dir tmp/executor_trajectory_grid
 ```
 
+Run a trajectory with a custom cell size (default is 0.05 m):
+
+```bash
+python -m robocasa.utils.sim_tool_executor \
+  --task HotDogSetup \
+  --trajectory data_generation/task_level/data/raw/20260324T031125Z/hot_dog_setup/trajectories/traj_000000.json \
+  --robots 2 \
+  --layout 11 \
+  --style 42 \
+  --seed 42 \
+  --placement grid \
+  --cell-size 0.05 \
+  --output-dir tmp/test_ground_truth
+```
+
 Example `get_image` tool call inside a plan or trajectory step:
 
 ```json
@@ -222,8 +237,13 @@ python tests/test_placement_sweep.py \
 - `cooperative_hotdog_setup` maps to `HotDogSetup`.
 - `sandwich_station` maps to `PrepareSandwichStation`.
 - `grid` is the default placement mode for the executor, trajectory tests, and sweep tests.
+- Default grid cell size is 0.05 m (5 cm). Override with `--cell-size`.
 - `get_image` accepts an array of views in one call. Supported environment views include `top_view`, `room_view`, and `map`.
 - A trajectory JSON is not self-contained today unless it carries `scene_parameters` (or top-level `layout` / `style` / `seed`).
   Older symbolic trajectory JSONs still need those flags so the simulator can recreate a concrete kitchen instance.
+- Trajectory adapter uses sim ground truth (`env.fixture_refs`, `env.object_cfgs`) as the primary resolution strategy. Heuristic fallback is used only for symbols not resolved by ground truth.
+- Robot initial spawn uses the sim's placement system (`init_robot_base_ref`), not the trajectory's agent locations.
+- `pick_up_object` returns failure if the robot cannot navigate to the source fixture.
+- Opening enclosing fixtures (fridges, cabinets) before picking is **not** automatic — trajectories must include explicit `open_hinged_part` steps. This is still to be determined.
 - Executor outputs include placement maps, frame PNGs, videos, and metadata JSON.
 - Sweep outputs write one folder per combo with a `result.json`.
