@@ -120,6 +120,55 @@ Example `get_image` tool call inside a plan or trajectory step:
 }
 ```
 
+## Trajectory Sweep
+
+Sweep all trajectories in a dataset directory:
+
+```bash
+python scripts/sweep_trajectories.py \
+  --input-dir data_generation/task_level/data/image/20260324T031125Z \
+  --output-dir tmp/sweep_output
+```
+
+Sweep a single task:
+
+```bash
+python scripts/sweep_trajectories.py \
+  --input-dir data_generation/task_level/data/image/20260324T031125Z \
+  --output-dir tmp/sweep_output \
+  --task hot_dog_setup
+```
+
+Sweep specific trajectory indices:
+
+```bash
+python scripts/sweep_trajectories.py \
+  --input-dir data_generation/task_level/data/image/20260324T031125Z \
+  --output-dir tmp/sweep_output \
+  --task hot_dog_setup --indices 0 1 2
+```
+
+Sweep across multiple layouts, styles, and seeds:
+
+```bash
+python scripts/sweep_trajectories.py \
+  --input-dir data_generation/task_level/data/image/20260324T031125Z \
+  --output-dir tmp/sweep_output \
+  --layouts 11 56 \
+  --styles 34 42 \
+  --seeds 42 99
+```
+
+Dry run (preview without executing):
+
+```bash
+python scripts/sweep_trajectories.py \
+  --input-dir data_generation/task_level/data/image/20260324T031125Z \
+  --output-dir tmp/sweep_output \
+  --layouts 11 56 --styles 34 42 --seeds 42 99 \
+  --dry-run
+```
+
 ## Trajectory-Level Runs
 
 Hotdog trajectory test, grid placement:
@@ -245,5 +294,5 @@ python tests/test_placement_sweep.py \
 - Robot initial spawn uses the sim's placement system (`init_robot_base_ref`), not the trajectory's agent locations.
 - `pick_up_object` returns failure if the robot cannot navigate to the source fixture.
 - Opening enclosing fixtures (fridges, cabinets) before picking is **not** automatic — trajectories must include explicit `open_hinged_part` steps. This is still to be determined.
-- Executor outputs include placement maps, frame PNGs, videos, and metadata JSON.
+- Executor outputs include adapted trajectory, execution metadata, and images rendered by `get_image` steps.
 - Sweep outputs write one folder per combo with a `result.json`.

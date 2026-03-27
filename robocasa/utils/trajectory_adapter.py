@@ -245,6 +245,7 @@ class TrajectoryAdapter:
         trajectory: dict[str, Any],
         output_dir: str | Path | None = None,
         fps: int = 2,
+        skip_videos: bool = False,
     ) -> dict[str, Any]:
         """Adapt, load initial state, then execute with frames and video.
 
@@ -265,6 +266,7 @@ class TrajectoryAdapter:
             tool_calls=adapted["tool_calls"],
             output_dir=output_dir or ".",
             fps=fps,
+            skip_videos=skip_videos,
         )
 
         metadata = {
@@ -710,12 +712,13 @@ def execute_trajectory(
     output_dir: str | Path | None = None,
     allow_approximate_ids: bool = True,
     fps: int = 2,
+    skip_videos: bool = False,
 ) -> dict[str, Any]:
     """Adapt and execute one external trajectory."""
     return TrajectoryAdapter(
         executor=executor,
         allow_approximate_ids=allow_approximate_ids,
-    ).execute(trajectory, output_dir=output_dir, fps=fps)
+    ).execute(trajectory, output_dir=output_dir, fps=fps, skip_videos=skip_videos)
 
 
 __all__ = [

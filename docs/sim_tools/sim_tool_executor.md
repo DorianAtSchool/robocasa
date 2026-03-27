@@ -36,7 +36,7 @@ Instead, it executes symbolic plans by combining:
 - direct object pose updates
 - fixture / control state updates
 - semantic grounding from task-level references to scene ids
-- rendering of stepwise frames and videos
+- rendering images when `get_image` tool calls are executed
 
 ## Execution Model
 
@@ -108,7 +108,7 @@ The executor lifecycle is:
 2. inspect and cache the current scene description
 3. optionally ground a semantic plan template into concrete ids
 4. execute each tool step
-5. save frames, videos, and metadata
+5. save images (via `get_image` steps) and metadata
 
 At construction time, `SimToolExecutor(...)` creates a
 [TrajectoryRunner](/Users/dorian/Documents/robocasa/robocasa/utils/trajectory_runner.py),
@@ -196,14 +196,12 @@ The generic entry point is:
 
 ### 5. Output Saving
 
-`run_tool_plan(...)` executes a plan while saving:
+`run_tool_plan(...)` executes a plan. Images are produced only by `get_image`
+tool calls in the plan, which render specific views and save them to the paths
+specified in the trajectory. It also saves:
 
-- before / after PNGs
-- per-camera MP4 videos
-- `plan.json`
-- `metadata.json`
-
-The saved `plan.json` is the grounded plan that was actually executed.
+- `plan.json` — the grounded plan that was actually executed
+- `metadata.json` — per-step execution results with image paths
 
 ## How State Is Represented
 
