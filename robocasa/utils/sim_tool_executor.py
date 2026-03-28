@@ -40,12 +40,10 @@ from robocasa.utils.placement import (
 from robocasa.utils.sim_tool_specs import SIM_TOOL_SPEC_BY_NAME
 from robocasa.utils.trajectory_runner import TrajectoryRunner
 
-# Fixture types where the robot should approach the fixture center rather than
-# an object's position inside it.  For these compact fixtures the object is
-# physically inside the fixture — using its position as ref would pull the
-# robot to an edge or side.  For large surfaces (counters, islands) the object
-# position helps pick the right spot along the surface.
-_APPROACH_CENTER_TYPES = {
+# Large fixtures with a door/opening that MUST be approached from the front.
+# For these fixtures, require_front=True ensures the robot lines up with the
+# opening rather than standing on a blocked side.
+_REQUIRE_FRONT_TYPES = {
     FixtureType.CABINET,
     FixtureType.CABINET_SINGLE_DOOR,
     FixtureType.CABINET_DOUBLE_DOOR,
@@ -54,15 +52,26 @@ _APPROACH_CENTER_TYPES = {
     FixtureType.MICROWAVE,
     FixtureType.OVEN,
     FixtureType.DISHWASHER,
+    FixtureType.TOP_DRAWER,
+    FixtureType.DRAWER,
+}
+
+# Small countertop appliances: robot should approach the fixture center (not
+# an object inside it), but does NOT need require_front — any face is fine.
+# Their AABBs are tiny, so front-face-only sampling often lands the robot in
+# a bad spot on the counter.
+_COUNTERTOP_APPLIANCE_TYPES = {
     FixtureType.TOASTER,
     FixtureType.TOASTER_OVEN,
     FixtureType.COFFEE_MACHINE,
     FixtureType.BLENDER,
     FixtureType.STAND_MIXER,
     FixtureType.ELECTRIC_KETTLE,
-    FixtureType.TOP_DRAWER,
-    FixtureType.DRAWER,
 }
+
+# Union: all fixtures where the robot targets the fixture center, not an
+# object's position inside it.
+_APPROACH_CENTER_TYPES = _REQUIRE_FRONT_TYPES | _COUNTERTOP_APPLIANCE_TYPES
 
 _FRONT_READY_MIN_GAP = 0.05
 _FRONT_READY_MAX_GAP = 0.75
@@ -72,6 +81,11 @@ _FRONT_READY_MAX_CENTER_DISTANCE = 1.0
 def _is_approach_center(fixture) -> bool:
     """Return True if the robot should approach the fixture center, not an object inside it."""
     return any(fixture_is_type(fixture, ft) for ft in _APPROACH_CENTER_TYPES)
+
+
+def _require_front(fixture) -> bool:
+    """Return True if the robot must approach from the fixture's front face."""
+    return any(fixture_is_type(fixture, ft) for ft in _REQUIRE_FRONT_TYPES)
 
 
 @dataclass
@@ -84,7 +98,7 @@ class ToolResult:
 class SimToolExecutor:
     """Dispatch simulator tool calls against a live RoboCasa environment."""
 
-    _HELD_Z_OFFSET = 0.12
+    _HELD_Z_OFFSET = 0.0
     _DEMO_TASK_BY_NAME = {
         "cooperative_hotdog_setup": "HotDogSetup",
         "sandwich_station": "PrepareSandwichStation",
@@ -107,6 +121,7 @@ class SimToolExecutor:
         standoff: float = 0.40,
         sample_spacing: float = 0.08,
         robot_radius: float = 0.18,
+        robot_spawn: str = "trajectory",
     ):
         os.environ["MUJOCO_GL"] = gl_backend
         self.runner = TrajectoryRunner(
@@ -128,6 +143,28 @@ class SimToolExecutor:
         )
         self.env = self.runner.env
         self._held_objects: dict[int, str] = {}
+        self._clean_map_labels: bool = True
+        self._robot_spawn: str = robot_spawn
+
+        # Place all robots at the task's init_robot_base_ref (ground truth
+        # starting position).  The env spawns robots at (10,10,0) by default;
+        # this moves them to the fixture the task designates as the start.
+        # In "trajectory" mode this is still called so the initial_map.png
+        # shows sim ground truth; robots are repositioned later in
+        # load_initial_state when trajectory agent locations are applied.
+        self._place_robots_at_spawn()
+
+    def _place_robots_at_spawn(self):
+        """Move all robots to init_robot_base_ref — the task's ground truth spawn."""
+        scene = self.get_scene_description()
+        spawn_fixture = scene.get("init_robot_base_ref")
+        if not spawn_fixture or spawn_fixture not in self.runner._fixtures:
+            return
+        for i in range(self.runner._num_robots):
+            self.runner._move_robot_near_fixture(i, spawn_fixture)
+        # Belt-and-suspenders: verify every robot ended up inside kitchen
+        for i in range(self.runner._num_robots):
+            self.runner._rescue_robot_to_kitchen(i)
 
     # ------------------------------------------------------------------
     # Scene / state helpers
@@ -143,7 +180,8 @@ class SimToolExecutor:
         return self.runner.render()
 
     def save_placement_map(
-        self, output_dir: str | Path, prefix: str = "placement"
+        self, output_dir: str | Path, prefix: str = "placement",
+        clean_labels: bool = True,
     ) -> Path:
         """Render the 2D placement map and save it to *output_dir*.
 
@@ -152,10 +190,19 @@ class SimToolExecutor:
         """
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
-        return self._save_map_image(output_dir / f"{prefix}_map.png")
+        return self._save_map_image(
+            output_dir / f"{prefix}_map.png", clean_labels=clean_labels,
+        )
 
-    def _save_map_image(self, image_path: str | Path) -> Path:
-        """Render the placement map and save it to an explicit output path."""
+    def _save_map_image(
+        self, image_path: str | Path, clean_labels: bool = True,
+    ) -> Path:
+        """Render the placement map and save it to an explicit output path.
+
+        *clean_labels*: when True (default), fixture labels are shortened
+        (strip ``_group``, ``_main``, dedupe repeated segments).
+        Set False to show full raw fixture ids.
+        """
         import matplotlib
 
         matplotlib.use("Agg")
@@ -166,18 +213,18 @@ class SimToolExecutor:
         path.parent.mkdir(parents=True, exist_ok=True)
         mode = self.runner._placement_mode
         if mode == "grid":
-            fig, ax = plt.subplots(1, 1, figsize=(12, 10))
-            draw_grid_map(ax, self.runner)
+            fig, ax = plt.subplots(1, 1, figsize=(20, 16))
+            draw_grid_map(ax, self.runner, clean_labels=clean_labels)
         elif mode == "continuous":
-            fig, ax = plt.subplots(1, 1, figsize=(12, 10))
-            draw_continuous_map(ax, self.runner)
+            fig, ax = plt.subplots(1, 1, figsize=(20, 16))
+            draw_continuous_map(ax, self.runner, clean_labels=clean_labels)
         else:
-            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(22, 10))
-            draw_grid_map(ax1, self.runner)
-            draw_continuous_map(ax2, self.runner)
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(36, 16))
+            draw_grid_map(ax1, self.runner, clean_labels=clean_labels)
+            draw_continuous_map(ax2, self.runner, clean_labels=clean_labels)
 
         fig.tight_layout()
-        fig.savefig(path, dpi=200)
+        fig.savefig(path, dpi=300)
         plt.close(fig)
         return path
 
@@ -266,25 +313,13 @@ class SimToolExecutor:
 
         self._held_objects.clear()
 
-        for fixture_id, fixture_state in fixtures.items():
-            for part_id, part_state in fixture_state.get("parts", {}).items():
-                generic_part_id = part_id
-                part_type = str(part_state.get("part_type", "")).lower()
-                if "hinged" in part_type:
-                    generic_part_id = "hinged"
-                elif "sliding" in part_type:
-                    generic_part_id = "sliding"
-                state = str(part_state.get("state", "")).lower()
-                if state == "open":
-                    if generic_part_id == "sliding":
-                        self.open_sliding_part(fixture_id, generic_part_id)
-                    else:
-                        self.open_hinged_part(fixture_id, generic_part_id)
-                elif state == "closed":
-                    if generic_part_id == "sliding":
-                        self.close_sliding_part(fixture_id, generic_part_id)
-                    else:
-                        self.close_hinged_part(fixture_id, generic_part_id)
+        # Skip fixture part states (open/close) from the trajectory's
+        # initial_state.  The sim's _setup_scene already set the correct
+        # fixture states (e.g. opening the cabinet so the mug is accessible).
+        # The trajectory's initial_state reflects the LLM planner's
+        # assumptions, which may conflict with the sim (e.g. closing a
+        # cabinet that must start open).  The trajectory's own steps will
+        # open/close fixtures as needed.
 
         for fixture_id, machine_cfg in machine_state.items():
             if "started" in machine_cfg:
@@ -301,27 +336,41 @@ class SimToolExecutor:
             held_assignments[robot_idx] = held_object
             held_object_ids.add(held_object)
 
+        # Object placements from the scene description — where the sim
+        # originally placed each object.  Used to skip redundant moves.
+        scene = self.get_scene_description()
+        sim_object_placements = scene.get("object_placements", {})
+
         for object_id, object_state in objects.items():
             if object_id in held_object_ids:
                 continue
             location = object_state.get("location")
             if isinstance(location, str):
+                # Location is another object (e.g. slices inside a bowl) —
+                # the sim already placed them correctly, skip.
+                if location in objects:
+                    continue
+                # Skip if the sim already placed this object at the target
+                # fixture — re-placing would resample the position and may
+                # put the object somewhere unexpected (e.g. wrong shelf).
+                if sim_object_placements.get(object_id) == location:
+                    continue
                 self.runner.move_object(object_id, location)
 
-        # Use the sim's placement-system spawn (init_robot_base_ref) as ground
-        # truth.  Only navigate robots whose trajectory location differs from
-        # the sim spawn fixture — otherwise the placement system already put
-        # them in the right spot with correct facing direction.
-        scene = self.runner.get_scene_description()
-        sim_spawn_fixture = scene.get("init_robot_base_ref")
-        for agent_id, agent_state in agents.items():
-            location = agent_state.get("location")
-            if not isinstance(location, str):
-                continue
-            if location == sim_spawn_fixture:
-                continue  # sim already placed this robot here
-            robot_idx = self._parse_agent_idx(agent_id)
-            self.navigate_to_fixture(location, robot_idx=robot_idx)
+        if self._robot_spawn == "trajectory":
+            # Navigate each robot to the trajectory's stated initial location.
+            # These are the LLM planner's logical assumptions (not sim ground
+            # truth), but the user explicitly requested trajectory-based spawn.
+            for agent_id, agent_state in agents.items():
+                location = agent_state.get("location")
+                if isinstance(location, str) and location in self.runner._fixtures:
+                    robot_idx = self._parse_agent_idx(agent_id)
+                    self.runner._move_robot_near_fixture(robot_idx, location)
+            # Final safety: verify every robot is inside kitchen
+            for i in range(self.runner._num_robots):
+                self.runner._rescue_robot_to_kitchen(i)
+        # else: "sim" mode — robots already placed at init_robot_base_ref
+        # by _place_robots_at_spawn() during __init__.
 
         for robot_idx, object_id in held_assignments.items():
             self._require_object(object_id)
@@ -485,21 +534,32 @@ class SimToolExecutor:
         return self.env.sim.data.site_xpos[site_id].copy()
 
     def _find_contained_objects(self, container_id: str) -> list[str]:
-        """Find objects physically inside/on top of *container_id*."""
+        """Find objects physically inside/on top of *container_id*.
+
+        Only returns objects that are smaller than (or equal to)
+        *container_id* so that picking up an item inside a bowl/tray
+        does NOT drag the bowl/tray along with it.
+        """
         contained = []
         container_pos, _ = self._get_object_pose(container_id)
         container_obj = self.env.objects[container_id]
-        radius = getattr(container_obj, "horizontal_radius", 0.10) * 1.2
+        container_radius = getattr(container_obj, "horizontal_radius", 0.10)
+        search_radius = container_radius * 1.2
         for other_id in self.env.objects:
             if other_id == container_id:
+                continue
+            other_obj = self.env.objects[other_id]
+            other_radius = getattr(other_obj, "horizontal_radius", 0.10)
+            # Skip objects that are larger — they are parents, not children.
+            if other_radius > container_radius:
                 continue
             other_pos, _ = self._get_object_pose(other_id)
             xy_dist = float(np.linalg.norm(other_pos[:2] - container_pos[:2]))
             z_diff = other_pos[2] - container_pos[2]
-            # Object must be close horizontally and ON TOP of the container
-            # (z_diff >= 0).  This prevents dragging the plate/tray when
-            # picking up an item that is sitting on it.
-            if xy_dist < radius and 0.0 <= z_diff < 0.20:
+            # Object must be close horizontally and roughly at the same height
+            # as the container.  Allows slight negative z_diff for objects
+            # inside concave containers (slices resting at the bottom of a bowl).
+            if xy_dist < search_radius and -0.05 <= z_diff < 0.20:
                 contained.append(other_id)
         return contained
 
@@ -511,6 +571,13 @@ class SimToolExecutor:
         eef_pos = self._get_robot_eef_pos(robot_idx)
         held_pos = eef_pos.copy()
         held_pos[2] += self._HELD_Z_OFFSET
+        print(
+            f"[_sync_held] robot{robot_idx} holds {object_id}: "
+            f"eef=({eef_pos[0]:.3f}, {eef_pos[1]:.3f}, {eef_pos[2]:.3f}) "
+            f"-> held=({held_pos[0]:.3f}, {held_pos[1]:.3f}, {held_pos[2]:.3f})"
+        )
+        # _set_object_pose already moves contained objects (e.g. slices
+        # inside a bowl) by the same delta — no extra handling needed.
         self._set_object_pose(object_id, held_pos)
 
     def _held_by_robot(self, object_id: str) -> int | None:
@@ -628,8 +695,16 @@ class SimToolExecutor:
         if ref_info.get("can_place_objects", False):
             return reference_fixture_id
 
-        ref_pos = np.asarray(ref_info["position"][:2], dtype=float)
+        # Use parent_fixture (containment-based) when available — this is
+        # the counter the fixture actually sits on.
+        parent_id = ref_info.get("parent_fixture")
+        if parent_id and parent_id in fixtures:
+            parent_info = fixtures[parent_id]
+            if parent_info.get("can_place_objects", False):
+                return parent_id
 
+        # Fallback: nearest placeable surface by center distance.
+        ref_pos = np.asarray(ref_info["position"][:2], dtype=float)
         best_id, best_dist = None, float("inf")
         for fixture_id, info in fixtures.items():
             if not info.get("can_place_objects", False):
@@ -1388,7 +1463,9 @@ class SimToolExecutor:
             normalized_view = str(view_name).strip().lower()
             normalized_view_names.append(normalized_view)
             if normalized_view == "map":
-                saved_path = self._save_map_image(requested_path)
+                saved_path = self._save_map_image(
+                    requested_path, clean_labels=self._clean_map_labels,
+                )
                 camera_name = "map"
             elif normalized_view in {"room_view", "top_view"}:
                 camera_name = normalized_view
@@ -1420,11 +1497,10 @@ class SimToolExecutor:
 
     def navigate_to_fixture(self, fixture_id: str, robot_idx: int = 0) -> ToolResult:
         fixture = self._require_fixture(fixture_id)
-        front = _is_approach_center(fixture)
         placed = self._move_robot_near_fixture_with_retries(
             robot_idx,
             fixture_id,
-            require_front=front,
+            require_front=_require_front(fixture),
         )
         self._sync_held_object(robot_idx)
         return ToolResult(
@@ -1672,8 +1748,17 @@ class SimToolExecutor:
                     {"object_id": object_id, "source_id": source_id, "robot_idx": robot_idx},
                 )
             self._sync_held_object(robot_idx)
+        obj_pos_before, _ = self._get_object_pose(object_id)
+        print(
+            f"[pick_up] robot{robot_idx} picking {object_id} from {source_id}: "
+            f"obj_before=({obj_pos_before[0]:.3f}, {obj_pos_before[1]:.3f}, {obj_pos_before[2]:.3f})"
+        )
         self._held_objects[robot_idx] = object_id
         self._sync_held_object(robot_idx)
+        obj_pos_after, _ = self._get_object_pose(object_id)
+        print(
+            f"[pick_up] after sync: obj=({obj_pos_after[0]:.3f}, {obj_pos_after[1]:.3f}, {obj_pos_after[2]:.3f})"
+        )
         return ToolResult(
             "pick_up_object",
             True,
@@ -1753,33 +1838,53 @@ class SimToolExecutor:
         reference_object_id: str,
         robot_idx: int = 0,
     ) -> ToolResult:
-        """Place an object adjacent to another object on the same surface."""
+        """Place an object adjacent to another object or fixture on a surface.
+
+        ``reference_object_id`` may refer to a sim object *or* a fixture
+        (e.g. ``toaster_oven_main_group``).  When it's a fixture, the object
+        is placed on the nearest placeable surface adjacent to that fixture.
+        """
         self._require_object(object_id)
-        self._require_object(reference_object_id)
         holder = self._held_by_robot(object_id)
         if holder not in {None, robot_idx}:
             raise ValueError(f"Object {object_id!r} is held by robot {holder}")
 
-        # Find what fixture the reference object is on.
-        support_fixture_id = self._get_scene_object_location(reference_object_id)
-        if support_fixture_id is None:
-            # Fallback: nearest fixture to object position.
+        # Determine if the reference is a fixture or an object.
+        ref_is_fixture = reference_object_id in self.runner._fixtures
+
+        if ref_is_fixture:
+            fixture = self.runner._fixtures[reference_object_id]
+            ref_pos = np.asarray(fixture.pos, dtype=float)
+            # Use the fixture's AABB to compute extent for offset.
+            aabb = get_fixture_aabb(fixture)
+            if aabb is not None:
+                ref_extent_x = float(aabb[1][0] - aabb[0][0])
+                ref_extent_y = float(aabb[1][1] - aabb[0][1])
+            else:
+                ref_extent_x = ref_extent_y = 0.2
+            # Find the surface the fixture sits on.
+            support_fixture_id = self._find_placeable_surface_near_fixture(
+                reference_object_id
+            )
+        else:
+            self._require_object(reference_object_id)
             ref_pos, _ = self._get_object_pose(reference_object_id)
-            support_fixture_id = self.runner._find_object_fixture(ref_pos)
+            ref_obj = self._require_object(reference_object_id)
+            ref_body_id = self.env.obj_body_id[reference_object_id]
+            ref_body_pos = self.env.sim.data.body_xpos[ref_body_id].copy()
+            ref_quat_xyzw = T.convert_quat(
+                self.env.sim.data.body_xquat[ref_body_id].copy(), to="xyzw"
+            )
+            ref_bbox = ref_obj.get_bbox_points(trans=ref_body_pos, rot=ref_quat_xyzw)
+            ref_extent_x = max(p[0] for p in ref_bbox) - min(p[0] for p in ref_bbox)
+            ref_extent_y = max(p[1] for p in ref_bbox) - min(p[1] for p in ref_bbox)
+            # Find what fixture the reference object is on.
+            support_fixture_id = self._get_scene_object_location(reference_object_id)
+            if support_fixture_id is None:
+                support_fixture_id = self.runner._find_object_fixture(ref_pos)
+
         self._require_fixture(support_fixture_id)
         self.runner._move_robot_near_fixture(robot_idx, support_fixture_id)
-
-        # Get reference object position and compute adjacent position.
-        ref_pos, _ = self._get_object_pose(reference_object_id)
-        ref_obj = self._require_object(reference_object_id)
-        ref_body_id = self.env.obj_body_id[reference_object_id]
-        ref_body_pos = self.env.sim.data.body_xpos[ref_body_id].copy()
-        ref_quat_xyzw = T.convert_quat(
-            self.env.sim.data.body_xquat[ref_body_id].copy(), to="xyzw"
-        )
-        ref_bbox = ref_obj.get_bbox_points(trans=ref_body_pos, rot=ref_quat_xyzw)
-        ref_extent_x = max(p[0] for p in ref_bbox) - min(p[0] for p in ref_bbox)
-        ref_extent_y = max(p[1] for p in ref_bbox) - min(p[1] for p in ref_bbox)
 
         # Offset along the longer axis to place beside.
         offset_axis = 0 if ref_extent_x > ref_extent_y else 1
@@ -1959,7 +2064,7 @@ class SimToolExecutor:
         moved = self._move_robot_near_fixture_with_retries(
             robot_idx,
             target_id,
-            require_front=True,
+            require_front=_require_front(fixture),
         )
         if moved:
             self._sync_held_object(robot_idx)
@@ -1992,7 +2097,7 @@ class SimToolExecutor:
         moved = self._move_robot_near_fixture_with_retries(
             robot_idx,
             target_id,
-            require_front=True,
+            require_front=_require_front(fixture),
         )
         if moved:
             self._sync_held_object(robot_idx)
@@ -2178,6 +2283,22 @@ def _main():
         default=False,
         help="Skip MP4 video generation to reduce output size.",
     )
+    parser.add_argument(
+        "--raw-map-labels",
+        action="store_true",
+        default=False,
+        help="Show full raw fixture ids on the map instead of cleaned-up labels.",
+    )
+    parser.add_argument(
+        "--robot-spawn",
+        choices=["sim", "trajectory"],
+        default="trajectory",
+        help=(
+            "Robot initial placement source. 'trajectory' (default): place each robot "
+            "at the location specified in the trajectory's initial_state. 'sim': place "
+            "all robots at init_robot_base_ref (task ground truth)."
+        ),
+    )
     parser.add_argument("--gl-backend", type=str, default="osmesa")
     parser.add_argument(
         "--placement",
@@ -2282,19 +2403,30 @@ def _main():
         standoff=args.standoff,
         sample_spacing=args.sample_spacing,
         robot_radius=args.robot_radius,
+        robot_spawn=args.robot_spawn,
     )
+    # --raw-map-labels disables fixture label cleanup on the map
+    executor._clean_map_labels = not args.raw_map_labels
 
     try:
-        # Always save the placement map
-        map_path = executor.save_placement_map(args.output_dir, prefix="initial")
-        print(f"Placement map: {map_path}")
-
         if args.plan is None and args.demo_plan is None and args.trajectory is None:
+            # No trajectory/plan — save map and frames now
+            map_path = executor.save_placement_map(
+                args.output_dir, prefix="initial",
+                clean_labels=executor._clean_map_labels,
+            )
+            print(f"Placement map: {map_path}")
             saved = executor.save_scene_frames(args.output_dir, prefix="initial")
             print(json.dumps({k: str(v) for k, v in saved.items()}, indent=2))
         else:
             if args.trajectory is not None:
                 from robocasa.utils.trajectory_adapter import execute_trajectory
+                import shutil
+
+                # Copy original trajectory JSON to output dir
+                out_path = Path(args.output_dir)
+                out_path.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(args.trajectory, out_path / "original_trajectory.json")
 
                 metadata = execute_trajectory(
                     executor=executor,
@@ -2303,6 +2435,11 @@ def _main():
                     fps=args.fps,
                     skip_videos=args.skip_videos,
                 )
+                # The adapter already saves initial_map.png right after
+                # load_initial_state (before trajectory steps run), so the
+                # map reflects the true initial robot/object positions.
+                # Do NOT re-save here — that would overwrite with post-
+                # execution positions.
             elif args.demo_plan is not None:
                 tool_calls = executor.build_demo_plan(args.demo_plan)
                 metadata = executor.run_tool_plan(
@@ -2318,6 +2455,13 @@ def _main():
                     output_dir=args.output_dir,
                     fps=args.fps,
                 )
+            # Save map after execution for demo_plan/plan paths
+            if args.trajectory is None:
+                map_path = executor.save_placement_map(
+                    args.output_dir, prefix="initial",
+                    clean_labels=executor._clean_map_labels,
+                )
+                print(f"Placement map: {map_path}")
             print(json.dumps(metadata, indent=2))
     finally:
         executor.close()

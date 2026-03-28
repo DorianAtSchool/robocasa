@@ -130,6 +130,13 @@ class OccupancyGrid:
         Uses BFS flood-fill from the room center.  Enclosed pockets
         (corners between cabinets, gaps behind fixtures) become occupied,
         preventing the robot from being placed there.
+
+        Wall fixtures are dilated by 1 cell before the flood-fill so that
+        single-cell gaps between wall segments are closed, preventing the
+        fill from leaking outside the kitchen.  Only walls (names starting
+        with ``wall_``) are dilated — internal fixtures like counters and
+        cabinets are left untouched so narrow passages between furniture
+        remain navigable.
         """
         from collections import deque
 
@@ -163,8 +170,50 @@ class OccupancyGrid:
             if not found:
                 return  # all cells occupied
 
-        # BFS flood-fill from seed
+        # Build a wall-only grid, then dilate it by 1 cell to close gaps
+        # between wall segments.  This prevents the flood-fill from leaking
+        # outside the kitchen through narrow gaps in the perimeter.
+        wall_grid = np.zeros_like(self._grid)
+        for name, fxtr in fixtures.items():
+            if name.lower().startswith("wall_"):
+                self._rasterize_onto(wall_grid, fxtr)
+        # Dilate wall cells by 1 in each cardinal direction
+        wall_dilated = wall_grid.copy()
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            shifted = np.roll(wall_grid, shift=(dr, dc), axis=(0, 1))
+            if dr == -1:
+                shifted[-1, :] = False
+            elif dr == 1:
+                shifted[0, :] = False
+            if dc == -1:
+                shifted[:, -1] = False
+            elif dc == 1:
+                shifted[:, 0] = False
+            wall_dilated |= shifted
+        # Combine: original obstacle grid + dilated wall cells
+        flood_barrier = self._grid | wall_dilated
+
+        # BFS flood-fill from seed using the barrier grid.
         reachable = np.zeros_like(self._grid, dtype=bool)
+        if flood_barrier[seed_r, seed_c]:
+            # Seed landed on a barrier cell — find nearest free cell
+            found_seed = False
+            for radius in range(1, max(self._rows, self._cols)):
+                for sdr in range(-radius, radius + 1):
+                    for sdc in range(-radius, radius + 1):
+                        sr, sc = seed_r + sdr, seed_c + sdc
+                        if 0 <= sr < self._rows and 0 <= sc < self._cols:
+                            if not flood_barrier[sr, sc]:
+                                seed_r, seed_c = sr, sc
+                                found_seed = True
+                                break
+                    if found_seed:
+                        break
+                if found_seed:
+                    break
+            if not found_seed:
+                return  # all cells blocked
+
         queue = deque([(seed_r, seed_c)])
         reachable[seed_r, seed_c] = True
 
@@ -173,11 +222,12 @@ class OccupancyGrid:
             for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
                 nr, nc = r + dr, c + dc
                 if 0 <= nr < self._rows and 0 <= nc < self._cols:
-                    if not reachable[nr, nc] and not self._grid[nr, nc]:
+                    if not reachable[nr, nc] and not flood_barrier[nr, nc]:
                         reachable[nr, nc] = True
                         queue.append((nr, nc))
 
-        # Mark unreachable free cells as occupied
+        # Mark unreachable free cells as occupied (using original grid, not
+        # the barrier — dilation was only used to prevent flood-fill leaks).
         unreachable_free = ~self._grid & ~reachable
         self._grid |= unreachable_free
 
@@ -192,6 +242,13 @@ class OccupancyGrid:
         row = int(np.clip(int(np.floor(rel[1])), 0, self._rows - 1))
         return (row, col)
 
+    def _is_in_bounds(self, xy: np.ndarray) -> bool:
+        """Return True if the world position falls within the grid extent."""
+        rel = (np.asarray(xy, dtype=float) - self._origin) / self.cell_size
+        col = int(np.floor(rel[0]))
+        row = int(np.floor(rel[1]))
+        return 0 <= col < self._cols and 0 <= row < self._rows
+
     def _grid_to_world(self, row: int, col: int) -> np.ndarray:
         """Return the world-frame center of grid cell (row, col)."""
         x = self._origin[0] + (col + 0.5) * self.cell_size
@@ -202,8 +259,8 @@ class OccupancyGrid:
     # Rasterization
     # ------------------------------------------------------------------
 
-    def _rasterize_fixture(self, fxtr: Fixture):
-        """Mark grid cells overlapping the fixture's 2D footprint as occupied."""
+    def _rasterize_onto(self, target: np.ndarray, fxtr: Fixture):
+        """Mark cells in *target* that overlap the fixture's 2D footprint."""
         try:
             ext = fxtr.get_ext_sites(all_points=True, relative=False)
             pts_3d = [np.asarray(p, dtype=float) for p in ext]
@@ -211,7 +268,7 @@ class OccupancyGrid:
             if hasattr(fxtr, "pos") and fxtr.pos is not None:
                 r, c = self._world_to_grid(np.asarray(fxtr.pos[:2]))
                 if 0 <= r < self._rows and 0 <= c < self._cols:
-                    self._grid[r, c] = True
+                    target[r, c] = True
             return
 
         pts_2d = np.array([p[:2] for p in pts_3d])
@@ -224,7 +281,11 @@ class OccupancyGrid:
         for r in range(r_min, r_max + 1):
             for c in range(c_min, c_max + 1):
                 if 0 <= r < self._rows and 0 <= c < self._cols:
-                    self._grid[r, c] = True
+                    target[r, c] = True
+
+    def _rasterize_fixture(self, fxtr: Fixture):
+        """Mark grid cells overlapping the fixture's 2D footprint as occupied."""
+        self._rasterize_onto(self._grid, fxtr)
 
     # ------------------------------------------------------------------
     # Queries
@@ -232,16 +293,16 @@ class OccupancyGrid:
 
     def is_free(self, xy: np.ndarray) -> bool:
         """Return True if the cell at world position xy is unoccupied."""
-        r, c = self._world_to_grid(xy)
-        if r < 0 or r >= self._rows or c < 0 or c >= self._cols:
+        if not self._is_in_bounds(xy):
             return False
+        r, c = self._world_to_grid(xy)
         return not self._grid[r, c]
 
     def is_free_of_fixtures(self, xy: np.ndarray) -> bool:
         """Return True if the cell is not occupied by any fixture (ignores flood-fill)."""
-        r, c = self._world_to_grid(xy)
-        if r < 0 or r >= self._rows or c < 0 or c >= self._cols:
+        if not self._is_in_bounds(xy):
             return False
+        r, c = self._world_to_grid(xy)
         return not self._fixture_grid[r, c]
 
     def is_standable(self, xy: np.ndarray) -> bool:
@@ -367,9 +428,9 @@ class OccupancyGrid:
                 if (pos[0] >= fmin[0] and pos[0] <= fmax[0] and
                         pos[1] >= fmin[1] and pos[1] <= fmax[1]):
                     continue
-                r, c = self._world_to_grid(pos)
-                if not (0 <= r < self._rows and 0 <= c < self._cols):
+                if not self._is_in_bounds(pos):
                     continue
+                r, c = self._world_to_grid(pos)
                 if grid[r, c]:
                     continue
                 if (r, c) in robot_cell_set:

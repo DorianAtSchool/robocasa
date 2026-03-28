@@ -45,6 +45,7 @@ from __future__ import annotations
 import argparse
 import itertools
 import json
+import shutil
 import sys
 import time
 import traceback
@@ -53,7 +54,7 @@ from pathlib import Path
 
 def discover_trajectories(
     input_dir: Path,
-    task_filter: str | None = None,
+    task_filter: list[str] | None = None,
     indices: list[int] | None = None,
 ) -> list[dict]:
     """Find all trajectory JSONs under input_dir/<task>/trajectories/."""
@@ -61,7 +62,7 @@ def discover_trajectories(
     for task_dir in sorted(input_dir.iterdir()):
         if not task_dir.is_dir():
             continue
-        if task_filter and task_dir.name != task_filter:
+        if task_filter and task_dir.name not in task_filter:
             continue
         traj_dir = task_dir / "trajectories"
         if not traj_dir.is_dir():
@@ -87,6 +88,8 @@ def run_one(
     robots: int,
     placement: str,
     cell_size: float,
+    robot_spawn: str = "sim",
+    skip_videos: bool = True,
 ) -> dict:
     """Execute a single trajectory and return summary info."""
     from robocasa.utils.sim_tool_executor import SimToolExecutor
@@ -105,14 +108,19 @@ def run_one(
         seed=seed,
         placement=placement,
         cell_size=cell_size,
+        robot_spawn=robot_spawn,
     )
 
     try:
+        # Copy original trajectory JSON to output dir
+        output_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(traj_file, output_dir / "original_trajectory.json")
+
         metadata = execute_trajectory(
             executor=executor,
             trajectory=trajectory,
             output_dir=str(output_dir),
-            skip_videos=True,
+            skip_videos=skip_videos,
         )
 
         # Count successes (skip get_image steps which always succeed)
@@ -137,7 +145,7 @@ def main():
     parser = argparse.ArgumentParser(description="Sweep trajectories through sim executor")
     parser.add_argument("--input-dir", type=str, required=True, help="Dataset root dir")
     parser.add_argument("--output-dir", type=str, required=True, help="Output root dir")
-    parser.add_argument("--task", type=str, default=None, help="Filter to a single task dir name")
+    parser.add_argument("--tasks", type=str, nargs="+", default=None, help="Filter to specific task dir names")
     parser.add_argument("--indices", type=int, nargs="+", default=None, help="Filter to specific traj indices")
     parser.add_argument("--layouts", type=int, nargs="+", default=[11], help="Kitchen layout ids (default: 11)")
     parser.add_argument("--styles", type=int, nargs="+", default=[34], help="Kitchen style ids (default: 34)")
@@ -145,13 +153,23 @@ def main():
     parser.add_argument("--robots", type=int, default=2)
     parser.add_argument("--placement", choices=["grid", "continuous"], default="grid")
     parser.add_argument("--cell-size", type=float, default=0.05)
+    parser.add_argument(
+        "--robot-spawn",
+        choices=["sim", "trajectory"],
+        default="trajectory",
+        help=(
+            "Robot initial placement source. 'sim': all robots at "
+            "init_robot_base_ref. 'trajectory' (default): each robot at its trajectory location."
+        ),
+    )
+    parser.add_argument("--videos", action="store_true", help="Record per-camera MP4 videos for each run")
     parser.add_argument("--dry-run", action="store_true", help="Print what would run without executing")
     args = parser.parse_args()
 
     input_dir = Path(args.input_dir)
     output_root = Path(args.output_dir)
 
-    entries = discover_trajectories(input_dir, task_filter=args.task, indices=args.indices)
+    entries = discover_trajectories(input_dir, task_filter=args.tasks, indices=args.indices)
     if not entries:
         print("No trajectories found.")
         sys.exit(1)
@@ -210,6 +228,8 @@ def main():
                     robots=args.robots,
                     placement=args.placement,
                     cell_size=args.cell_size,
+                    robot_spawn=args.robot_spawn,
+                    skip_videos=not args.videos,
                 )
                 elapsed = time.time() - t0
                 result["elapsed_s"] = round(elapsed, 1)
