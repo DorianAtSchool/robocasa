@@ -367,9 +367,11 @@ class TrajectoryRunner:
         standoff: float = 0.40,
         sample_spacing: float = 0.08,
         robot_radius: float = 0.18,
+        full_scene_view: bool = False,
     ):
         os.environ.setdefault("MUJOCO_GL", gl_backend)
 
+        self._full_scene_view = full_scene_view
         self._num_robots = robots
         robot_list = ["PandaOmron"] * robots
 
@@ -523,14 +525,22 @@ class TrajectoryRunner:
         )
 
     def _collect_room_view_points(self) -> np.ndarray:
-        """Collect a tighter set of points around the active task workspace."""
+        """Collect points that determine room camera framing.
+
+        In full_scene_view mode, frames all fixtures so the entire kitchen is
+        visible (useful for trajectory execution where robots navigate widely).
+        Otherwise, frames only fixtures near the task workspace.
+        """
+        if self._full_scene_view:
+            return self._collect_scene_points(
+                include_objects=True, include_robots=True,
+            )
         return self._collect_focus_points(ROOM_VIEW_FIXTURE_RADIUS)
 
     def _collect_top_view_points(self) -> np.ndarray:
-        """Collect the same focused kitchen footprint used by room_view.
+        """Collect points that determine top camera framing.
 
-        A broader fixture radius tends to pull in adjacent rooms / hallways on
-        larger layouts, which makes the overhead camera zoom out too far.
+        Uses the same point set as room_view for consistency.
         """
         return self._collect_room_view_points()
 
