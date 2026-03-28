@@ -2084,6 +2084,8 @@ class SimToolExecutor:
             joint_name = self._resolve_joint_name(fixture, control_id)
             self._set_named_joint(fixture, joint_name, 1.0)
 
+        if hasattr(fixture, "update_state"):
+            fixture.update_state(self.env)
         self.env.sim.forward()
         return ToolResult(
             "press_button", True, {"target_id": target_id, "control_id": control_id}
@@ -2116,6 +2118,8 @@ class SimToolExecutor:
             joint_name = self._resolve_joint_name(fixture, control_id)
             self._set_named_joint(fixture, joint_name, 1.0)
 
+        if hasattr(fixture, "update_state"):
+            fixture.update_state(self.env)
         self.env.sim.forward()
         return ToolResult(
             "press_lever", True, {"target_id": target_id, "control_id": control_id}
@@ -2155,6 +2159,8 @@ class SimToolExecutor:
             joint_name = self._resolve_joint_name(fixture, control_id)
             self._set_named_joint(fixture, joint_name, value)
 
+        if hasattr(fixture, "update_state"):
+            fixture.update_state(self.env)
         self.env.sim.forward()
         return ToolResult(
             "set_rotary_control",
