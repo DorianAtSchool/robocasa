@@ -40,9 +40,37 @@ _FRONT_ONLY_FIXTURE_TYPES = [
 ]
 
 
-def _format_fixture_label(name: str, wrap_width: int = 18) -> str:
-    """Render a readable fixture label from an internal fixture id."""
+def _format_fixture_label(name: str, clean: bool = True, wrap_width: int = 18) -> str:
+    """Render a readable fixture label from an internal fixture id.
+
+    When *clean* is True, strips layout-internal suffixes (``_group``,
+    ``_main``) and collapses repeated segments while **keeping** positional
+    tags (``_left``, ``_right``, ``_center``) for spatial context.
+
+    When *clean* is False, returns the full raw fixture id (only wrapped).
+
+    Examples (clean=True)::
+
+        coffee_machine_left_group  → coffee_machine_left
+        counter_1_left_group       → counter_1_left
+        cab_1_main_group           → cab_1
+        dining_dining_group        → dining
+        fridge_right_group         → fridge_right
+    """
+    import re
     label = str(name).strip()
+    if clean:
+        # Strip trailing _group (layout-internal grouping suffix)
+        label = re.sub(r"_group$", "", label)
+        # Strip _main (generic grouping tag, not spatially meaningful)
+        label = re.sub(r"_main$", "", label)
+        # Collapse repeated segments (e.g. dining_dining → dining)
+        parts = label.split("_")
+        deduped = [parts[0]]
+        for p in parts[1:]:
+            if p != deduped[-1]:
+                deduped.append(p)
+        label = "_".join(deduped)
     if len(label) <= wrap_width:
         return label
     return textwrap.fill(
@@ -155,7 +183,7 @@ def _should_skip_fixture_label(name: str) -> bool:
     return False
 
 
-def _draw_fixtures(ax, fixtures, label_fontsize=5):
+def _draw_fixtures(ax, fixtures, label_fontsize=7, clean_labels=True):
     """Draw fixture AABBs on the axes and return placed label boxes."""
     fixture_entries = []
     for name, fxtr in fixtures.items():
@@ -188,7 +216,7 @@ def _draw_fixtures(ax, fixtures, label_fontsize=5):
         ),
     ):
 
-        label = _format_fixture_label(name)
+        label = _format_fixture_label(name, clean=clean_labels)
         cx, cy = (fmin[0] + fmax[0]) / 2, (fmin[1] + fmax[1]) / 2
         (label_x, label_y), label_box = _pick_label_position(
             fmin,
@@ -296,21 +324,34 @@ def _draw_robots(ax, runner, placed_label_boxes=None):
 
 
 def _get_object_positions(runner):
-    """Return list of (object_name, x, y) for all task objects in the scene.
+    """Return list of (display_name, x, y) for all task objects in the scene.
 
     Objects live in ``env.objects`` / ``env.obj_body_id``; their world
-    positions come from the MuJoCo simulation state.
+    positions come from the MuJoCo simulation state.  Display names use the
+    object type (e.g. "mug") from ep_meta instead of the raw env key
+    (e.g. "obj").
     """
     entries = []
     env = runner.env
     if not hasattr(env, "objects") or not env.objects:
         return entries
+
+    # Build env_key → human-readable type from ep_meta object_cfgs
+    obj_type_map = {}
+    if hasattr(env, "get_ep_meta"):
+        for cfg in env.get_ep_meta().get("object_cfgs", []):
+            name = cfg.get("name", "")
+            cat = (cfg.get("info") or {}).get("cat", "")
+            if name and cat:
+                obj_type_map[name] = cat
+
     for obj_name in env.objects:
         body_id = env.obj_body_id.get(obj_name)
         if body_id is None:
             continue
         pos = env.sim.data.body_xpos[body_id]
-        entries.append((obj_name, float(pos[0]), float(pos[1])))
+        display_name = obj_type_map.get(obj_name, obj_name)
+        entries.append((display_name, float(pos[0]), float(pos[1])))
     return entries
 
 
@@ -332,10 +373,12 @@ def _draw_objects(ax, runner, placed_label_boxes=None):
     if not entries:
         return
 
-    label_fontsize = 5
+    label_fontsize = 7
     for idx, (obj_name, x, y) in enumerate(entries):
         color = _OBJECT_COLORS[idx % len(_OBJECT_COLORS)]
         label = str(obj_name)
+        # Draw marker dot at object position
+        ax.plot(x, y, "D", color=color, markersize=5, zorder=7)
         fmin = np.array([x, y])
         fmax = np.array([x, y])
         (label_x, label_y), label_box = _pick_label_position(
@@ -356,8 +399,12 @@ def _draw_objects(ax, runner, placed_label_boxes=None):
         placed_label_boxes.append(label_box)
 
 
-def draw_grid_map(ax, runner):
-    """Draw the occupancy grid on axes."""
+def draw_grid_map(ax, runner, clean_labels=True):
+    """Draw the occupancy grid on axes.
+
+    *clean_labels*: when True (default), fixture labels are shortened
+    (strip ``_group``, ``_main``, dedupe).  Set False for raw fixture ids.
+    """
     grid = runner._occupancy_grid
 
     for r in range(grid._rows):
@@ -372,7 +419,7 @@ def draw_grid_map(ax, runner):
             )
             ax.add_patch(rect)
 
-    placed_label_boxes = _draw_fixtures(ax, runner._fixtures)
+    placed_label_boxes = _draw_fixtures(ax, runner._fixtures, clean_labels=clean_labels)
     _draw_robots(ax, runner, placed_label_boxes=placed_label_boxes)
     _draw_objects(ax, runner, placed_label_boxes=placed_label_boxes)
 
@@ -391,8 +438,12 @@ def draw_grid_map(ax, runner):
     )
 
 
-def draw_continuous_map(ax, runner):
-    """Draw the continuous placement candidates on axes."""
+def draw_continuous_map(ax, runner, clean_labels=True):
+    """Draw the continuous placement candidates on axes.
+
+    *clean_labels*: when True (default), fixture labels are shortened.
+    Set False for raw fixture ids.
+    """
     cp = runner._continuous or ContinuousPlacement(runner._fixtures)
     grid = runner._occupancy_grid  # for bounds only
 
@@ -406,7 +457,7 @@ def draw_continuous_map(ax, runner):
         facecolor="#f8f8f8", edgecolor="#ccc", linewidth=0.5,
     ))
 
-    placed_label_boxes = _draw_fixtures(ax, runner._fixtures)
+    placed_label_boxes = _draw_fixtures(ax, runner._fixtures, clean_labels=clean_labels)
 
     def _classify_candidate(cp, pos, fixture_id, fxtr, face_key):
         """Return (color, marker, size) for a candidate position."""

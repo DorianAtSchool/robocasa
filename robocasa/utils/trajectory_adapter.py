@@ -92,17 +92,37 @@ class TrajectoryAdapter:
         self._object_aliases: dict[str, str] = {}
         self._dispenser_aliases: dict[str, str] = {}
         self._resolution_log: list[ResolutionRecord] = []
+        # Reverse maps: concrete env key → human-readable display name
+        # Built during adapt() after resolution is complete.
+        self._object_display_names: dict[str, str] = {}
+        self._fixture_display_names: dict[str, str] = {}
 
-    def _apply_sim_ground_truth(self, initial_state: dict[str, Any]) -> None:
+    def _apply_sim_ground_truth(
+        self,
+        initial_state: dict[str, Any],
+        grounding_symbols: dict[str, Any] | None = None,
+    ) -> None:
         """Pre-populate alias caches from sim ground truth.
 
         Uses the trajectory's ``initial_state`` (object types and fixture
         types) combined with ``scene["object_placements"]`` and
         ``scene["fixture_refs"]`` to resolve symbolic IDs to concrete sim
         IDs with full confidence.
+
+        ``grounding_symbols`` comes from ``trajectory["grounding_map"]["symbols"]``
+        and carries richer resolver hints (e.g. ``anchor_fixture_symbol``,
+        ``preferred_fixture_types``) that ``initial_state.fixtures`` doesn't have.
         """
+        grounding_symbols = grounding_symbols or {}
+        # object_placements: {env_obj_key: concrete_fixture_id} from env.object_cfgs
         object_placements = self.scene.get("object_placements", {})
+        # fixture_refs: task-registered refs only (e.g. "coffee_machine", "cab"),
+        # NOT all fixtures in the scene — just the ones the task explicitly registered
+        # via register_fixture_ref() / get_fixture()
         fixture_refs = self.scene.get("fixture_refs", {})
+        # scene_fixtures: ALL fixtures in the scene with positions, types, etc.
+        # includes every counter, cabinet, appliance, etc. in the kitchen layout
+        scene_fixtures = self.scene.get("fixtures", {})
         env_object_ids = set(self.scene.get("objects", {}).keys())
 
         if not object_placements and not fixture_refs:
@@ -161,6 +181,7 @@ class TrajectoryAdapter:
             if isinstance(loc, str):
                 traj_obj_locations.setdefault(loc, []).append(symbol)
 
+        # --- Pass 1: strategies that don't depend on other fixtures ---
         for fixture_symbol, fixture_state in traj_fixtures.items():
             fixture_type = fixture_state.get("fixture_type", "")
 
@@ -184,7 +205,7 @@ class TrajectoryAdapter:
             if fixture_symbol in self._fixture_aliases:
                 continue
 
-            # Strategy 2: match fixture_refs by type
+            # Strategy 2: match fixture_refs (task-registered only) by type
             for role, fxtr_id in fixture_refs.items():
                 if role == fixture_type or fixture_type in role or role in fixture_type:
                     self._fixture_aliases[fixture_symbol] = fxtr_id
@@ -197,6 +218,76 @@ class TrajectoryAdapter:
                         reason=f"fixture_refs[{role!r}] matched fixture_type {fixture_type!r}",
                     ))
                     break
+
+        # --- Pass 2: anchor-dependent resolution (needs other fixtures resolved first) ---
+        for fixture_symbol, fixture_state in traj_fixtures.items():
+            if fixture_symbol in self._fixture_aliases:
+                continue
+
+            fixture_type = fixture_state.get("fixture_type", "")
+
+            # Strategy 3: find the counter/surface that the anchor fixture sits on
+            # (e.g. "staging_surface" = the counter the coffee_machine is placed on)
+            # Uses parent_fixture from scene description (containment-based, same
+            # logic as env.get_fixture(ref=...)). Falls back to nearest-center.
+            # anchor/preferred info lives in grounding_map.symbols, not initial_state
+            gm_entry = grounding_symbols.get(fixture_symbol, {})
+            anchor_symbol = gm_entry.get("anchor_fixture_symbol")
+            preferred_types = gm_entry.get("preferred_fixture_types", [])
+            if anchor_symbol:
+                # anchor must have been resolved in pass 1
+                anchor_id = self._fixture_aliases.get(anchor_symbol)
+                if anchor_id:
+                    anchor_info = scene_fixtures.get(anchor_id, {})
+                    match_types = set(preferred_types) | {fixture_type} if preferred_types else {fixture_type}
+
+                    # Strategy 3a: parent_fixture — the counter the anchor sits ON
+                    # (computed via point_in_fixture containment in get_scene_description)
+                    parent_id = anchor_info.get("parent_fixture")
+                    if parent_id and parent_id in scene_fixtures:
+                        parent_type = scene_fixtures[parent_id].get("fixture_type", "")
+                        if parent_type in match_types:
+                            self._fixture_aliases[fixture_symbol] = parent_id
+                            self._resolution_log.append(ResolutionRecord(
+                                entity_type="fixture",
+                                requested_id=fixture_symbol,
+                                resolved_id=parent_id,
+                                method="sim_ground_truth",
+                                confidence=1.0,
+                                reason=(
+                                    f"Parent {parent_type!r} of anchor "
+                                    f"{anchor_symbol!r} ({anchor_id!r}) via containment"
+                                ),
+                            ))
+                            continue
+
+                    # Strategy 3b: fallback — nearest scene fixture of matching type
+                    anchor_pos = anchor_info.get("position", [0, 0, 0])
+                    best_id = None
+                    best_dist = float("inf")
+                    for fid, finfo in scene_fixtures.items():
+                        ftype = finfo.get("fixture_type", "")
+                        if ftype not in match_types:
+                            continue
+                        fpos = finfo.get("position", [0, 0, 0])
+                        dist = ((fpos[0] - anchor_pos[0]) ** 2 + (fpos[1] - anchor_pos[1]) ** 2) ** 0.5
+                        if dist < best_dist:
+                            best_dist = dist
+                            best_id = fid
+                    if best_id is not None:
+                        self._fixture_aliases[fixture_symbol] = best_id
+                        self._resolution_log.append(ResolutionRecord(
+                            entity_type="fixture",
+                            requested_id=fixture_symbol,
+                            resolved_id=best_id,
+                            method="sim_ground_truth",
+                            confidence=0.8,
+                            reason=(
+                                f"Nearest {fixture_type!r} to anchor "
+                                f"{anchor_symbol!r} ({anchor_id!r}) at dist {best_dist:.3f}m "
+                                f"(parent_fixture unavailable, fell back to nearest-center)"
+                            ),
+                        ))
 
         resolved_count = len([r for r in self._resolution_log if r.method == "sim_ground_truth"])
         total_symbols = len(traj_objects) + len(traj_fixtures)
@@ -217,8 +308,27 @@ class TrajectoryAdapter:
         trajectory = deepcopy(trajectory)
 
         initial_state = trajectory.get("initial_state") or {}
-        self._apply_sim_ground_truth(initial_state)
+        grounding_symbols = (trajectory.get("grounding_map") or {}).get("symbols") or {}
+        self._apply_sim_ground_truth(initial_state, grounding_symbols)
         resolved_initial_state = self._adapt_initial_state(initial_state)
+
+        # Build display name maps: env key → human-readable name
+        # Objects: use object_type from scene (sourced from info.cat)
+        for env_key, obj_info in self.scene.get("objects", {}).items():
+            self._object_display_names[env_key] = obj_info.get("object_type", env_key)
+        # Also map from symbolic names to display names via aliases
+        for symbol, env_key in self._object_aliases.items():
+            if env_key not in self._object_display_names:
+                self._object_display_names[env_key] = symbol
+
+        # Fixtures: use symbolic name from trajectory as display name,
+        # fall back to fixture_type from scene
+        for symbol, env_key in self._fixture_aliases.items():
+            self._fixture_display_names[env_key] = symbol
+        for env_key, fxtr_info in self.scene.get("fixtures", {}).items():
+            if env_key not in self._fixture_display_names:
+                self._fixture_display_names[env_key] = fxtr_info.get("fixture_type", env_key)
+
         tool_calls = []
 
         for step in trajectory.get("steps", []):
@@ -237,6 +347,10 @@ class TrajectoryAdapter:
             "initial_state": resolved_initial_state,
             "tool_calls": tool_calls,
             "resolution_log": [record.to_dict() for record in self._resolution_log],
+            "display_names": {
+                "objects": dict(self._object_display_names),
+                "fixtures": dict(self._fixture_display_names),
+            },
             "source_trajectory": trajectory,
         }
 
@@ -253,7 +367,28 @@ class TrajectoryAdapter:
         and per-camera MP4 videos are generated automatically.
         """
         adapted = self.adapt(trajectory, output_dir=output_dir)
+
+        # Save pre-initial-state frames (before doors are closed / objects moved).
+        # Useful for debugging: confirms objects are spawned correctly by the sim
+        # even if the trajectory's initial_state hides them (e.g. closes cabinet).
+        if output_dir is not None:
+            self.executor.save_scene_frames(output_dir, prefix="pre_initial_state")
+
         load_summary = self.executor.load_initial_state(adapted["initial_state"])
+
+        # In "trajectory" spawn mode, robots were just repositioned by
+        # load_initial_state.  Re-save the initial map so it reflects the
+        # trajectory's agent locations rather than the sim default.
+        robot_spawn = getattr(self.executor, "_robot_spawn", "sim")
+        if output_dir is not None and robot_spawn == "trajectory":
+            map_path = self.executor.save_placement_map(
+                output_dir, prefix="initial",
+                clean_labels=getattr(self.executor, "_clean_map_labels", True),
+            )
+            # Map re-saved to reflect post-trajectory-spawn positions
+            # Also save post-initial-state rendered frames so the room view
+            # matches the map (both reflect post-trajectory-spawn positions).
+            self.executor.save_scene_frames(output_dir, prefix="initial")
 
         if output_dir is not None:
             output_path = Path(output_dir)
@@ -336,10 +471,20 @@ class TrajectoryAdapter:
             resolved_state = deepcopy(object_state)
             location = object_state.get("location")
             if isinstance(location, str):
-                resolved_state["location"] = self._resolve_fixture_id(
-                    location,
-                    requested_fixture_state=fixture_context.get(location),
-                )
+                # Location can be a fixture ("mug_source_fixture") or another
+                # object ("ingredient_bowl" for slices inside a bowl).  Check
+                # object aliases first to avoid sending object names through
+                # fixture resolution, which would fall back to a random fixture.
+                if location in self._object_aliases or location in object_context:
+                    resolved_state["location"] = self._resolve_object_id(
+                        location,
+                        requested_object_state=object_context.get(location),
+                    )
+                else:
+                    resolved_state["location"] = self._resolve_fixture_id(
+                        location,
+                        requested_fixture_state=fixture_context.get(location),
+                    )
             resolved_objects[resolved_object_id] = resolved_state
 
         for agent_id, agent_state in initial_state.get("agents", {}).items():
@@ -416,7 +561,17 @@ class TrajectoryAdapter:
             resolved_initial_state=resolved_initial_state,
         )
 
-        return {
+        # Build display_args: human-readable names for VLM consumption
+        display_args = {}
+        for arg_name, value in args.items():
+            if not isinstance(value, str):
+                continue
+            if arg_name in self._OBJECT_ARG_NAMES:
+                display_args[arg_name] = self._object_display_names.get(value, value)
+            elif arg_name in self._FIXTURE_ARG_NAMES or arg_name == "receptacle_id":
+                display_args[arg_name] = self._fixture_display_names.get(value, value)
+
+        result = {
             "tool": tool_name,
             "robot_idx": robot_idx,
             "args": args,
@@ -428,6 +583,9 @@ class TrajectoryAdapter:
                 "image_paths": deepcopy(step.get("image_paths")),
             },
         }
+        if display_args:
+            result["display_args"] = display_args
+        return result
 
     def _resolve_step_args(
         self,
@@ -447,12 +605,23 @@ class TrajectoryAdapter:
                     ),
                 )
             elif arg_name in self._OBJECT_ARG_NAMES:
-                resolved_args[arg_name] = self._resolve_object_id(
-                    value,
-                    requested_object_state=(
-                        resolved_initial_state.get("objects", {}).get(value) or None
-                    ),
-                )
+                # The value may actually be a fixture (e.g. "toaster_oven"
+                # passed as reference_object_id in place_next_to).  Check
+                # fixture aliases first to avoid a bad object fallback.
+                if value in self._fixture_aliases or value in self.scene.get("fixtures", {}):
+                    resolved_args[arg_name] = self._resolve_fixture_id(
+                        value,
+                        requested_fixture_state=(
+                            resolved_initial_state.get("fixtures", {}).get(value) or None
+                        ),
+                    )
+                else:
+                    resolved_args[arg_name] = self._resolve_object_id(
+                        value,
+                        requested_object_state=(
+                            resolved_initial_state.get("objects", {}).get(value) or None
+                        ),
+                    )
             elif arg_name == "receptacle_id":
                 if (
                     value in self.scene.get("fixtures", {})

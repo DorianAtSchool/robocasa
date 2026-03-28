@@ -170,6 +170,7 @@ class FixtureInfo:
     interactions: list[str]
     can_place_objects: bool
     nearby_fixtures: list[str] = field(default_factory=list)
+    parent_fixture: str | None = None  # counter/surface this fixture sits on
 
     def to_dict(self) -> dict:
         return dataclasses.asdict(self)
@@ -789,6 +790,99 @@ class TrajectoryRunner:
             return self._get_fixture_front_target_xy(fixture_id)
         return self._resolve_ref_object_pos(ref_object_id)
 
+    def _get_kitchen_aabb(self) -> tuple[np.ndarray, np.ndarray]:
+        """Return (min_xy, max_xy) bounding box of all fixture positions."""
+        if not hasattr(self, "_kitchen_aabb"):
+            pts = []
+            for fxtr in self._fixtures.values():
+                if hasattr(fxtr, "pos") and fxtr.pos is not None:
+                    pts.append(np.asarray(fxtr.pos, dtype=float)[:2])
+            if pts:
+                arr = np.stack(pts)
+                # Small margin for robot standoff — tight enough to reject
+                # positions outside walls, loose enough for the robot to stand
+                # in front of wall-adjacent fixtures.
+                margin = 0.3
+                self._kitchen_aabb = (arr.min(axis=0) - margin, arr.max(axis=0) + margin)
+            else:
+                self._kitchen_aabb = (np.array([-100, -100]), np.array([100, 100]))
+        return self._kitchen_aabb
+
+    def _is_valid_robot_position(self, pos_xy: np.ndarray) -> bool:
+        """Check whether a 2D position is inside the reachable kitchen floor."""
+        pos = np.asarray(pos_xy, dtype=float)[:2]
+        # Hard boundary: must be within fixture AABB + small margin
+        aabb_min, aabb_max = self._get_kitchen_aabb()
+        if pos[0] < aabb_min[0] or pos[0] > aabb_max[0]:
+            return False
+        if pos[1] < aabb_min[1] or pos[1] > aabb_max[1]:
+            return False
+        # Grid check: must be on a reachable free cell
+        if self._occupancy_grid is not None:
+            return self._occupancy_grid.is_free(pos)
+        if self._continuous is not None:
+            return (self._continuous.is_standable(pos)
+                    and not self._continuous.is_inside_any_fixture(pos))
+        return True  # no placement system available — assume valid
+
+    def _get_kitchen_center(self) -> np.ndarray:
+        """Return the approximate center of the kitchen floor (from fixtures)."""
+        positions = []
+        for fxtr in self._fixtures.values():
+            if hasattr(fxtr, "pos") and fxtr.pos is not None:
+                positions.append(np.asarray(fxtr.pos, dtype=float)[:2])
+        if positions:
+            return np.mean(np.stack(positions), axis=0)
+        return np.array([0.0, 0.0])
+
+    def _rescue_robot_to_kitchen(self, robot_idx: int) -> bool:
+        """If the robot is outside the kitchen, move it to a safe position.
+
+        Tries the room center first, then spirals outward to find a free cell.
+        Returns True if the robot was rescued (or was already valid).
+        """
+        pos = self._get_robot_position(robot_idx)[:2]
+        if self._is_valid_robot_position(pos):
+            return True
+
+        center = self._get_kitchen_center()
+        if self._is_valid_robot_position(center):
+            yaw = 0.0
+            self._set_robot_pose(robot_idx, center, yaw)
+            print(
+                f"[rescue] robot{robot_idx} was outside kitchen at "
+                f"({pos[0]:.2f}, {pos[1]:.2f}), moved to center "
+                f"({center[0]:.2f}, {center[1]:.2f})"
+            )
+            return True
+
+        # Spiral search from center for a free cell
+        if self._occupancy_grid is not None:
+            grid = self._occupancy_grid
+            seed_r, seed_c = grid._world_to_grid(center)
+            for radius in range(1, max(grid._rows, grid._cols)):
+                for dr in range(-radius, radius + 1):
+                    for dc in range(-radius, radius + 1):
+                        if abs(dr) != radius and abs(dc) != radius:
+                            continue  # only check perimeter
+                        r, c = seed_r + dr, seed_c + dc
+                        if 0 <= r < grid._rows and 0 <= c < grid._cols:
+                            if not grid._grid[r, c]:
+                                safe_pos = grid._grid_to_world(r, c)
+                                self._set_robot_pose(robot_idx, safe_pos, 0.0)
+                                print(
+                                    f"[rescue] robot{robot_idx} was outside kitchen at "
+                                    f"({pos[0]:.2f}, {pos[1]:.2f}), moved to "
+                                    f"({safe_pos[0]:.2f}, {safe_pos[1]:.2f})"
+                                )
+                                return True
+
+        print(
+            f"[rescue] WARNING: robot{robot_idx} is outside kitchen at "
+            f"({pos[0]:.2f}, {pos[1]:.2f}) and no safe position found"
+        )
+        return False
+
     def _offset_robot_beside_other(
         self,
         robot_idx: int,
@@ -898,6 +992,12 @@ class TrajectoryRunner:
             True if the robot was successfully placed, False if no valid
             position was found (robot stays at current position).
         """
+        pre_pos = self._get_robot_position(robot_idx)[:2]
+        _ = (  # debug pre-position info available if needed
+            f"[move_robot] robot{robot_idx} -> {fixture_id}: "
+            f"pre=({pre_pos[0]:.2f}, {pre_pos[1]:.2f}), "
+            f"valid={self._is_valid_robot_position(pre_pos)}"
+        )
         if fixture_id not in self._fixtures:
             return False
         fxtr = self._fixtures[fixture_id]
@@ -1021,6 +1121,13 @@ class TrajectoryRunner:
                         require_front=require_front,
                     )
                     break  # only one correction needed for 2-robot setups
+
+        # --- Final safety: ensure robot is inside the kitchen ---
+        # Placement or offset logic may have pushed the robot outside walls.
+        post_pos = self._get_robot_position(robot_idx)[:2]
+        valid = self._is_valid_robot_position(post_pos)
+        if not valid:
+            self._rescue_robot_to_kitchen(robot_idx)
 
         return placed
 
@@ -1298,6 +1405,26 @@ class TrajectoryRunner:
                 if np.linalg.norm(pos_a - pos_b) < 1.0:
                     nearby.append(other_name)
             info.nearby_fixtures = nearby
+
+        # Compute parent fixture: which counter/surface each fixture sits on.
+        # Uses the same containment logic as env.get_fixture(ref=...).
+        counter_fixtures = {
+            name: fxtr for name, fxtr in self._fixtures.items()
+            if any(fixture_is_type(fxtr, ft) for ft in _PLACEABLE_FIXTURE_TYPES
+                   if ft in FixtureType.__members__.values())
+        }
+        for name, info in fixtures_info.items():
+            if info.fixture_type in ("counter", "dining_counter"):
+                continue  # counters don't have parent counters
+            fxtr = self._fixtures.get(name)
+            if fxtr is None or not hasattr(fxtr, "pos"):
+                continue
+            for cname, cfxtr in counter_fixtures.items():
+                if cname == name:
+                    continue
+                if OU.point_in_fixture(fxtr.pos, cfxtr, only_2d=True):
+                    info.parent_fixture = cname
+                    break
 
         # Objects — use ep_meta for rich type info when available
         objects_info = {}
