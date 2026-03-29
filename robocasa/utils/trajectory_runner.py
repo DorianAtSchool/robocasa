@@ -197,16 +197,17 @@ class StepResult:
     before: dict[str, np.ndarray]  # camera_name -> image
     after: dict[str, np.ndarray]
 
-    def save_images(self, output_dir: str | Path, format: str = "png"):
+    def save_images(self, output_dir: str | Path, format: str = "jpg"):
         """Save before/after images to disk."""
         import imageio
 
         output_dir = Path(output_dir)
+        kwargs = {"quality": 85} if format in ("jpg", "jpeg") else {}
         for phase in ("before", "after"):
             images = getattr(self, phase)
             for cam_name, img in images.items():
                 path = output_dir / f"step_{self.step_index:03d}_{phase}_{cam_name}.{format}"
-                imageio.imwrite(str(path), img)
+                imageio.imwrite(str(path), img, **kwargs)
 
 
 @dataclass
@@ -229,21 +230,22 @@ class AgentTrajectory:
     steps: list[AgentStepView]
     scene: dict
 
-    def save(self, output_dir: str | Path, format: str = "png"):
+    def save(self, output_dir: str | Path, format: str = "jpg"):
         """Save per-agent training data."""
         import imageio
 
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
+        kwargs = {"quality": 85} if format in ("jpg", "jpeg") else {}
 
         for cam_name, img in self.initial_obs.items():
-            imageio.imwrite(str(output_dir / f"initial_{cam_name}.{format}"), img)
+            imageio.imwrite(str(output_dir / f"initial_{cam_name}.{format}"), img, **kwargs)
         for step in self.steps:
             for phase in ("before", "after"):
                 images = getattr(step, phase)
                 for cam_name, img in images.items():
                     path = output_dir / f"step_{step.step_index:03d}_{phase}_{cam_name}.{format}"
-                    imageio.imwrite(str(path), img)
+                    imageio.imwrite(str(path), img, **kwargs)
 
         meta = {
             "agent_id": self.agent_id,
@@ -269,14 +271,15 @@ class TrajectoryResult:
     steps: list[StepResult]
     scene: dict
 
-    def save(self, output_dir: str | Path, format: str = "png"):
+    def save(self, output_dir: str | Path, format: str = "jpg"):
         """Save all images and the scene description."""
         import imageio
 
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
+        kwargs = {"quality": 85} if format in ("jpg", "jpeg") else {}
         for cam_name, img in self.initial_obs.items():
-            imageio.imwrite(str(output_dir / f"initial_{cam_name}.{format}"), img)
+            imageio.imwrite(str(output_dir / f"initial_{cam_name}.{format}"), img, **kwargs)
         for step in self.steps:
             step.save_images(output_dir, format=format)
         with open(output_dir / "scene.json", "w") as f:

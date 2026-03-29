@@ -20,11 +20,11 @@ Usage:
         --styles 34 42 \
         --seeds 42 99
 
-    # Limit to a specific task:
+    # Limit to specific task dirs:
     python scripts/sweep_trajectories.py \
         --input-dir data_generation/task_level/data/image/20260324T031125Z \
         --output-dir tmp/sweep_output \
-        --task hot_dog_setup
+        --tasks hot_dog_setup prepare_coffee
 
     # Limit to specific trajectory indices:
     python scripts/sweep_trajectories.py \
@@ -38,6 +38,23 @@ Usage:
         --output-dir tmp/sweep_output \
         --layouts 11 56 --styles 34 42 --seeds 42 99 \
         --dry-run
+
+    # Balanced ~1k trajectory sweep from 24 base trajectories:
+    python scripts/sweep_trajectories.py \
+        --input-dir data_generation/task_level/data/image/20260324T031125Z \
+        --output-dir tmp/sweep_output_1k \
+        --layouts 11 42 56 \
+        --styles 34 42 \
+        --seeds 1 2 3 4 5 6 7
+
+    # Sweep and push the flattened dataset to Hugging Face Hub:
+    python scripts/sweep_trajectories.py \
+        --input-dir data_generation/task_level/data/image/20260324T031125Z \
+        --output-dir tmp/sweep_output \
+        --layouts 11 42 56 \
+        --styles 34 42 \
+        --seeds 1 2 3 4 5 6 7 \
+        --push-to-hub DorianAtSchool/robocasa-trajectories-single
 """
 
 from __future__ import annotations
@@ -45,11 +62,39 @@ from __future__ import annotations
 import argparse
 import itertools
 import json
+import re
 import shutil
 import sys
+import textwrap
 import time
 import traceback
 from pathlib import Path
+
+
+CLI_EPILOG = textwrap.dedent(
+    """\
+    Examples:
+      python scripts/sweep_trajectories.py \\
+        --input-dir data_generation/task_level/data/image/20260324T031125Z \\
+        --output-dir tmp/sweep_output
+
+      python scripts/sweep_trajectories.py \\
+        --input-dir data_generation/task_level/data/image/20260324T031125Z \\
+        --output-dir tmp/sweep_output \\
+        --tasks hot_dog_setup prepare_coffee \\
+        --layouts 11 42 56 \\
+        --styles 34 42 \\
+        --seeds 1 2 3 4 5 6 7
+
+      python scripts/sweep_trajectories.py \\
+        --input-dir data_generation/task_level/data/image/20260324T031125Z \\
+        --output-dir tmp/sweep_output_1k \\
+        --layouts 11 42 56 \\
+        --styles 34 42 \\
+        --seeds 1 2 3 4 5 6 7 \\
+        --push-to-hub DorianAtSchool/robocasa-trajectories-single
+    """
+)
 
 
 def discover_trajectories(
@@ -141,8 +186,277 @@ def run_one(
         executor.close()
 
 
+def _load_sweep_summary(output_root: Path) -> dict:
+    summary_path = output_root / "sweep_summary.json"
+    if not summary_path.exists():
+        raise FileNotFoundError(f"No sweep_summary.json in {output_root}")
+    with open(summary_path) as f:
+        return json.load(f)
+
+
+def _iter_completed_runs(output_root: Path):
+    summary = _load_sweep_summary(output_root)
+    combo_count = summary.get("scene_combos", 1)
+
+    for run_result in summary["results"]:
+        if run_result.get("status") != "ok":
+            continue
+
+        task_dir = run_result["task_dir"]
+        traj_idx = run_result["traj_idx"]
+        layout = run_result["layout"]
+        style = run_result["style"]
+        seed = run_result["seed"]
+
+        if combo_count == 1:
+            run_dir = output_root / task_dir / f"traj_{traj_idx:06d}"
+        else:
+            run_dir = output_root / task_dir / f"traj_{traj_idx:06d}" / f"L{layout}_S{style}_sd{seed}"
+
+        meta_path = run_dir / "trajectory_execution_metadata.json"
+        if not meta_path.exists():
+            continue
+
+        with open(meta_path) as f:
+            metadata = json.load(f)
+
+        episode_id = f"{task_dir}/traj_{traj_idx:06d}/L{layout}_S{style}_sd{seed}"
+        task_name = metadata.get("composite_task") or metadata.get("task") or task_dir
+        rel_run_dir = run_dir.relative_to(output_root)
+
+        yield {
+            "episode_id": episode_id,
+            "task": task_name,
+            "task_dir": task_dir,
+            "traj_idx": traj_idx,
+            "layout": layout,
+            "style": style,
+            "seed": seed,
+            "run_dir": run_dir,
+            "run_dir_rel": str(rel_run_dir),
+            "metadata": metadata,
+            "adapted_trajectory_path": str(rel_run_dir / "adapted_trajectory.json"),
+            "original_trajectory_path": str(rel_run_dir / "original_trajectory.json"),
+            "execution_metadata_path": str(rel_run_dir / "trajectory_execution_metadata.json"),
+        }
+
+
+def iter_sweep_sidecar_paths(output_root: Path):
+    """Yield repo-relative JSON artifact paths that should accompany the dataset."""
+    seen = {Path("sweep_summary.json")}
+    yield output_root / "sweep_summary.json", "sweep_summary.json"
+
+    for run in _iter_completed_runs(output_root):
+        for key in (
+            "adapted_trajectory_path",
+            "original_trajectory_path",
+            "execution_metadata_path",
+        ):
+            rel_path = Path(run[key])
+            if rel_path in seen:
+                continue
+            abs_path = output_root / rel_path
+            if not abs_path.exists():
+                continue
+            seen.add(rel_path)
+            yield abs_path, str(rel_path)
+
+
+def upload_sweep_sidecars(repo_id: str, output_root: Path) -> None:
+    """Upload referenced episode JSON files alongside the parquet dataset."""
+    from huggingface_hub import HfApi
+
+    HfApi().upload_folder(
+        repo_id=repo_id,
+        repo_type="dataset",
+        folder_path=output_root,
+        allow_patterns=[
+            "sweep_summary.json",
+            "**/adapted_trajectory.json",
+            "**/original_trajectory.json",
+            "**/trajectory_execution_metadata.json",
+        ],
+        commit_message="Upload sweep metadata sidecars",
+    )
+
+
+def sweep_output_to_dataset(output_root: Path) -> "datasets.Dataset":
+    """Convert sweep output directory into a single flat step-level dataset.
+
+    Each row is one tool step. Large episode-level JSON blobs are kept as
+    sidecar files in the dataset repo and referenced by path columns so the
+    HF table stays flat and viewable.
+    """
+    from datasets import Dataset, Features, Value, Image as HFImage
+
+    IMAGE_COLUMNS = [
+        "room_view", "top_view", "map",
+        "agentview_center", "agentview_left", "agentview_right", "wrist",
+    ]
+
+    VIEW_TOKENS = IMAGE_COLUMNS  # filename tokens match column names
+    rows: list[dict] = []
+    for run in _iter_completed_runs(output_root):
+        metadata = run["metadata"]
+        num_steps = len(metadata.get("steps", []))
+
+        for step in metadata.get("steps", []):
+            step_idx = step.get("step_index", 0)
+            tool = step.get("tool", "")
+            robot_idx = step.get("robot_idx", 0)
+            args = step.get("args", {})
+            success = step.get("success", False)
+
+            images = {col: None for col in IMAGE_COLUMNS}
+            image_paths = step.get("image_paths") or []
+            for img_path_str in image_paths:
+                img_path = Path(img_path_str)
+                if not img_path.exists() and img_path.suffix == ".png":
+                    img_path = img_path.with_suffix(".jpg")
+                if not img_path.exists():
+                    continue
+                fname = img_path.stem
+                for view_token in VIEW_TOKENS:
+                    if f"_{view_token}_" in f"_{fname}_":
+                        images[view_token] = str(img_path)
+                        break
+
+            args_clean = {k: v for k, v in args.items() if k != "image_paths"}
+
+            rows.append({
+                "episode_id": run["episode_id"],
+                "task": run["task"],
+                "task_dir": run["task_dir"],
+                "layout": run["layout"],
+                "style": run["style"],
+                "seed": run["seed"],
+                "num_steps": num_steps,
+                "run_dir": run["run_dir_rel"],
+                "adapted_trajectory_path": run["adapted_trajectory_path"],
+                "original_trajectory_path": run["original_trajectory_path"],
+                "execution_metadata_path": run["execution_metadata_path"],
+                "step_index": step_idx,
+                "tool_name": tool,
+                "tool_args": json.dumps(args_clean, separators=(",", ":")),
+                "robot_idx": robot_idx,
+                "success": success,
+                **images,
+            })
+
+    features = Features({
+        "episode_id": Value("string"),
+        "task": Value("string"),
+        "task_dir": Value("string"),
+        "layout": Value("int32"),
+        "style": Value("int32"),
+        "seed": Value("int32"),
+        "num_steps": Value("int32"),
+        "run_dir": Value("string"),
+        "adapted_trajectory_path": Value("string"),
+        "original_trajectory_path": Value("string"),
+        "execution_metadata_path": Value("string"),
+        "step_index": Value("int32"),
+        "tool_name": Value("string"),
+        "tool_args": Value("string"),
+        "robot_idx": Value("int32"),
+        "success": Value("bool"),
+        **{col: HFImage() for col in IMAGE_COLUMNS},
+    })
+
+    ds = Dataset.from_list(rows, features=features)
+    print(f"Built dataset: {len(ds)} step rows across {len(set(ds['episode_id']))} episodes")
+    return ds
+
+
+def build_dataset_card(repo_id: str, ds: "datasets.Dataset") -> str:
+    """Build a readable HuggingFace dataset card."""
+    tasks = sorted(set(ds["task"]))
+    episode_ids = ds["episode_id"]
+    episodes = len(set(episode_ids))
+    avg_steps = len(ds) / max(episodes, 1)
+    task_list = ", ".join(tasks) if tasks else "Unknown"
+    return textwrap.dedent(
+        f"""\
+        ---
+        pretty_name: RoboCasa Trajectories Single
+        configs:
+        - config_name: default
+          data_files:
+          - split: train
+            path: data/train-*
+        ---
+
+        # RoboCasa Trajectories Single
+
+        This dataset contains flat RoboCasa step rows with sidecar episode JSON.
+
+        ## Structure
+
+        Each row is one tool step.
+
+        Episode-level JSON is not duplicated into parquet. Instead, each row
+        carries repo-relative references:
+
+        - `adapted_trajectory_path`
+        - `original_trajectory_path`
+        - `execution_metadata_path`
+
+        Image columns stay inline and viewable in the dataset table:
+
+        - `room_view`
+        - `top_view`
+        - `map`
+        - `agentview_center`
+        - `agentview_left`
+        - `agentview_right`
+        - `wrist`
+
+        ## Summary
+
+        - rows: {len(ds)}
+        - episodes: {episodes}
+        - tasks: {task_list}
+        - average steps per episode: {avg_steps:.1f}
+
+        ## Load
+
+        ```python
+        from datasets import load_dataset
+
+        ds = load_dataset("{repo_id}", split="train")
+        ```
+
+        ## Notes
+
+        - Camera renders are stored as JPEG. Maps remain PNG.
+        - MP4 videos are not included in the dataset.
+        - Debug `initial` / `pre_initial_state` camera frames are not part of the dataset.
+        - Episode JSON sidecars are available in the repo files at the paths referenced by `*_path` columns.
+        """
+    )
+
+
+def upload_dataset_card(repo_id: str, ds: "datasets.Dataset") -> None:
+    """Overwrite the auto-generated Hub README with a readable dataset card."""
+    from io import BytesIO
+
+    from huggingface_hub import HfApi
+
+    HfApi().upload_file(
+        path_or_fileobj=BytesIO(build_dataset_card(repo_id, ds).encode("utf-8")),
+        path_in_repo="README.md",
+        repo_id=repo_id,
+        repo_type="dataset",
+        commit_message="Update dataset card",
+    )
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Sweep trajectories through sim executor")
+    parser = argparse.ArgumentParser(
+        description="Sweep trajectories through the sim executor and optionally publish the dataset.",
+        epilog=CLI_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("--input-dir", type=str, required=True, help="Dataset root dir")
     parser.add_argument("--output-dir", type=str, required=True, help="Output root dir")
     parser.add_argument("--tasks", type=str, nargs="+", default=None, help="Filter to specific task dir names")
@@ -163,6 +477,10 @@ def main():
         ),
     )
     parser.add_argument("--videos", action="store_true", help="Record per-camera MP4 videos for each run")
+    parser.add_argument(
+        "--push-to-hub", type=str, default=None, metavar="REPO_ID",
+        help="Push dataset to HuggingFace Hub (e.g. 'username/robocasa-trajectories')",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Print what would run without executing")
     args = parser.parse_args()
 
@@ -281,6 +599,18 @@ def main():
         for r in results:
             if r["status"] == "error":
                 print(f"  {r['task_dir']}/traj_{r['traj_idx']:06d} L{r['layout']}/S{r['style']}/sd{r['seed']}: {r['error']}")
+
+    # Push to HuggingFace Hub if requested
+    if args.push_to_hub:
+        print(f"\nConverting sweep output to HuggingFace dataset...")
+        ds = sweep_output_to_dataset(output_root)
+        print(f"Pushing to {args.push_to_hub}...")
+        ds.push_to_hub(args.push_to_hub)
+        print("Uploading sweep metadata sidecars...")
+        upload_sweep_sidecars(args.push_to_hub, output_root)
+        print("Uploading dataset card...")
+        upload_dataset_card(args.push_to_hub, ds)
+        print(f"Done! Dataset pushed to https://huggingface.co/datasets/{args.push_to_hub}")
 
 
 if __name__ == "__main__":
