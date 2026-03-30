@@ -241,8 +241,8 @@ class SimToolExecutor:
         for camera_name, image in frames.items():
             camera_dir = output_dir / camera_name
             camera_dir.mkdir(parents=True, exist_ok=True)
-            path = camera_dir / f"{prefix}.png"
-            imageio.imwrite(path, image)
+            path = camera_dir / f"{prefix}.jpg"
+            imageio.imwrite(path, image, quality=85)
             saved[camera_name] = path
         return saved
 
@@ -265,10 +265,18 @@ class SimToolExecutor:
             camera_name=camera_name,
         )[::-1]
 
-    def _save_image(self, image: np.ndarray, image_path: str | Path) -> Path:
+    def _save_image(
+        self, image: np.ndarray, image_path: str | Path, *, is_map: bool = False
+    ) -> Path:
         path = Path(image_path)
+        # Use JPEG for camera renders (much smaller), keep PNG for maps
+        if not is_map and path.suffix.lower() == ".png":
+            path = path.with_suffix(".jpg")
         path.parent.mkdir(parents=True, exist_ok=True)
-        imageio.imwrite(path, image)
+        if path.suffix.lower() in {".jpg", ".jpeg"}:
+            imageio.imwrite(path, image, quality=85)
+        else:
+            imageio.imwrite(path, image)
         return path
 
     def _camera_name_for_agent_view(

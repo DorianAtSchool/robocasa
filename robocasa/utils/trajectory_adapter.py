@@ -351,7 +351,6 @@ class TrajectoryAdapter:
                 "objects": dict(self._object_display_names),
                 "fixtures": dict(self._fixture_display_names),
             },
-            "source_trajectory": trajectory,
         }
 
     def execute(
@@ -360,6 +359,7 @@ class TrajectoryAdapter:
         output_dir: str | Path | None = None,
         fps: int = 2,
         skip_videos: bool = False,
+        save_debug_frames: bool = False,
     ) -> dict[str, Any]:
         """Adapt, load initial state, then execute with frames and video.
 
@@ -371,7 +371,7 @@ class TrajectoryAdapter:
         # Save pre-initial-state frames (before doors are closed / objects moved).
         # Useful for debugging: confirms objects are spawned correctly by the sim
         # even if the trajectory's initial_state hides them (e.g. closes cabinet).
-        if output_dir is not None:
+        if output_dir is not None and save_debug_frames:
             self.executor.save_scene_frames(output_dir, prefix="pre_initial_state")
 
         load_summary = self.executor.load_initial_state(adapted["initial_state"])
@@ -381,14 +381,14 @@ class TrajectoryAdapter:
         # trajectory's agent locations rather than the sim default.
         robot_spawn = getattr(self.executor, "_robot_spawn", "sim")
         if output_dir is not None and robot_spawn == "trajectory":
-            map_path = self.executor.save_placement_map(
+            self.executor.save_placement_map(
                 output_dir, prefix="initial",
                 clean_labels=getattr(self.executor, "_clean_map_labels", True),
             )
-            # Map re-saved to reflect post-trajectory-spawn positions
-            # Also save post-initial-state rendered frames so the room view
-            # matches the map (both reflect post-trajectory-spawn positions).
-            self.executor.save_scene_frames(output_dir, prefix="initial")
+            if save_debug_frames:
+                # Save post-initial-state rendered frames only when explicitly
+                # debugging spawn / initial-state alignment.
+                self.executor.save_scene_frames(output_dir, prefix="initial")
 
         if output_dir is not None:
             output_path = Path(output_dir)
@@ -540,10 +540,17 @@ class TrajectoryAdapter:
             image_paths = args.get("image_paths")
             if not (isinstance(image_paths, list) and image_paths):
                 image_paths = step.get("image_paths")
+            views = args.get("views") if isinstance(args.get("views"), list) else []
             if isinstance(image_paths, list) and image_paths:
                 args["image_paths"] = [
-                    str(self._resolve_output_path(image_path, output_dir))
-                    for image_path in image_paths
+                    str(
+                        self._resolve_image_output_path(
+                            image_path,
+                            output_dir,
+                            view_name=views[idx] if idx < len(views) else None,
+                        )
+                    )
+                    for idx, image_path in enumerate(image_paths)
                 ]
             else:
                 image_path = args.pop("image_path", None)
@@ -551,7 +558,13 @@ class TrajectoryAdapter:
                     image_path = step.get("image_path")
                 if isinstance(image_path, str):
                     args["image_paths"] = [
-                        str(self._resolve_output_path(image_path, output_dir))
+                        str(
+                            self._resolve_image_output_path(
+                                image_path,
+                                output_dir,
+                                view_name=views[0] if views else None,
+                            )
+                        )
                     ]
             tool_name = "get_image"
 
@@ -652,6 +665,19 @@ class TrajectoryAdapter:
         if path.is_absolute() or output_dir is None:
             return path
         return Path(output_dir) / path
+
+    def _resolve_image_output_path(
+        self,
+        image_path: str,
+        output_dir: str | Path | None,
+        *,
+        view_name: str | None = None,
+    ) -> Path:
+        path = self._resolve_output_path(image_path, output_dir)
+        normalized_view = str(view_name).strip().lower() if view_name is not None else None
+        if normalized_view != "map" and path.suffix.lower() == ".png":
+            return path.with_suffix(".jpg")
+        return path
 
     def _resolve_dispenser_id(self, dispenser_id: str) -> str:
         if dispenser_id in self._dispenser_aliases:
@@ -882,12 +908,19 @@ def execute_trajectory(
     allow_approximate_ids: bool = True,
     fps: int = 2,
     skip_videos: bool = False,
+    save_debug_frames: bool = False,
 ) -> dict[str, Any]:
     """Adapt and execute one external trajectory."""
     return TrajectoryAdapter(
         executor=executor,
         allow_approximate_ids=allow_approximate_ids,
-    ).execute(trajectory, output_dir=output_dir, fps=fps, skip_videos=skip_videos)
+    ).execute(
+        trajectory,
+        output_dir=output_dir,
+        fps=fps,
+        skip_videos=skip_videos,
+        save_debug_frames=save_debug_frames,
+    )
 
 
 __all__ = [
