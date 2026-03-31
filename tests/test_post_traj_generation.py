@@ -78,9 +78,10 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
         self.assertEqual(
             [step["tool"] for step in trajectory["steps"]],
             [
+                "communicate",
+                "communicate",
                 "get_image",
-                "communicate",
-                "communicate",
+                "get_image",
                 "get_image",
                 "navigate_to_fixture",
                 "get_image",
@@ -91,22 +92,34 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
         )
         self.assertEqual(
             [step["step"] for step in trajectory["steps"]],
-            list(range(9)),
+            list(range(10)),
         )
         self.assertEqual(
-            trajectory["steps"][0]["args"],
+            trajectory["steps"][2]["args"],
             {"views": ["top_view", "room_view", "map"]},
         )
         self.assertEqual(
-            trajectory["steps"][0]["image_paths"],
+            trajectory["steps"][2]["image_paths"],
             [
-                "images/traj_000000/0_top_view_agent_0.png",
-                "images/traj_000000/0_room_view_agent_0.png",
-                "images/traj_000000/0_map_agent_0.png",
+                "images/traj_000000/2_top_view_agent_0.png",
+                "images/traj_000000/2_room_view_agent_0.png",
+                "images/traj_000000/2_map_agent_0.png",
             ],
         )
         self.assertEqual(
             trajectory["steps"][3]["args"],
+            {"views": ["top_view", "room_view", "map"]},
+        )
+        self.assertEqual(
+            trajectory["steps"][3]["image_paths"],
+            [
+                "images/traj_000000/3_top_view_agent_1.png",
+                "images/traj_000000/3_room_view_agent_1.png",
+                "images/traj_000000/3_map_agent_1.png",
+            ],
+        )
+        self.assertEqual(
+            trajectory["steps"][4]["args"],
             {
                 "views": [
                     "agentview_center",
@@ -116,19 +129,23 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
             },
         )
         self.assertEqual(
-            trajectory["steps"][3]["image_paths"],
+            trajectory["steps"][4]["image_paths"],
             [
-                "images/traj_000000/3_agentview_center_agent_0.png",
-                "images/traj_000000/3_agentview_left_agent_0.png",
-                "images/traj_000000/3_agentview_right_agent_0.png",
+                "images/traj_000000/4_agentview_center_agent_0.png",
+                "images/traj_000000/4_agentview_left_agent_0.png",
+                "images/traj_000000/4_agentview_right_agent_0.png",
             ],
         )
         self.assertEqual(
-            trajectory["steps"][0]["reasoning"],
+            trajectory["steps"][2]["reasoning"],
             "I need top-view, room-view, and map images before the task begins.",
         )
         self.assertEqual(
             trajectory["steps"][3]["reasoning"],
+            "I need top-view, room-view, and map images before the task begins.",
+        )
+        self.assertEqual(
+            trajectory["steps"][4]["reasoning"],
             (
                 "I need center agent-view, left agent-view, and right agent-view "
                 "images to observe the current scene before I execute "
@@ -136,11 +153,11 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
             ),
         )
         self.assertEqual(
-            trajectory["steps"][4]["reasoning"],
+            trajectory["steps"][5]["reasoning"],
             "I need to reach the cabinet.",
         )
         self.assertEqual(
-            trajectory["steps"][5]["reasoning"],
+            trajectory["steps"][6]["reasoning"],
             (
                 "I need center agent-view, left agent-view, and right agent-view "
                 "images to observe the current scene after I executed "
@@ -148,20 +165,20 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
             ),
         )
         self.assertEqual(
-            trajectory["steps"][6]["reasoning"],
+            trajectory["steps"][7]["reasoning"],
             (
                 "I need wrist and center agent-view images to observe the current "
                 "scene before I execute pick_up_object."
             ),
         )
         self.assertEqual(
-            trajectory["steps"][8]["reasoning"],
+            trajectory["steps"][9]["reasoning"],
             (
                 "I need wrist and center agent-view images to observe the current "
                 "scene after I executed pick_up_object."
             ),
         )
-        self.assertNotIn("image_path", trajectory["steps"][0])
+        self.assertNotIn("image_path", trajectory["steps"][2])
         self.assertFalse(trajectory["validation"]["is_valid"])
         self.assertEqual(trajectory["validation"]["checks"], [])
         self.assertIsNone(trajectory["validation"]["final_state"])
@@ -213,6 +230,8 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
         processed = post_process_trajectory(trajectory)
 
         self.assertNotIn("agents", processed)
+        self.assertEqual(processed["steps"][2]["agent"], "agent_0")
+        self.assertEqual(processed["steps"][3]["agent"], "agent_1")
 
     def test_resolve_output_dataset_path_targets_image_copy(self):
         dataset_path = Path(
@@ -300,13 +319,14 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
                 output_trajectory_path.read_text(encoding="utf-8")
             )
             self.assertEqual(source_trajectory["steps"][0]["tool"], "communicate")
-            self.assertEqual(updated_trajectory["steps"][0]["tool"], "get_image")
+            self.assertEqual(updated_trajectory["steps"][0]["tool"], "communicate")
+            self.assertEqual(updated_trajectory["steps"][2]["tool"], "get_image")
             self.assertEqual(
-                updated_trajectory["steps"][0]["image_paths"],
+                updated_trajectory["steps"][2]["image_paths"],
                 [
-                    "images/traj_000000/0_top_view_agent_0.png",
-                    "images/traj_000000/0_room_view_agent_0.png",
-                    "images/traj_000000/0_map_agent_0.png",
+                    "images/traj_000000/2_top_view_agent_0.png",
+                    "images/traj_000000/2_room_view_agent_0.png",
+                    "images/traj_000000/2_map_agent_0.png",
                 ],
             )
             self.assertEqual(

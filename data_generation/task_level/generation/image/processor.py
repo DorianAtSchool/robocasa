@@ -202,6 +202,19 @@ def _build_initial_observation_step(agent_id: str) -> dict[str, Any]:
     )
 
 
+def _resolve_initial_observation_insert_index(
+    steps: Sequence[dict[str, Any]],
+) -> int:
+    """Finds where the shared opening observations should be inserted."""
+
+    insert_index = 0
+    for step in steps:
+        if step.get("tool") != COMMUNICATE_TOOL_NAME:
+            break
+        insert_index += 1
+    return insert_index
+
+
 def _resolve_action_view_names(tool_name: str) -> tuple[str, ...]:
     """Chooses the inserted observation views for one wrapped action tool."""
 
@@ -250,14 +263,12 @@ def _resolve_observation_step_view_names(step: dict[str, Any]) -> tuple[str, ...
 def rebuild_steps_with_image_observations(
     steps: list[dict[str, Any]],
     *,
-    initial_image_agent_id: str,
+    initial_image_agent_ids: Sequence[str],
     trajectory_id: str,
 ) -> list[dict[str, Any]]:
     """Rebuilds one step list with deterministic inserted observation steps."""
 
-    # Seed each rewritten trajectory with shared scene snapshots before any
-    # agent starts acting.
-    rebuilt_steps = [_build_initial_observation_step(initial_image_agent_id)]
+    cleaned_steps: list[dict[str, Any]] = []
     for step in steps:
         tool_name = step.get("tool")
         if tool_name in LEGACY_INSERTED_OBSERVATION_TOOL_NAMES:
@@ -265,7 +276,20 @@ def rebuild_steps_with_image_observations(
             # and old split-tool outputs can be upgraded in one pass.
             continue
 
-        copied_step = _copy_step_without_generated_fields(step)
+        cleaned_steps.append(_copy_step_without_generated_fields(step))
+
+    initial_observation_insert_index = _resolve_initial_observation_insert_index(
+        cleaned_steps
+    )
+    rebuilt_steps = cleaned_steps[:initial_observation_insert_index]
+    # Keep the opening observations together after the initial coordination
+    # block so every agent captures the shared scene before the first task action.
+    rebuilt_steps.extend(
+        _build_initial_observation_step(agent_id)
+        for agent_id in initial_image_agent_ids
+    )
+    for copied_step in cleaned_steps[initial_observation_insert_index:]:
+        tool_name = copied_step.get("tool")
         if tool_name == COMMUNICATE_TOOL_NAME:
             rebuilt_steps.append(copied_step)
             continue
@@ -311,21 +335,42 @@ def rebuild_steps_with_image_observations(
     return rebuilt_steps
 
 
-def _resolve_initial_image_agent_id(trajectory: dict[str, Any]) -> str:
-    """Chooses which agent owns the prepended top_view snapshot."""
+def _append_unique_agent_id(
+    agent_ids: list[str],
+    seen_agent_ids: set[str],
+    agent_id: Any,
+) -> None:
+    """Appends a non-empty agent ID once while preserving its discovery order."""
+
+    if not isinstance(agent_id, str) or not agent_id or agent_id in seen_agent_ids:
+        return
+    seen_agent_ids.add(agent_id)
+    agent_ids.append(agent_id)
+
+
+def _resolve_initial_image_agent_ids(trajectory: dict[str, Any]) -> tuple[str, ...]:
+    """Chooses which agents receive the opening shared-scene observations."""
+
+    resolved_agent_ids: list[str] = []
+    seen_agent_ids: set[str] = set()
+    for agent in trajectory.get("agents", ()):
+        _append_unique_agent_id(
+            resolved_agent_ids,
+            seen_agent_ids,
+            agent.get("agent"),
+        )
 
     for step in trajectory.get("steps", ()):
-        tool_name = step.get("tool")
-        agent_id = step.get("agent")
-        if tool_name in LEGACY_INSERTED_OBSERVATION_TOOL_NAMES:
+        if step.get("tool") in LEGACY_INSERTED_OBSERVATION_TOOL_NAMES:
             continue
-        if isinstance(agent_id, str) and agent_id:
-            return agent_id
+        _append_unique_agent_id(
+            resolved_agent_ids,
+            seen_agent_ids,
+            step.get("agent"),
+        )
 
-    for agent in trajectory.get("agents", ()):
-        agent_id = agent.get("agent")
-        if isinstance(agent_id, str) and agent_id:
-            return agent_id
+    if resolved_agent_ids:
+        return tuple(resolved_agent_ids)
 
     raise ValueError("Trajectory records must contain at least one valid agent.")
 
@@ -376,7 +421,7 @@ def post_process_trajectory(
     updated_trajectory = dict(trajectory)
     updated_trajectory["steps"] = rebuild_steps_with_image_observations(
         updated_trajectory["steps"],
-        initial_image_agent_id=_resolve_initial_image_agent_id(updated_trajectory),
+        initial_image_agent_ids=_resolve_initial_image_agent_ids(updated_trajectory),
         trajectory_id=trajectory_id,
     )
     _replace_validation_with_post_process_status(updated_trajectory)

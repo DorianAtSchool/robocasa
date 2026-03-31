@@ -207,7 +207,7 @@ python -m data_generation.task_level.generation.image.cli \
 ```
 
 Default post-processing behavior:
-- Add one initial `get_image(views=[top_view, room_view, map])` step before any task action.
+- Add one initial `get_image(views=[top_view, room_view, map])` step per agent after the opening coordination block and before the first task action.
 - Wrap each navigation action with one `get_image` step before and after using
   `agentview_center`, `agentview_left`, and `agentview_right`.
 - Wrap each non-navigation action with one `get_image` step before and after using
