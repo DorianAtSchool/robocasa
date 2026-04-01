@@ -100,7 +100,7 @@ def build_resolved_grounding_payload(
         "composite_task": trajectory.get("composite_task"),
         "scene_config": deepcopy(scene_config) if scene_config is not None else None,
         "grounding_map": deepcopy(grounding_map),
-        "scene_summary": _build_scene_summary(scene),
+        "scene_summary": build_scene_summary(scene),
         "resolved_grounding": resolve_grounding_map(grounding_map, scene),
     }
 
@@ -180,7 +180,7 @@ def resolve_grounding_map(
     }
 
 
-def _build_scene_summary(scene: dict[str, Any]) -> dict[str, Any]:
+def build_scene_summary(scene: dict[str, Any]) -> dict[str, Any]:
     """Builds a compact serializable scene summary for grounding outputs."""
 
     fixtures = scene.get("fixtures", {})

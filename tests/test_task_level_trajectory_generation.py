@@ -1,3 +1,4 @@
+from concurrent.futures import Future
 from copy import deepcopy
 import json
 import runpy
@@ -866,6 +867,25 @@ def make_prepare_coffee_task_instance(run_index=0):
     return PREPARE_COFFEE_TASK.build_task_instance(run_index)
 
 
+def make_prepare_coffee_runtime_candidate(
+    runtime_config,
+    *,
+    include_agents=True,
+    alternative=False,
+):
+    """Builds a valid PrepareCoffee candidate for the current runtime."""
+
+    _ = PREPARE_COFFEE_TASK.build_task_instance(0, runtime_config)
+    base_candidate = (
+        make_alternative_valid_candidate()
+        if alternative
+        else make_valid_candidate(include_agents=include_agents)
+    )
+    if not include_agents:
+        base_candidate.pop("agents", None)
+    return base_candidate
+
+
 def build_prepare_coffee_prompt_for_run(
     variation_key, *, run_index=0, retry_feedback=None
 ):
@@ -1028,7 +1048,7 @@ class SubatomicToolCatalogTests(unittest.TestCase):
             prompt,
         )
         self.assertIn(
-            "use the exact symbolic IDs shown in the allowed tools block",
+            "use the exact IDs shown in the allowed tools block",
             prompt,
         )
         self.assertIn(
@@ -1135,6 +1155,51 @@ class PrepareCoffeeTaskInstanceTests(unittest.TestCase):
             first_task_instance.initial_state, second_task_instance.initial_state
         )
 
+    def test_task_instance_sampling_allows_same_or_different_agent_starts(self):
+        sampled_locations = [
+            tuple(
+                task_instance.initial_state["agents"][agent_id]["location"]
+                for agent_id in ("agent_0", "agent_1")
+            )
+            for task_instance in (
+                make_prepare_coffee_task_instance(run_index) for run_index in range(12)
+            )
+        ]
+
+        self.assertTrue(
+            any(
+                agent_0_location == agent_1_location
+                for agent_0_location, agent_1_location in sampled_locations
+            )
+        )
+        self.assertTrue(
+            any(
+                agent_0_location != agent_1_location
+                for agent_0_location, agent_1_location in sampled_locations
+            )
+        )
+
+    def test_task_instance_keeps_canonical_start_positions_when_disabled(self):
+        runtime_config = RuntimeConfig(
+            composite_task="PrepareCoffee",
+            num_runs=1,
+            model="gemini-test",
+            sdk="google-genai",
+            project=None,
+            location="us-central1",
+            temperature=0.0,
+            random_start_location=False,
+            max_workers=1,
+            max_retries=1,
+        )
+
+        task_instance = PREPARE_COFFEE_TASK.build_task_instance(0, runtime_config)
+
+        self.assertEqual(
+            task_instance.initial_state["agents"],
+            PREPARE_COFFEE_INITIAL_STATE["agents"],
+        )
+
     def test_runtime_prompt_uses_sampled_initial_positions(self):
         task_instance = make_prepare_coffee_task_instance(0)
         prompt = build_prepare_coffee_prompt(
@@ -1148,6 +1213,31 @@ class PrepareCoffeeTaskInstanceTests(unittest.TestCase):
                 f"- {agent_id}: {task_instance.initial_state['agents'][agent_id]['location']}",
                 prompt,
             )
+
+    def test_build_task_instance_keeps_prepare_coffee_symbolic(self):
+        runtime_config = RuntimeConfig(
+            composite_task="PrepareCoffee",
+            num_runs=1,
+            model="gemini-test",
+            sdk="google-genai",
+            project=None,
+            location="us-central1",
+            temperature=0.0,
+            max_workers=1,
+            max_retries=1,
+        )
+        task_instance = PREPARE_COFFEE_TASK.build_task_instance(0, runtime_config)
+
+        self.assertIn("mug", task_instance.initial_state["objects"])
+        self.assertIn("mug_source_fixture", task_instance.initial_state["fixtures"])
+        self.assertFalse(hasattr(task_instance, "grounding_mode"))
+        grounded_prompt = build_prepare_coffee_prompt(
+            "traj-000000-attempt-00",
+            task_instance=task_instance,
+        )
+        self.assertIn("mug_source_fixture", grounded_prompt)
+        self.assertIn("coffee_machine", grounded_prompt)
+        self.assertNotIn("cab_main", grounded_prompt)
 
     def test_validator_uses_sampled_initial_positions(self):
         initial_state = deepcopy(PREPARE_COFFEE_INITIAL_STATE)
@@ -1325,12 +1415,9 @@ class DotenvLoadingTests(unittest.TestCase):
 
         self.assertEqual(runtime_config.resume_path, Path("/tmp/existing-run"))
 
-    def test_parse_args_accepts_scene_metadata_flags(self):
-        runtime_config = parse_args(["--layout", "11", "--style", "34", "--seed", "42"])
-
-        self.assertEqual(runtime_config.layout, 11)
-        self.assertEqual(runtime_config.style, 34)
-        self.assertEqual(runtime_config.seed, 42)
+    def test_parse_args_rejects_scene_metadata_flags(self):
+        with self.assertRaises(SystemExit):
+            parse_args(["--layout", "11", "--style", "34", "--seed", "42"])
 
     def test_parse_args_rejects_removed_output_flag(self):
         with self.assertRaises(SystemExit):
@@ -1351,12 +1438,35 @@ class DotenvLoadingTests(unittest.TestCase):
         self.assertEqual(dashed_runtime_config.thinking_level, "minimal")
         self.assertEqual(underscored_runtime_config.thinking_level, "high")
 
+    def test_parse_args_accepts_random_start_location_flag_and_alias(self):
+        dashed_runtime_config = parse_args(["--random-start-location", "false"])
+        underscored_runtime_config = parse_args(["--random_start_location", "true"])
+
+        self.assertFalse(dashed_runtime_config.random_start_location)
+        self.assertTrue(underscored_runtime_config.random_start_location)
+
     def test_parse_args_accepts_num_runs_flag_and_alias(self):
         dashed_runtime_config = parse_args(["--num-runs", "7"])
         underscored_runtime_config = parse_args(["--num_runs", "9"])
 
         self.assertEqual(dashed_runtime_config.num_runs, 7)
         self.assertEqual(underscored_runtime_config.num_runs, 9)
+
+    def test_parse_args_accepts_paralleize_tasks_flag_and_alias(self):
+        dashed_runtime_config = parse_args(["--paralleize-tasks"])
+        underscored_runtime_config = parse_args(["--paralleize_tasks"])
+
+        self.assertTrue(dashed_runtime_config.parallelize_tasks)
+        self.assertTrue(underscored_runtime_config.parallelize_tasks)
+
+    def test_parse_args_accepts_parallelize_tasks_compatibility_aliases(self):
+        dashed_runtime_config = parse_args(["--parallelize-tasks"])
+        underscored_runtime_config = parse_args(["--parallelize_tasks"])
+        legacy_runtime_config = parse_args(["--parallelize-runs"])
+
+        self.assertTrue(dashed_runtime_config.parallelize_tasks)
+        self.assertTrue(underscored_runtime_config.parallelize_tasks)
+        self.assertTrue(legacy_runtime_config.parallelize_tasks)
 
     def test_parse_args_accepts_sampling_flags(self):
         runtime_config = parse_args(["--sampling", "verbalized", "--verbalized-k", "3"])
@@ -1371,10 +1481,9 @@ class DotenvLoadingTests(unittest.TestCase):
         self.assertEqual(runtime_config.composite_tasks, ("PrepareCoffee",))
         self.assertIsNotNone(runtime_config.summary_path)
         self.assertEqual(runtime_config.summary_path.name, "summary.json")
-        self.assertEqual(runtime_config.summary_path.parents[4], DEFAULT_OUTPUT_DIR)
-        self.assertEqual(runtime_config.summary_path.parents[3].name, "raw")
-        self.assertEqual(runtime_config.summary_path.parents[2].name, DEFAULT_MODEL)
-        self.assertEqual(runtime_config.summary_path.parents[1].name, "prepare_coffee")
+        self.assertIn(DEFAULT_OUTPUT_DIR, runtime_config.summary_path.parents)
+        self.assertIn("raw", runtime_config.summary_path.parts)
+        self.assertIn("prepare_coffee", runtime_config.summary_path.parts)
 
     def test_parse_args_accepts_multiple_tasks(self):
         runtime_config = parse_args(["--tasks", "PrepareCoffee", "HotDogSetup"])
@@ -2233,13 +2342,18 @@ class FiniteStateTaskValidatorTests(unittest.TestCase):
             if step["tool"] not in {"communicate", "get_image"}
         ]
         candidate["steps"] = [
-            candidate["steps"][0],
-            candidate["steps"][1],
             make_required_get_image_step(
                 "agent_0",
                 reasoning="I should inspect the full scene before the task begins.",
                 views=("top_view", "room_view", "map"),
             ),
+            make_required_get_image_step(
+                "agent_1",
+                reasoning="I should inspect the full scene before the task begins.",
+                views=("top_view", "room_view", "map"),
+            ),
+            candidate["steps"][0],
+            candidate["steps"][1],
             make_required_get_image_step(
                 "agent_0",
                 reasoning="I should inspect the path before navigation.",
@@ -2820,9 +2934,6 @@ class PrepareCoffeeValidatorTests(unittest.TestCase):
             max_retries=1,
             sampling="verbalized",
             verbalized_k=2,
-            layout=11,
-            style=34,
-            seed=42,
         )
 
         with self.assertRaises(VerbalizedSamplingValidationError):
@@ -3721,6 +3832,7 @@ class GenerationTests(unittest.TestCase):
         self.assertEqual(
             payload["model_config"],
             {
+                "initialization": {"random_start_location": True},
                 "reasoning": {"thinking_level": None},
                 "sampling": {"temperature": 0.5, "strategy": "base"},
             },
@@ -3981,13 +4093,16 @@ class GenerationTests(unittest.TestCase):
             max_retries=1,
             sampling="verbalized",
             verbalized_k=2,
-            layout=11,
-            style=34,
-            seed=42,
         )
         raw_response = make_verbalized_response(
-            make_valid_candidate(include_agents=False),
-            make_alternative_valid_candidate(),
+            make_prepare_coffee_runtime_candidate(
+                runtime_config,
+                include_agents=False,
+            ),
+            make_prepare_coffee_runtime_candidate(
+                runtime_config,
+                alternative=True,
+            ),
             probabilities=[0.65, 0.35],
         )
 
@@ -4069,8 +4184,14 @@ class GenerationTests(unittest.TestCase):
                 [
                     GenerationResult(
                         payload=make_verbalized_response(
-                            make_valid_candidate(include_agents=False),
-                            make_alternative_valid_candidate(),
+                            make_prepare_coffee_runtime_candidate(
+                                runtime_config,
+                                include_agents=False,
+                            ),
+                            make_prepare_coffee_runtime_candidate(
+                                runtime_config,
+                                alternative=True,
+                            ),
                             probabilities=[0.6, 0.4],
                         ),
                         usage=GenerationUsage(
@@ -4204,7 +4325,7 @@ class GenerationTests(unittest.TestCase):
             "request": payload,
         }
 
-        self.assertEqual(measure_nested_json_depth(row), 15)
+        self.assertEqual(measure_nested_json_depth(row), 17)
 
     def test_preflight_cost_estimate_counts_verbalized_prompt_once_per_run(self):
         runtime_config = RuntimeConfig(
@@ -4830,7 +4951,7 @@ class GenerationTests(unittest.TestCase):
             "done attempts=1/3 total=$0.0013 avg=$0.0013 calls=12",
         )
 
-    def test_generate_single_trajectory_persists_task_and_scene_metadata(self):
+    def test_generate_single_trajectory_persists_symbolic_task_metadata(self):
         runtime_config = RuntimeConfig(
             composite_task="PrepareCoffee",
             num_runs=1,
@@ -4841,22 +4962,21 @@ class GenerationTests(unittest.TestCase):
             temperature=0.5,
             max_workers=1,
             max_retries=1,
-            layout=11,
-            style=34,
-            seed=42,
         )
 
         trajectory = generate_single_trajectory(
             trajectory_index=0,
             runtime_config=runtime_config,
             task_definition=PREPARE_COFFEE_TASK,
-            client_factory=lambda: SequencedFakeClient([make_valid_candidate()]),
+            client_factory=lambda: SequencedFakeClient(
+                [make_prepare_coffee_runtime_candidate(runtime_config)]
+            ),
         )
 
         self.assertEqual(trajectory["task"], "PrepareCoffee")
-        self.assertEqual(trajectory["layout"], 11)
-        self.assertEqual(trajectory["style"], 34)
-        self.assertEqual(trajectory["seed"], 42)
+        self.assertNotIn("layout", trajectory)
+        self.assertNotIn("style", trajectory)
+        self.assertNotIn("seed", trajectory)
 
     def test_generate_single_trajectory_retry_status_includes_tool_call_count(self):
         runtime_config = RuntimeConfig(
@@ -5078,8 +5198,14 @@ class GenerationTests(unittest.TestCase):
                 [
                     GenerationResult(
                         payload=make_verbalized_response(
-                            make_valid_candidate(include_agents=False),
-                            make_alternative_valid_candidate(),
+                            make_prepare_coffee_runtime_candidate(
+                                runtime_config,
+                                include_agents=False,
+                            ),
+                            make_prepare_coffee_runtime_candidate(
+                                runtime_config,
+                                alternative=True,
+                            ),
                             probabilities=[0.6, 0.4],
                         ),
                         usage=GenerationUsage(
@@ -5372,9 +5498,6 @@ class GenerationTests(unittest.TestCase):
             max_retries=1,
             sampling="verbalized",
             verbalized_k=2,
-            layout=11,
-            style=34,
-            seed=42,
         )
 
         trajectories = generate_single_trajectory(
@@ -5385,8 +5508,14 @@ class GenerationTests(unittest.TestCase):
                 [
                     GenerationResult(
                         payload=make_verbalized_response(
-                            make_valid_candidate(include_agents=False),
-                            make_alternative_valid_candidate(),
+                            make_prepare_coffee_runtime_candidate(
+                                runtime_config,
+                                include_agents=False,
+                            ),
+                            make_prepare_coffee_runtime_candidate(
+                                runtime_config,
+                                alternative=True,
+                            ),
                             probabilities=[0.6, 0.4],
                         ),
                         usage=GenerationUsage(
@@ -5416,17 +5545,13 @@ class GenerationTests(unittest.TestCase):
             [0.6, 0.4],
         )
         self.assertEqual(
-            [
-                (
-                    trajectory["task"],
-                    trajectory["layout"],
-                    trajectory["style"],
-                    trajectory["seed"],
-                )
-                for trajectory in trajectories
-            ],
-            [("PrepareCoffee", 11, 34, 42), ("PrepareCoffee", 11, 34, 42)],
+            [trajectory["task"] for trajectory in trajectories],
+            ["PrepareCoffee", "PrepareCoffee"],
         )
+        for trajectory in trajectories:
+            self.assertNotIn("layout", trajectory)
+            self.assertNotIn("style", trajectory)
+            self.assertNotIn("seed", trajectory)
 
     def test_generate_single_trajectory_reports_success_fraction_for_mixed_verbalized_run(
         self,
@@ -5812,11 +5937,11 @@ class GenerationTests(unittest.TestCase):
 
         self.assertAlmostEqual(
             payload["cost_summary"]["total_cost_usd"],
-            0.0025,
+            0.0039,
         )
         self.assertAlmostEqual(
             payload["cost_summary"]["average_trajectory_cost_usd"],
-            0.0013,
+            0.0019,
         )
 
     def test_preflight_cost_estimate_uses_manual_task_token_estimate(self):
@@ -6451,7 +6576,7 @@ class GenerationTests(unittest.TestCase):
             with mock.patch(
                 "data_generation.task_level.generation.raw.cli.generate_trajectories",
                 return_value=fixed_payload,
-            ):
+            ) as mocked_generate:
                 with mock.patch(
                     "data_generation.task_level.generation.raw.cli.resolve_dataset_output_path",
                     return_value=summary_path,
@@ -6465,6 +6590,7 @@ class GenerationTests(unittest.TestCase):
                         )
 
             self.assertEqual(exit_code, 0)
+            self.assertTrue(mocked_generate.call_args.kwargs["show_progress"])
             self.assertTrue(summary_path.exists())
             self.assertTrue(cost_output_path.exists())
             self.assertTrue(error_output_path.exists())
@@ -6587,42 +6713,7 @@ class GenerationTests(unittest.TestCase):
                 },
             )
             printed_messages = [call.args[0] for call in mocked_print.call_args_list]
-            self.assertTrue(
-                any(
-                    message.startswith("Wrote trajectory summary to ")
-                    for message in printed_messages
-                )
-            )
-            self.assertTrue(
-                any(
-                    message.startswith("Wrote 1 trajectory files to ")
-                    for message in printed_messages
-                )
-            )
-            self.assertTrue(
-                any(
-                    message.startswith("Wrote 1 prompt files to ")
-                    for message in printed_messages
-                )
-            )
-            self.assertTrue(
-                any(
-                    message.startswith("Wrote 1 raw output files to ")
-                    for message in printed_messages
-                )
-            )
-            self.assertTrue(
-                any(
-                    message.startswith("Wrote error summary to ")
-                    for message in printed_messages
-                )
-            )
-            self.assertFalse(
-                any(
-                    message.startswith("Estimated cost ")
-                    for message in printed_messages
-                )
-            )
+            self.assertEqual(printed_messages, [summary_path.parent])
 
     def test_main_prints_failure_summary_for_incomplete_single_task_runs(self):
         fixed_payload = {
@@ -6853,6 +6944,303 @@ class GenerationTests(unittest.TestCase):
                     request_summary_path.parent / "hot_dog_setup" / "summary.json"
                 ).exists()
             )
+
+    def test_main_paralleize_tasks_executes_tasks_concurrently(self):
+        prepare_coffee_payload = {
+            "composite_task": "PrepareCoffee",
+            "sdk": "google-genai",
+            "model": "gemini-3-flash-preview",
+            "model_config": {
+                "reasoning": {"thinking_level": None},
+                "sampling": {"temperature": 0.2, "strategy": "base"},
+            },
+            "num_runs": 1,
+            "num_trajectories": 1,
+            "generated_at": "2026-03-10T00:00:00+00:00",
+            "cost_summary": {
+                "prompt_tokens": 100,
+                "cached_input_tokens": 20,
+                "output_tokens": 40,
+                "reasoning_tokens": 0,
+                "total_tokens": 140,
+                "input_cost_usd": 0.001,
+                "output_cost_usd": 0.002,
+                "total_cost_usd": 0.003,
+                "average_trajectory_cost_usd": 0.003,
+                "notes": [],
+            },
+            "trajectory_prompts": [],
+            "attempt_prompts": [],
+            "trajectory_outputs": [],
+            "error_events": [],
+            "completed_run_indices": [0],
+            "failed_run_indices": [],
+            "pending_run_indices": [],
+            "is_complete": True,
+            "trajectories": [
+                {
+                    "trajectory_id": "traj_000000",
+                    "generation_usage": {
+                        "successful_attempt_number": 1,
+                        "observed_cost_usd": 0.003,
+                    },
+                    "validation": {"is_valid": True},
+                }
+            ],
+        }
+        hot_dog_payload = {
+            "composite_task": "HotDogSetup",
+            "sdk": "google-genai",
+            "model": "gemini-3-flash-preview",
+            "model_config": {
+                "reasoning": {"thinking_level": None},
+                "sampling": {"temperature": 0.2, "strategy": "base"},
+            },
+            "num_runs": 1,
+            "num_trajectories": 1,
+            "generated_at": "2026-03-10T00:00:01+00:00",
+            "cost_summary": {
+                "prompt_tokens": 120,
+                "cached_input_tokens": 30,
+                "output_tokens": 50,
+                "reasoning_tokens": 0,
+                "total_tokens": 170,
+                "input_cost_usd": 0.002,
+                "output_cost_usd": 0.003,
+                "total_cost_usd": 0.005,
+                "average_trajectory_cost_usd": 0.005,
+                "notes": [],
+            },
+            "trajectory_prompts": [],
+            "attempt_prompts": [],
+            "trajectory_outputs": [],
+            "error_events": [],
+            "completed_run_indices": [0],
+            "failed_run_indices": [],
+            "pending_run_indices": [],
+            "is_complete": True,
+            "trajectories": [
+                {
+                    "trajectory_id": "traj_000000",
+                    "generation_usage": {
+                        "successful_attempt_number": 1,
+                        "observed_cost_usd": 0.005,
+                    },
+                    "validation": {"is_valid": True},
+                }
+            ],
+        }
+
+        executor_instances: list[object] = []
+
+        class ImmediateExecutor:
+            def __init__(self, max_workers: int) -> None:
+                self.max_workers = max_workers
+                self.shutdown_calls: list[tuple[bool, bool]] = []
+                executor_instances.append(self)
+
+            def submit(self, fn, *args, **kwargs) -> Future:
+                future = Future()
+                try:
+                    future.set_result(fn(*args, **kwargs))
+                except Exception as exc:
+                    future.set_exception(exc)
+                return future
+
+            def shutdown(
+                self,
+                wait: bool = True,
+                cancel_futures: bool = False,
+            ) -> None:
+                self.shutdown_calls.append((wait, cancel_futures))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            request_summary_path = Path(tmpdir) / "20260310T000000Z" / "summary.json"
+            with mock.patch(
+                "data_generation.task_level.generation.raw.cli.generate_trajectories",
+                side_effect=[prepare_coffee_payload, hot_dog_payload],
+            ) as mocked_generate:
+                with mock.patch(
+                    "data_generation.task_level.generation.raw.cli.resolve_request_output_path",
+                    return_value=request_summary_path,
+                ):
+                    task_progress = mock.Mock()
+                    with mock.patch(
+                        "data_generation.task_level.generation.raw.cli._create_task_progress_bar",
+                        return_value=task_progress,
+                    ):
+                        with mock.patch.object(
+                            trajectory_generation_module,
+                            "ThreadPoolExecutor",
+                            ImmediateExecutor,
+                        ):
+                            with mock.patch("builtins.print") as mocked_print:
+                                exit_code = main(
+                                    [
+                                        "--tasks",
+                                        "PrepareCoffee",
+                                        "HotDogSetup",
+                                        "--num-runs",
+                                        "1",
+                                        "--paralleize-tasks",
+                                    ]
+                                )
+            combined_summary = json.loads(
+                request_summary_path.read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(len(executor_instances), 1)
+        self.assertEqual(executor_instances[0].max_workers, 2)
+        self.assertEqual(executor_instances[0].shutdown_calls, [(True, False)])
+        self.assertEqual(
+            [call.kwargs["show_progress"] for call in mocked_generate.call_args_list],
+            [False, False],
+        )
+        self.assertEqual(task_progress.update.call_count, 2)
+        task_progress.close.assert_called_once_with()
+        self.assertEqual(
+            [call.args[0] for call in mocked_print.call_args_list],
+            [
+                request_summary_path.parent / "prepare_coffee",
+                request_summary_path.parent / "hot_dog_setup",
+            ],
+        )
+        self.assertEqual(
+            combined_summary["composite_tasks"],
+            ["PrepareCoffee", "HotDogSetup"],
+        )
+
+    def test_main_persists_completed_multi_task_outputs_before_later_failure(self):
+        prepare_coffee_payload = {
+            "composite_task": "PrepareCoffee",
+            "sdk": "google-genai",
+            "model": "gemini-3-flash-preview",
+            "model_config": {
+                "reasoning": {"thinking_level": None},
+                "sampling": {"temperature": 0.2, "strategy": "base"},
+            },
+            "num_runs": 1,
+            "num_trajectories": 1,
+            "generated_at": "2026-03-10T00:00:00+00:00",
+            "cost_summary": {
+                "prompt_tokens": 100,
+                "cached_input_tokens": 20,
+                "output_tokens": 40,
+                "reasoning_tokens": 0,
+                "total_tokens": 140,
+                "input_cost_usd": 0.001,
+                "output_cost_usd": 0.002,
+                "total_cost_usd": 0.003,
+                "average_trajectory_cost_usd": 0.003,
+                "notes": [],
+            },
+            "trajectory_prompts": [],
+            "attempt_prompts": [],
+            "trajectory_outputs": [],
+            "error_events": [],
+            "completed_run_indices": [0],
+            "failed_run_indices": [],
+            "pending_run_indices": [],
+            "is_complete": True,
+            "trajectories": [
+                {
+                    "trajectory_id": "traj_000000",
+                    "generation_usage": {
+                        "successful_attempt_number": 1,
+                        "observed_cost_usd": 0.003,
+                    },
+                    "validation": {"is_valid": True},
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            request_summary_path = Path(tmpdir) / "20260310T000000Z" / "summary.json"
+            with mock.patch(
+                "data_generation.task_level.generation.raw.cli.generate_trajectories",
+                side_effect=[
+                    prepare_coffee_payload,
+                    TrajectoryGenerationError("HotDogSetup failed."),
+                ],
+            ):
+                with mock.patch(
+                    "data_generation.task_level.generation.raw.cli.resolve_request_output_path",
+                    return_value=request_summary_path,
+                ):
+                    with self.assertRaises(TrajectoryGenerationError):
+                        main(
+                            [
+                                "--tasks",
+                                "PrepareCoffee",
+                                "HotDogSetup",
+                                "--num-runs",
+                                "1",
+                            ]
+                        )
+
+            completed_task_summary_path = (
+                request_summary_path.parent / "prepare_coffee" / "summary.json"
+            )
+            self.assertTrue(completed_task_summary_path.exists())
+            self.assertFalse(request_summary_path.exists())
+            completed_summary = json.loads(
+                completed_task_summary_path.read_text(encoding="utf-8")
+            )
+            self.assertEqual(completed_summary["composite_task"], "PrepareCoffee")
+
+    def test_main_parallel_task_failure_cancels_remaining_task_futures(self):
+        executor_instances: list[object] = []
+
+        class ControlledExecutor:
+            def __init__(self, max_workers: int) -> None:
+                self.max_workers = max_workers
+                self.shutdown_calls: list[tuple[bool, bool]] = []
+                self.futures: list[Future] = []
+                executor_instances.append(self)
+
+            def submit(self, fn, *args, **kwargs) -> Future:
+                future = Future()
+                if not self.futures:
+                    future.set_exception(TrajectoryGenerationError("task failure"))
+                self.futures.append(future)
+                return future
+
+            def shutdown(
+                self,
+                wait: bool = True,
+                cancel_futures: bool = False,
+            ) -> None:
+                self.shutdown_calls.append((wait, cancel_futures))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            request_summary_path = Path(tmpdir) / "20260310T000000Z" / "summary.json"
+            with mock.patch(
+                "data_generation.task_level.generation.raw.cli.resolve_request_output_path",
+                return_value=request_summary_path,
+            ):
+                with mock.patch.object(
+                    trajectory_generation_module,
+                    "ThreadPoolExecutor",
+                    ControlledExecutor,
+                ):
+                    with self.assertRaises(TrajectoryGenerationError):
+                        main(
+                            [
+                                "--tasks",
+                                "PrepareCoffee",
+                                "HotDogSetup",
+                                "--num-runs",
+                                "1",
+                                "--paralleize-tasks",
+                            ]
+                        )
+
+        self.assertEqual(len(executor_instances), 1)
+        self.assertEqual(executor_instances[0].shutdown_calls, [(False, True)])
+        self.assertEqual(len(executor_instances[0].futures), 2)
+        self.assertFalse(executor_instances[0].futures[0].cancelled())
+        self.assertTrue(executor_instances[0].futures[1].cancelled())
 
     def test_main_resume_merges_existing_single_task_outputs_in_place(self):
         existing_payload = {

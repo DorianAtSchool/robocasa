@@ -4,15 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from data_generation.task_level.grounding_specs import build_grounding_map_for_task
 from data_generation.task_level.subatomic_tool_specs import build_allowed_tool_specs
 from data_generation.task_level.tasks.shared.errors import (
     TaskPreconditionSemanticValidationError,
 )
 from data_generation.task_level.tasks.shared.fsm import FiniteStateTaskValidator
 from data_generation.task_level.tasks.shared.instances import (
-    build_canonical_agents,
     build_randomized_fixture_task_instance,
+    make_symbolic_trajectory_record_builder,
 )
 from data_generation.task_level.tasks.shared.prompting import make_task_prompt_builder
 from data_generation.task_level.tasks.shared.schema import build_task_response_schema
@@ -119,7 +118,7 @@ PREPARE_COFFEE_RESPONSE_SCHEMA = build_task_response_schema(
 
 PREPARE_COFFEE_TASK_GOAL = (
     "retrieve mug from mug_source_fixture, place it on staging_surface, move it "
-    "under coffee_machine, then press the coffee_machine start button."
+    "under coffee_machine, then press coffee_machine.start_button."
 )
 PREPARE_COFFEE_NON_COMMUNICATE_TOOL_NAMES = tuple(
     tool_name
@@ -212,7 +211,7 @@ class PrepareCoffeeValidator(FiniteStateTaskValidator):
             and runtime_state.objects["mug"]["location"] != "coffee_machine_dispenser"
         ):
             raise TaskPreconditionSemanticValidationError(
-                "press_button on the coffee machine requires mug under the coffee machine dispenser.",
+                "press_button on the coffee machine requires the mug under the coffee machine dispenser.",
                 details={
                     "tool": step["tool"],
                     "object_id": "mug",
@@ -222,7 +221,7 @@ class PrepareCoffeeValidator(FiniteStateTaskValidator):
             )
 
     def is_goal_state_satisfied(self, runtime_state: TaskRuntimeState) -> bool:
-        """Checks success usihng goal expression."""
+        """Checks success using the PrepareCoffee goal state."""
 
         mug_under_dispenser = (
             runtime_state.objects["mug"]["location"] == "coffee_machine_dispenser"
@@ -237,7 +236,7 @@ class PrepareCoffeeValidator(FiniteStateTaskValidator):
         step: dict[str, Any],
         runtime_state: TaskRuntimeState,
     ) -> None:
-        """Updates the PrepareCoffee-specific symbolic state after each action."""
+        """Updates the PrepareCoffee-specific state after each action."""
 
         if step["tool"] == "press_button":
             runtime_state.machine_state["coffee_machine"]["started"] = True
@@ -250,40 +249,23 @@ class PrepareCoffeeValidator(FiniteStateTaskValidator):
         )
 
 
-def build_prepare_coffee_trajectory_record(
-    candidate: dict[str, Any],
-    validation: dict[str, Any],
-    trajectory_id: str,
-    generation_usage: dict[str, Any],
-    task_instance: TaskInstance,
-) -> dict[str, Any]:
-    """Builds the persisted trajectory payload for PrepareCoffee."""
-
-    return {
-        "trajectory_id": trajectory_id,
-        "composite_task": "PrepareCoffee",
-        "agents": build_canonical_agents(AGENT_IDS),
-        "initial_state": task_instance.initial_state,
-        "grounding_map": build_grounding_map_for_task(
-            "PrepareCoffee",
-            task_instance.initial_state,
-        ),
-        "steps": candidate.get("steps"),
-        "validation": validation,
-        "generation_usage": generation_usage,
-    }
+build_prepare_coffee_trajectory_record = make_symbolic_trajectory_record_builder(
+    composite_task="PrepareCoffee",
+    agent_ids=AGENT_IDS,
+)
 
 
 PREPARE_COFFEE_TASK = TaskDefinition(
     composite_task="PrepareCoffee",
     response_schema=PREPARE_COFFEE_RESPONSE_SCHEMA,
     preflight_token_estimate=PREPARE_COFFEE_PREFLIGHT_TOKEN_ESTIMATE,
-    build_task_instance=lambda run_index: build_randomized_fixture_task_instance(
+    build_task_instance=lambda run_index, runtime_config=None: build_randomized_fixture_task_instance(
         composite_task="PrepareCoffee",
         agent_ids=AGENT_IDS,
         initial_state=PREPARE_COFFEE_INITIAL_STATE,
         allowed_tool_specs=PREPARE_COFFEE_ALLOWED_TOOL_SPECS,
         run_index=run_index,
+        runtime_config=runtime_config,
     ),
     build_prompt=build_prepare_coffee_prompt,
     build_trajectory_record=build_prepare_coffee_trajectory_record,

@@ -72,8 +72,17 @@ POST_PROCESS_VALIDATION_ERROR = (
     "Trajectory was post-processed after validation and must be revalidated."
 )
 RAW_DATASET_DIRECTORY_NAME = "raw"
+PRE_IMAGE_DATASET_DIRECTORY_NAME = "pre_image"
 IMAGE_DATASET_DIRECTORY_NAME = "image"
 LEGACY_IMAGE_OUTPUT_DIRECTORY_NAME = "w_images"
+POST_PROCESS_OUTPUT_DIRECTORY_NAMES = frozenset(
+    {
+        RAW_DATASET_DIRECTORY_NAME,
+        PRE_IMAGE_DATASET_DIRECTORY_NAME,
+        IMAGE_DATASET_DIRECTORY_NAME,
+        LEGACY_IMAGE_OUTPUT_DIRECTORY_NAME,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -202,19 +211,6 @@ def _build_initial_observation_step(agent_id: str) -> dict[str, Any]:
     )
 
 
-def _resolve_initial_observation_insert_index(
-    steps: Sequence[dict[str, Any]],
-) -> int:
-    """Finds where the shared opening observations should be inserted."""
-
-    insert_index = 0
-    for step in steps:
-        if step.get("tool") != COMMUNICATE_TOOL_NAME:
-            break
-        insert_index += 1
-    return insert_index
-
-
 def _resolve_action_view_names(tool_name: str) -> tuple[str, ...]:
     """Chooses the inserted observation views for one wrapped action tool."""
 
@@ -278,17 +274,14 @@ def rebuild_steps_with_image_observations(
 
         cleaned_steps.append(_copy_step_without_generated_fields(step))
 
-    initial_observation_insert_index = _resolve_initial_observation_insert_index(
-        cleaned_steps
-    )
-    rebuilt_steps = cleaned_steps[:initial_observation_insert_index]
-    # Keep the opening observations together after the initial coordination
-    # block so every agent captures the shared scene before the first task action.
+    # Keep the shared scene-inspection steps at the very front so each agent
+    # captures the initial state before any coordination messages are emitted.
+    rebuilt_steps: list[dict[str, Any]] = []
     rebuilt_steps.extend(
         _build_initial_observation_step(agent_id)
         for agent_id in initial_image_agent_ids
     )
-    for copied_step in cleaned_steps[initial_observation_insert_index:]:
+    for copied_step in cleaned_steps:
         tool_name = copied_step.get("tool")
         if tool_name == COMMUNICATE_TOOL_NAME:
             rebuilt_steps.append(copied_step)
@@ -438,44 +431,46 @@ def _load_json_file(path: Path) -> dict[str, Any]:
 
 
 def resolve_output_dataset_path(dataset_path: Path) -> Path:
-    """Maps one source dataset path to the default copied image destination."""
+    """Maps one source dataset path to the default copied pre-image destination."""
 
     resolved_path = dataset_path.resolve()
     parts = list(resolved_path.parts)
     try:
         data_index = parts.index("data")
     except ValueError:
-        return dataset_path.parent / IMAGE_DATASET_DIRECTORY_NAME / dataset_path.name
+        return (
+            dataset_path.parent / PRE_IMAGE_DATASET_DIRECTORY_NAME / dataset_path.name
+        )
 
     relative_parts = parts[data_index + 1 :]
     if not relative_parts:
-        return dataset_path.parent / IMAGE_DATASET_DIRECTORY_NAME / dataset_path.name
+        return (
+            dataset_path.parent / PRE_IMAGE_DATASET_DIRECTORY_NAME / dataset_path.name
+        )
 
-    if len(relative_parts) >= 2 and relative_parts[0] in {
-        RAW_DATASET_DIRECTORY_NAME,
-        IMAGE_DATASET_DIRECTORY_NAME,
-        LEGACY_IMAGE_OUTPUT_DIRECTORY_NAME,
-    }:
+    if (
+        len(relative_parts) >= 2
+        and relative_parts[0] in POST_PROCESS_OUTPUT_DIRECTORY_NAMES
+    ):
         return (
             Path(*parts[: data_index + 1])
-            / IMAGE_DATASET_DIRECTORY_NAME
+            / PRE_IMAGE_DATASET_DIRECTORY_NAME
             / relative_parts[1]
             / Path(*relative_parts[2:])
         )
-    if len(relative_parts) >= 2 and relative_parts[1] in {
-        RAW_DATASET_DIRECTORY_NAME,
-        IMAGE_DATASET_DIRECTORY_NAME,
-        LEGACY_IMAGE_OUTPUT_DIRECTORY_NAME,
-    }:
+    if (
+        len(relative_parts) >= 2
+        and relative_parts[1] in POST_PROCESS_OUTPUT_DIRECTORY_NAMES
+    ):
         return (
             Path(*parts[: data_index + 1])
-            / IMAGE_DATASET_DIRECTORY_NAME
+            / PRE_IMAGE_DATASET_DIRECTORY_NAME
             / relative_parts[0]
             / Path(*relative_parts[2:])
         )
     return (
         Path(*parts[: data_index + 1])
-        / IMAGE_DATASET_DIRECTORY_NAME
+        / PRE_IMAGE_DATASET_DIRECTORY_NAME
         / Path(*relative_parts)
     )
 

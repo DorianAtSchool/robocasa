@@ -1,4 +1,4 @@
-"""Render shared task prompts from task metadata and symbolic state."""
+"""Render shared task prompts from task metadata and task state."""
 
 from __future__ import annotations
 
@@ -84,9 +84,9 @@ def _build_fsm_prompt_rules(
         prompt_rules.append(
             "Use give_space only at the fixture where that agent is already positioned, after the agents communicate that another agent is about to navigate there, so the yielding agent clears the space before the other agent arrives."
         )
-    # Keep later symbolic references aligned with prior FSM effects.
+    # Keep later references aligned with prior FSM effects.
     prompt_rules.append(
-        "Keep object locations consistent across steps. After an object moves, later source_id and destination references must match its new symbolic location."
+        "Keep object locations consistent across steps. After an object moves, later source_id and destination references must match its new location."
     )
     prompt_rules.append(
         "Stop as soon as the goal state is satisfied. Do not add extra task actions afterward."
@@ -114,8 +114,8 @@ def make_task_prompt_builder(
     Args:
         composite_task: Task name shown to the model and stored in generated data.
         task_goal: One-sentence goal description for the task.
-        initial_state: Symbolic initial state presented to the model.
-        allowed_tool_specs: Task-specific allowed tools and symbolic constraints.
+        initial_state: Initial state presented to the model.
+        allowed_tool_specs: Task-specific allowed tools and id constraints.
         non_communicate_tool_names: Non-communication task tools allowed in steps.
         extra_execution_rules: Optional task-specific sequencing rules enforced by validation.
         agent_ids: Ordered agent IDs the task expects the model to simulate.
@@ -126,18 +126,6 @@ def make_task_prompt_builder(
 
     agent_id_list_text = _format_agent_id_list(agent_ids)
     agent_count = len(agent_ids)
-    allowed_tools_text = json.dumps(
-        allowed_tool_specs,
-        indent=2,
-        sort_keys=True,
-    )
-    execution_rules_text = "\n".join(
-        f"- {rule}"
-        for rule in _build_fsm_prompt_rules(
-            allowed_tool_specs,
-            extra_rules=extra_execution_rules,
-        )
-    )
     _ = non_communicate_tool_names
 
     def build_prompt(
@@ -153,6 +141,34 @@ def make_task_prompt_builder(
             deepcopy(task_instance.initial_state)
             if task_instance is not None
             else deepcopy(initial_state)
+        )
+        prompt_allowed_tool_specs = (
+            deepcopy(task_instance.allowed_tool_specs)
+            if task_instance is not None
+            and task_instance.allowed_tool_specs is not None
+            else deepcopy(allowed_tool_specs)
+        )
+        prompt_task_goal = (
+            task_instance.task_goal
+            if task_instance is not None and isinstance(task_instance.task_goal, str)
+            else task_goal
+        )
+        prompt_extra_execution_rules = (
+            task_instance.extra_execution_rules
+            if task_instance is not None and task_instance.extra_execution_rules
+            else tuple(extra_execution_rules or ())
+        )
+        allowed_tools_text = json.dumps(
+            prompt_allowed_tool_specs,
+            indent=2,
+            sort_keys=True,
+        )
+        execution_rules_text = "\n".join(
+            f"- {rule}"
+            for rule in _build_fsm_prompt_rules(
+                prompt_allowed_tool_specs,
+                extra_rules=prompt_extra_execution_rules,
+            )
         )
         initial_state_text = json.dumps(
             prompt_initial_state,
@@ -176,15 +192,15 @@ Important rules:
 - Throughout the trajectory, both agents should actively communicate with each other to communicate intentions, plans, and needs, not just in the initial steps.
 - Each communicate step sends a message to the other agent in the scene, so args.to must be the exact ID of that other agent.
 - For each step, args must contain exactly the argument names required by that tool. Do not omit required args and do not invent extra arg keys.
-- In args, use the exact symbolic IDs shown in the allowed tools block for this task.
+- In args, use the exact IDs shown in the allowed tools block for this task.
 - Keep args as a flat object that contains only that step's tool inputs.
 - If an agent is not performing an action, be sure the agent communicates what the agent is waiting for so that no agent is doing nothing.
 - Both agents must cooperatively complete the task, a single agent should not do all subtasks.
 - Use only the allowed tools for this task.
-- Every step must be executable and symbolically valid.
+- Every step must be executable and valid for the current task state.
 - Track each agent’s current fixture after every navigation and verify that each non-navigation action matches that current fixture.
 - Number steps consecutively starting at 0 with no gaps.
-- The reasoning text should explain why the agent is using the tool call, referencing what happened before or what the agent plans on doing. Each reasoning text must be a single short sentence.
+- The reasoning text should explain why the agent is using the tool call from a first-person point-of-view. Each reasoning text must be a single short sentence.
 - In reasoning text and communicate.message text, refer to agents using exact IDs like agent_0 and agent_1, not Agent 0 or Agent 1.
 - Agents can pass each other freely in the kitchen, including around the island.
 - If an agent has no immediate legal task action because it is waiting on the other agent, use communicate to explain the dependency before the other agent proceeds.
@@ -196,12 +212,12 @@ Simple execution rules:
 
 Composite task:
 - {composite_task}
-- Goal: {task_goal}
+- Goal: {prompt_task_goal}
 
 Initial agent positions:
 {initial_position_text}
 
-Initial symbolic state:
+Initial task state:
 {initial_state_text}
 
 Allowed tools and exact symbolic arguments for this task:
