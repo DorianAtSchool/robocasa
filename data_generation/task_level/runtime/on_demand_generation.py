@@ -82,6 +82,7 @@ def generate_single_run(
 ) -> list[dict[str, Any]]:
     """Generates one run and raises RunExhaustedError only for run-scoped failures."""
 
+    _runtime_support._raise_if_task_cancelled(runtime_config)
     client = (
         client_factory()
         if client_factory is not None
@@ -91,7 +92,7 @@ def generate_single_run(
             location=runtime_config.location,
         )
     )
-    task_instance = task_definition.build_task_instance(run_index)
+    task_instance = task_definition.build_task_instance(run_index, runtime_config)
     validator = task_definition.validator_factory(task_instance)
     sampling_strategy = _runtime_support._sampling_strategy_for_runtime(runtime_config)
     last_error: Exception | None = None
@@ -113,6 +114,7 @@ def generate_single_run(
     # Each attempt rebuilds the full prompt so retries can incorporate repair
     # feedback without mutating saved outputs from prior attempts.
     for attempt_index in range(runtime_config.max_retries):
+        _runtime_support._raise_if_task_cancelled(runtime_config)
         # Variation keys give retries a stable way to ask for distinct traces.
         variation_key = _runtime_support.format_trajectory_variation_key(
             run_index,
@@ -164,6 +166,7 @@ def generate_single_run(
                 temperature=runtime_config.temperature,
                 thinking_level=runtime_config.thinking_level,
             )
+            _runtime_support._raise_if_task_cancelled(runtime_config)
             response_payload, usage = _runtime_support._unwrap_generation_response(
                 raw_response
             )
@@ -556,6 +559,7 @@ def generate_trajectories_on_demand(
 ) -> dict[str, Any]:
     """Generates trajectories on demand while preserving partial successful runs."""
 
+    _runtime_support._raise_if_task_cancelled(runtime_config)
     seen_signatures: set[str] = set()
     seen_signatures_lock = threading.Lock()
     projected_cost_estimate = _costs._build_preflight_cost_estimate_summary(
@@ -639,6 +643,12 @@ def generate_trajectories_on_demand(
                 )
                 continue
             results[run_index] = trajectory_records
+    except _runtime_support.TaskGenerationCancelledError:
+        wait_for_shutdown = False
+        for future in futures:
+            future.cancel()
+        executor.shutdown(wait=False, cancel_futures=True)
+        raise
     except KeyboardInterrupt:
         wait_for_shutdown = False
         for future in futures:

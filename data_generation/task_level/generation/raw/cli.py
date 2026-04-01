@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 import json
 import os
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -22,22 +25,22 @@ from data_generation.task_level.generation.raw.config import (
 )
 from data_generation.task_level.generation.raw.orchestrator import generate_trajectories
 from data_generation.task_level.generation.raw.outputs import (
-    _print_written_output_summary,
+    OutputPaths,
+    _print_task_output_directory,
     _resolve_output_paths,
     _write_generation_outputs,
     _write_request_outputs,
     build_error_summary_output_payload,
     load_generation_output_payload,
     merge_generation_output_payloads,
-    resolve_cost_output_path,
     resolve_dataset_output_path,
-    resolve_error_output_path,
     resolve_request_output_path,
     resolve_request_task_output_path,
     validate_resume_payload,
 )
 from data_generation.task_level.generation.raw.runtime_support import (
     _exception_summary,
+    _raise_if_task_cancelled,
     _resolve_task_definitions_or_raise,
 )
 from data_generation.task_level.runtime.client import (
@@ -61,6 +64,16 @@ def run_cli(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt as exc:
         print(str(exc) or INTERRUPTED_MESSAGE, file=sys.stderr, flush=True)
         os._exit(INTERRUPTED_EXIT_CODE)
+
+
+@dataclass(frozen=True)
+class TaskRunResult:
+    """Carries one task payload and its output paths through CLI execution."""
+
+    composite_task: str
+    payload: dict[str, Any]
+    output_paths: OutputPaths
+    should_write_outputs: bool
 
 
 def _resume_directory_summary_payload(resume_path: Path) -> dict[str, Any] | None:
@@ -106,7 +119,7 @@ def _task_resume_output_paths(
     *,
     composite_task: str,
     request_summary_path: Path | None = None,
-) -> tuple[RuntimeConfig, Any]:
+) -> tuple[RuntimeConfig, OutputPaths]:
     """Resolves one task runtime config and output path set for fresh or resumed runs."""
 
     if runtime_config.resume_path is not None:
@@ -209,7 +222,8 @@ def _print_incomplete_task_summary(
 def _generate_or_resume_task_payload(
     task_runtime_config: RuntimeConfig,
     *,
-    output_paths: Any,
+    output_paths: OutputPaths,
+    show_progress: bool = False,
 ) -> tuple[dict[str, Any], bool]:
     """Generates one task payload or resumes only the still-pending run indices."""
 
@@ -229,7 +243,10 @@ def _generate_or_resume_task_payload(
             resume_path=task_runtime_config.resume_path,
             run_indices=pending_run_indices,
         )
-        new_payload = generate_trajectories(resumed_runtime_config)
+        new_payload = generate_trajectories(
+            resumed_runtime_config,
+            show_progress=show_progress,
+        )
         return (
             merge_generation_output_payloads(
                 task_runtime_config,
@@ -238,7 +255,132 @@ def _generate_or_resume_task_payload(
             ),
             True,
         )
-    return generate_trajectories(task_runtime_config), True
+    return generate_trajectories(task_runtime_config, show_progress=show_progress), True
+
+
+def _generate_task_result(
+    runtime_config: RuntimeConfig,
+    *,
+    composite_task: str,
+    request_summary_path: Path | None = None,
+    finalize_outputs: bool = False,
+) -> TaskRunResult:
+    """Runs generation for one task so serial and threaded paths share behavior."""
+
+    _raise_if_task_cancelled(runtime_config)
+    task_runtime_config, output_paths = _task_resume_output_paths(
+        runtime_config,
+        composite_task=composite_task,
+        request_summary_path=request_summary_path,
+    )
+    payload, should_write_outputs = _generate_or_resume_task_payload(
+        task_runtime_config,
+        output_paths=output_paths,
+        show_progress=False,
+    )
+    _raise_if_task_cancelled(task_runtime_config)
+    task_run_result = TaskRunResult(
+        composite_task=composite_task,
+        payload=payload,
+        output_paths=output_paths,
+        should_write_outputs=should_write_outputs,
+    )
+    if finalize_outputs:
+        _finalize_task_result(task_run_result)
+    return task_run_result
+
+
+def _cancel_task_futures(
+    executor: ThreadPoolExecutor,
+    futures: dict[Any, int],
+    *,
+    cancel_event: threading.Event | None = None,
+) -> None:
+    """Signals sibling tasks to stop and cancels any queued task futures."""
+
+    if cancel_event is not None:
+        cancel_event.set()
+    for future in futures:
+        future.cancel()
+    executor.shutdown(wait=False, cancel_futures=True)
+
+
+def _finalize_task_result(task_run_result: TaskRunResult) -> bool:
+    """Writes one task's outputs, prints its directory, and returns completeness."""
+
+    if task_run_result.should_write_outputs:
+        _write_generation_outputs(
+            task_run_result.payload,
+            output_paths=task_run_result.output_paths,
+        )
+    _print_task_output_directory(task_run_result.output_paths)
+    if not _task_is_complete(task_run_result.payload):
+        _print_incomplete_task_summary(
+            task_run_result.payload,
+            composite_task=task_run_result.composite_task,
+            error_summary_path=task_run_result.output_paths.error_summary_path,
+        )
+    return _task_is_complete(task_run_result.payload)
+
+
+def _generate_task_results(
+    runtime_config: RuntimeConfig,
+    *,
+    request_summary_path: Path,
+) -> list[TaskRunResult]:
+    """Generates the selected tasks serially or concurrently in request order."""
+
+    indexed_tasks = list(enumerate(runtime_config.composite_tasks))
+    ordered_results: list[TaskRunResult | None] = [None] * len(indexed_tasks)
+    if not runtime_config.parallelize_tasks:
+        for task_index, composite_task in indexed_tasks:
+            ordered_results[task_index] = _generate_task_result(
+                runtime_config,
+                composite_task=composite_task,
+                request_summary_path=request_summary_path,
+                finalize_outputs=True,
+            )
+        return [result for result in ordered_results if result is not None]
+
+    shared_runtime_config = runtime_config.with_task_cancellation_event(
+        threading.Event()
+    )
+    executor = ThreadPoolExecutor(max_workers=len(indexed_tasks))
+    futures: dict[Any, int] = {}
+    wait_for_shutdown = True
+    try:
+        futures = {
+            executor.submit(
+                _generate_task_result,
+                shared_runtime_config,
+                composite_task=composite_task,
+                request_summary_path=request_summary_path,
+                finalize_outputs=True,
+            ): task_index
+            for task_index, composite_task in indexed_tasks
+        }
+        for future in as_completed(futures):
+            ordered_results[futures[future]] = future.result()
+    except KeyboardInterrupt:
+        wait_for_shutdown = False
+        _cancel_task_futures(
+            executor,
+            futures,
+            cancel_event=shared_runtime_config.task_cancellation_event,
+        )
+        raise
+    except BaseException:
+        wait_for_shutdown = False
+        _cancel_task_futures(
+            executor,
+            futures,
+            cancel_event=shared_runtime_config.task_cancellation_event,
+        )
+        raise
+    finally:
+        if wait_for_shutdown:
+            executor.shutdown(wait=True, cancel_futures=False)
+    return [result for result in ordered_results if result is not None]
 
 
 def parse_args(argv: list[str] | None = None) -> RuntimeConfig:
@@ -292,24 +434,6 @@ def parse_args(argv: list[str] | None = None) -> RuntimeConfig:
             "Resume from an existing output directory in place. For a single task, "
             "pass the task output directory. For multiple tasks, pass the request directory."
         ),
-    )
-    parser.add_argument(
-        "--layout",
-        type=int,
-        default=None,
-        help="Optional kitchen layout id to persist on saved trajectories.",
-    )
-    parser.add_argument(
-        "--style",
-        type=int,
-        default=None,
-        help="Optional kitchen style id to persist on saved trajectories.",
-    )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=None,
-        help="Optional scene seed to persist on saved trajectories.",
     )
     parser.add_argument(
         "--model",
@@ -392,6 +516,45 @@ def parse_args(argv: list[str] | None = None) -> RuntimeConfig:
         help="Maximum generation attempts per trajectory.",
     )
     parser.add_argument(
+        "--paralleize-tasks",
+        action="store_true",
+        dest="parallelize_tasks",
+        help=(
+            "Run the selected tasks concurrently. Each task still uses its own "
+            "--max-workers setting for per-task runs."
+        ),
+    )
+    parser.add_argument(
+        "--paralleize_tasks",
+        action="store_true",
+        dest="parallelize_tasks",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--parallelize-tasks",
+        action="store_true",
+        dest="parallelize_tasks",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--parallelize_tasks",
+        action="store_true",
+        dest="parallelize_tasks",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--parallelize-runs",
+        action="store_true",
+        dest="parallelize_tasks",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--parallelize_runs",
+        action="store_true",
+        dest="parallelize_tasks",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
         "--batch-processing",
         action="store_true",
         dest="batch_processing",
@@ -455,15 +618,13 @@ def parse_args(argv: list[str] | None = None) -> RuntimeConfig:
         thinking_level=args.thinking_level,
         max_workers=args.max_workers,
         max_retries=args.max_retries,
+        parallelize_tasks=args.parallelize_tasks,
         summary_path=default_summary_path,
         cost_output_path=args.cost_output,
         resume_path=args.resume,
         disable_validation=args.disable_validation,
         batch_processing=args.batch_processing,
         batch_gcs_prefix=args.batch_gcs_prefix,
-        layout=args.layout,
-        style=args.style,
-        seed=args.seed,
         composite_tasks=parsed_tasks,
     )
 
@@ -479,110 +640,44 @@ def main(argv: list[str] | None = None) -> int:
     _validate_resume_directory_mode(runtime_config)
 
     if len(runtime_config.composite_tasks) == 1:
-        # The single-task path writes one standalone dataset tree directly.
-        task_runtime_config, output_paths = _task_resume_output_paths(
+        # The single-task path stays quiet and prints only the saved output
+        # directory after the task is materialized or resumed.
+        task_run_result = _generate_task_result(
             runtime_config,
             composite_task=runtime_config.composite_task,
         )
-        payload, should_write_outputs = _generate_or_resume_task_payload(
-            task_runtime_config,
-            output_paths=output_paths,
-        )
-        if should_write_outputs:
-            (
-                written_trajectory_paths,
-                written_prompt_paths,
-                written_output_paths,
-            ) = _write_generation_outputs(
-                payload,
-                output_paths=output_paths,
-            )
-            _print_written_output_summary(
-                output_paths,
-                written_trajectory_paths=written_trajectory_paths,
-                written_prompt_paths=written_prompt_paths,
-                written_output_paths=written_output_paths,
-            )
-        else:
-            print(
-                f"Resume found no pending runs for {runtime_config.composite_task}. "
-                f"Reusing existing outputs at {output_paths.summary_path}"
-            )
-        if not _task_is_complete(payload):
-            _print_incomplete_task_summary(
-                payload,
-                composite_task=runtime_config.composite_task,
-                error_summary_path=output_paths.error_summary_path,
-            )
-        return 0 if _task_is_complete(payload) else GENERATION_ERROR_EXIT_CODE
+        is_complete = _finalize_task_result(task_run_result)
+        return 0 if is_complete else GENERATION_ERROR_EXIT_CODE
 
     request_summary_path = (
         runtime_config.resume_path / "summary.json"
         if runtime_config.resume_path is not None
         else resolve_request_output_path(model=runtime_config.model)
     )
+    task_run_results = _generate_task_results(
+        runtime_config,
+        request_summary_path=request_summary_path,
+    )
     task_run_entries: list[dict[str, Any]] = []
-    request_is_complete = True
-    # The multi-task path runs each task independently, then writes request-
-    # level summaries that point back to those per-task outputs.
-    for composite_task in runtime_config.composite_tasks:
-        task_runtime_config, output_paths = _task_resume_output_paths(
-            runtime_config,
-            composite_task=composite_task,
-            request_summary_path=request_summary_path,
-        )
-        payload, should_write_outputs = _generate_or_resume_task_payload(
-            task_runtime_config,
-            output_paths=output_paths,
-        )
+    # Keep persisted request-level summaries ordered by the user's original task
+    # list even when the task generation itself ran concurrently.
+    for task_run_result in task_run_results:
         task_run_entries.append(
             {
-                "composite_task": composite_task,
-                "payload": payload,
-                "output_paths": output_paths,
+                "composite_task": task_run_result.composite_task,
+                "payload": task_run_result.payload,
+                "output_paths": task_run_result.output_paths,
             }
         )
-        if should_write_outputs:
-            (
-                written_trajectory_paths,
-                written_prompt_paths,
-                written_output_paths,
-            ) = _write_generation_outputs(
-                payload,
-                output_paths=output_paths,
-            )
-            _print_written_output_summary(
-                output_paths,
-                written_trajectory_paths=written_trajectory_paths,
-                written_prompt_paths=written_prompt_paths,
-                written_output_paths=written_output_paths,
-            )
-        else:
-            print(
-                f"Resume found no pending runs for {composite_task}. "
-                f"Reusing existing outputs at {output_paths.summary_path}"
-            )
-        if not _task_is_complete(payload):
-            _print_incomplete_task_summary(
-                payload,
-                composite_task=composite_task,
-                error_summary_path=output_paths.error_summary_path,
-            )
-        request_is_complete = request_is_complete and _task_is_complete(payload)
 
     _write_request_outputs(
         runtime_config,
         task_run_entries,
         request_summary_path=request_summary_path,
     )
-    print(f"Wrote combined request summary to {request_summary_path}")
-    print(
-        "Wrote combined cost summary to "
-        f"{resolve_cost_output_path(request_summary_path, runtime_config.cost_output_path)}"
-    )
-    print(
-        "Wrote combined error summary to "
-        f"{resolve_error_output_path(request_summary_path)}"
+    request_is_complete = all(
+        _task_is_complete(task_run_result.payload)
+        for task_run_result in task_run_results
     )
     return 0 if request_is_complete else GENERATION_ERROR_EXIT_CODE
 

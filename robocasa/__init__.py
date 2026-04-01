@@ -987,9 +987,12 @@ from robocasa.environments.kitchen.atomic.kitchen_toaster import (
 try:
     import mimicgen
 except ImportError:
-    print(
-        "WARNING: mimicgen environments not imported since mimicgen is not installed!"
-    )
+    # Keep optional dependency noise out of normal CLI runs unless the caller
+    # explicitly asks to see import warnings.
+    if os.environ.get("ROBOCASA_SHOW_OPTIONAL_IMPORT_WARNINGS") == "1":
+        print(
+            "WARNING: mimicgen environments not imported since mimicgen is not installed!"
+        )
 
 from robocasa.environments import ALL_KITCHEN_ENVIRONMENTS
 
@@ -1019,7 +1022,9 @@ import robosuite
 # Editable/submodule layouts can expose robosuite as a namespace package
 # with no __file__. Some robosuite utilities construct config paths from
 # robosuite.__file__, so provide a stable fallback when needed.
-if getattr(robosuite, "__file__", None) is None and getattr(robosuite, "__path__", None):
+if getattr(robosuite, "__file__", None) is None and getattr(
+    robosuite, "__path__", None
+):
     for base in list(robosuite.__path__):
         candidates = [
             os.path.join(base, "__init__.py"),

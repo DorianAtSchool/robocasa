@@ -106,6 +106,7 @@ to each task, so the example below runs 10 model calls total:
 python -m data_generation.task_level.generation.raw.cli \
   --tasks PrepareCoffee HotDogSetup \
   --num-runs 5 \
+  --paralleize-tasks \
   --sampling base \
   --model gemini-3.1-flash-lite-preview \
   --location global \
@@ -114,6 +115,9 @@ python -m data_generation.task_level.generation.raw.cli \
   --max-retries 5 \
   --enable-validation
 ```
+
+Use `--paralleize-tasks` to run the selected tasks concurrently. `--max-workers`
+still controls the per-task run workers inside each task.
 
 For Gemini 3 models, you can optionally tune reasoning depth with
 `--thinking-level minimal|low|medium|high`.
@@ -157,6 +161,7 @@ Use `--batch-processing` when launching the task-level generator CLI.
 python -m data_generation.task_level.generation.raw.cli \
   --tasks PrepareCoffee HotDogSetup \
   --num-runs 4 \
+  --paralleize-tasks \
   --sampling verbalized \
   --verbalized-k 3 \
   --model gemini-3-flash-preview \
@@ -175,6 +180,7 @@ generator now supports in-place resume for both batch and on-demand runs:
 python -m data_generation.task_level.generation.raw.cli \
   --tasks PrepareCoffee HotDogSetup \
   --num-runs 4 \
+  --paralleize-tasks \
   --sampling verbalized \
   --verbalized-k 3 \
   --model gemini-3-flash-preview \

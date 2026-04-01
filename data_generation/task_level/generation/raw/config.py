@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -40,6 +41,8 @@ BATCH_INTERRUPTED_MESSAGE = (
 
 @dataclass(frozen=True)
 class RuntimeConfig:
+    """Stores the normalized runtime settings for one raw generation request."""
+
     composite_task: str | None
     num_runs: int
     model: str
@@ -49,6 +52,7 @@ class RuntimeConfig:
     temperature: float
     max_workers: int
     max_retries: int
+    parallelize_tasks: bool = False
     sampling: str = "base"
     verbalized_k: int = 1
     thinking_level: str | None = None
@@ -58,11 +62,9 @@ class RuntimeConfig:
     disable_validation: bool = False
     batch_processing: bool = False
     batch_gcs_prefix: str | None = None
-    layout: int | None = None
-    style: int | None = None
-    seed: int | None = None
     run_indices: tuple[int, ...] = ()
     composite_tasks: tuple[str, ...] = ()
+    task_cancellation_event: threading.Event | None = None
 
     def __post_init__(self) -> None:
         """Normalizes single-task and multi-task config fields to a stable shape."""
@@ -118,6 +120,17 @@ class RuntimeConfig:
             cost_output_path=cost_output_path,
             resume_path=resume_path,
             run_indices=self.run_indices if run_indices is None else run_indices,
+        )
+
+    def with_task_cancellation_event(
+        self,
+        task_cancellation_event: threading.Event | None,
+    ) -> RuntimeConfig:
+        """Shares one cooperative task-cancellation handle across sibling tasks."""
+
+        return replace(
+            self,
+            task_cancellation_event=task_cancellation_event,
         )
 
 

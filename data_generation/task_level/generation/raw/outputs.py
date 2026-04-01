@@ -1304,27 +1304,7 @@ def _write_request_outputs(
     )
 
 
-def _print_written_output_summary(
-    output_paths: OutputPaths,
-    *,
-    written_trajectory_paths: list[Path],
-    written_prompt_paths: list[Path],
-    written_output_paths: list[Path],
-) -> None:
-    """Prints the standard per-task output summary for one saved dataset."""
+def _print_task_output_directory(output_paths: OutputPaths) -> None:
+    """Prints the saved task output directory for concise CLI feedback."""
 
-    print(f"Wrote trajectory summary to {output_paths.summary_path}")
-    print(
-        f"Wrote {len(written_trajectory_paths)} trajectory files to "
-        f"{output_paths.trajectory_dir}"
-    )
-    print(
-        f"Wrote {len(written_prompt_paths)} prompt files to "
-        f"{output_paths.prompt_dir}"
-    )
-    print(
-        f"Wrote {len(written_output_paths)} raw output files to "
-        f"{output_paths.output_dir}"
-    )
-    print(f"Wrote cost summary to {output_paths.cost_path}")
-    print(f"Wrote error summary to {output_paths.error_summary_path}")
+    print(output_paths.summary_path.parent)

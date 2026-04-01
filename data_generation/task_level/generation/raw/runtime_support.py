@@ -45,6 +45,20 @@ class RunExhaustedError(TrajectoryGenerationError):
     """Raised when one run fails permanently but the task can continue."""
 
 
+class TaskGenerationCancelledError(TrajectoryGenerationError):
+    """Raised when another task failure cancels the current task's work."""
+
+
+def _raise_if_task_cancelled(runtime_config: RuntimeConfig) -> None:
+    """Stops cooperative task execution once a sibling task has already failed."""
+
+    cancel_event = runtime_config.task_cancellation_event
+    if cancel_event is not None and cancel_event.is_set():
+        raise TaskGenerationCancelledError(
+            "Task generation cancelled because another task in the same request failed."
+        )
+
+
 def format_trajectory_id(trajectory_index: int) -> str:
     """Formats one persisted trajectory ID with enough padding for large runs."""
 
@@ -79,9 +93,6 @@ def build_saved_trajectory_metadata(
 
     return {
         "task": task_definition.composite_task,
-        "layout": runtime_config.layout,
-        "style": runtime_config.style,
-        "seed": runtime_config.seed,
     }
 
 

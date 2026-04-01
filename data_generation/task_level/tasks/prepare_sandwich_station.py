@@ -4,15 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from data_generation.task_level.grounding_specs import build_grounding_map_for_task
 from data_generation.task_level.subatomic_tool_specs import build_allowed_tool_specs
 from data_generation.task_level.tasks.shared.errors import (
     TaskPreconditionSemanticValidationError,
 )
 from data_generation.task_level.tasks.shared.fsm import FiniteStateTaskValidator
 from data_generation.task_level.tasks.shared.instances import (
-    build_canonical_agents,
     build_randomized_fixture_task_instance,
+    make_symbolic_trajectory_record_builder,
 )
 from data_generation.task_level.tasks.shared.prompting import make_task_prompt_builder
 from data_generation.task_level.tasks.shared.schema import build_task_response_schema
@@ -196,7 +195,7 @@ class PrepareSandwichStationValidator(FiniteStateTaskValidator):
                 )
 
     def is_goal_state_satisfied(self, runtime_state: TaskRuntimeState) -> bool:
-        """Checks success using the symbolic staging goal state."""
+        """Checks success using the sandwich-station staging goal state."""
 
         ingredient_bowl_on_counter = (
             runtime_state.objects["ingredient_bowl"]["location"] == "staging_surface"
@@ -253,35 +252,19 @@ class PrepareSandwichStationValidator(FiniteStateTaskValidator):
         ]["baguette_staged"]
 
 
-def build_prepare_sandwich_station_trajectory_record(
-    candidate: dict[str, Any],
-    validation: dict[str, Any],
-    trajectory_id: str,
-    generation_usage: dict[str, Any],
-    task_instance: TaskInstance,
-) -> dict[str, Any]:
-    """Builds the persisted trajectory payload for PrepareSandwichStation."""
-
-    return {
-        "trajectory_id": trajectory_id,
-        "composite_task": "PrepareSandwichStation",
-        "agents": build_canonical_agents(AGENT_IDS),
-        "initial_state": task_instance.initial_state,
-        "grounding_map": build_grounding_map_for_task(
-            "PrepareSandwichStation",
-            task_instance.initial_state,
-        ),
-        "steps": candidate.get("steps"),
-        "validation": validation,
-        "generation_usage": generation_usage,
-    }
+build_prepare_sandwich_station_trajectory_record = (
+    make_symbolic_trajectory_record_builder(
+        composite_task="PrepareSandwichStation",
+        agent_ids=AGENT_IDS,
+    )
+)
 
 
 PREPARE_SANDWICH_STATION_TASK = TaskDefinition(
     composite_task="PrepareSandwichStation",
     response_schema=PREPARE_SANDWICH_STATION_RESPONSE_SCHEMA,
     preflight_token_estimate=PREPARE_SANDWICH_STATION_PREFLIGHT_TOKEN_ESTIMATE,
-    build_task_instance=lambda run_index: build_randomized_fixture_task_instance(
+    build_task_instance=lambda run_index, runtime_config=None: build_randomized_fixture_task_instance(
         composite_task="PrepareSandwichStation",
         agent_ids=AGENT_IDS,
         initial_state=PREPARE_SANDWICH_STATION_INITIAL_STATE,

@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Protocol
+from typing import TYPE_CHECKING, Any, Callable, Protocol
+
+if TYPE_CHECKING:
+    from data_generation.task_level.generation.raw.config import RuntimeConfig
 
 
 class TaskValidator(Protocol):
@@ -39,6 +42,9 @@ class TaskInstance:
     """Stores the concrete task state used for one generation run."""
 
     initial_state: dict[str, Any]
+    allowed_tool_specs: dict[str, dict[str, Any]] | None = None
+    task_goal: str | None = None
+    extra_execution_rules: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -48,7 +54,7 @@ class TaskDefinition:
     composite_task: str
     response_schema: dict[str, Any]
     preflight_token_estimate: PreflightTokenEstimate
-    build_task_instance: Callable[[int], TaskInstance]
+    build_task_instance: Callable[[int, RuntimeConfig | None], TaskInstance]
     build_prompt: TaskPromptBuilder
     build_trajectory_record: Callable[
         [dict[str, Any], dict[str, Any], str, dict[str, Any], TaskInstance],
