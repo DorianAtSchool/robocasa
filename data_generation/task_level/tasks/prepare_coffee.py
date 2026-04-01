@@ -265,6 +265,7 @@ PREPARE_COFFEE_TASK = TaskDefinition(
         initial_state=PREPARE_COFFEE_INITIAL_STATE,
         allowed_tool_specs=PREPARE_COFFEE_ALLOWED_TOOL_SPECS,
         run_index=run_index,
+        runtime_config=runtime_config,
     ),
     build_prompt=build_prepare_coffee_prompt,
     build_trajectory_record=build_prepare_coffee_trajectory_record,

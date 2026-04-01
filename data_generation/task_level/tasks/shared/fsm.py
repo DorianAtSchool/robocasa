@@ -132,7 +132,13 @@ class FiniteStateTaskValidator:
                     runtime_state.communicated_agents.add(step["agent"])
                     continue
 
-                if runtime_state.communicated_agents != self._agent_id_set:
+                # Shared observation steps may appear before the opening
+                # coordination block, but real task actions still require both
+                # agents to communicate first.
+                if (
+                    step["tool"] not in OBSERVATION_TOOL_NAMES
+                    and runtime_state.communicated_agents != self._agent_id_set
+                ):
                     raise MissingInitialCommunicationSemanticValidationError(
                         "Both agents must coordinate via communication before the first task action.",
                         details={

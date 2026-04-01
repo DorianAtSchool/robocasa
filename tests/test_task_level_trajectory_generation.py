@@ -1155,6 +1155,51 @@ class PrepareCoffeeTaskInstanceTests(unittest.TestCase):
             first_task_instance.initial_state, second_task_instance.initial_state
         )
 
+    def test_task_instance_sampling_allows_same_or_different_agent_starts(self):
+        sampled_locations = [
+            tuple(
+                task_instance.initial_state["agents"][agent_id]["location"]
+                for agent_id in ("agent_0", "agent_1")
+            )
+            for task_instance in (
+                make_prepare_coffee_task_instance(run_index) for run_index in range(12)
+            )
+        ]
+
+        self.assertTrue(
+            any(
+                agent_0_location == agent_1_location
+                for agent_0_location, agent_1_location in sampled_locations
+            )
+        )
+        self.assertTrue(
+            any(
+                agent_0_location != agent_1_location
+                for agent_0_location, agent_1_location in sampled_locations
+            )
+        )
+
+    def test_task_instance_keeps_canonical_start_positions_when_disabled(self):
+        runtime_config = RuntimeConfig(
+            composite_task="PrepareCoffee",
+            num_runs=1,
+            model="gemini-test",
+            sdk="google-genai",
+            project=None,
+            location="us-central1",
+            temperature=0.0,
+            random_start_location=False,
+            max_workers=1,
+            max_retries=1,
+        )
+
+        task_instance = PREPARE_COFFEE_TASK.build_task_instance(0, runtime_config)
+
+        self.assertEqual(
+            task_instance.initial_state["agents"],
+            PREPARE_COFFEE_INITIAL_STATE["agents"],
+        )
+
     def test_runtime_prompt_uses_sampled_initial_positions(self):
         task_instance = make_prepare_coffee_task_instance(0)
         prompt = build_prepare_coffee_prompt(
@@ -1392,6 +1437,13 @@ class DotenvLoadingTests(unittest.TestCase):
 
         self.assertEqual(dashed_runtime_config.thinking_level, "minimal")
         self.assertEqual(underscored_runtime_config.thinking_level, "high")
+
+    def test_parse_args_accepts_random_start_location_flag_and_alias(self):
+        dashed_runtime_config = parse_args(["--random-start-location", "false"])
+        underscored_runtime_config = parse_args(["--random_start_location", "true"])
+
+        self.assertFalse(dashed_runtime_config.random_start_location)
+        self.assertTrue(underscored_runtime_config.random_start_location)
 
     def test_parse_args_accepts_num_runs_flag_and_alias(self):
         dashed_runtime_config = parse_args(["--num-runs", "7"])
@@ -2290,13 +2342,18 @@ class FiniteStateTaskValidatorTests(unittest.TestCase):
             if step["tool"] not in {"communicate", "get_image"}
         ]
         candidate["steps"] = [
-            candidate["steps"][0],
-            candidate["steps"][1],
             make_required_get_image_step(
                 "agent_0",
                 reasoning="I should inspect the full scene before the task begins.",
                 views=("top_view", "room_view", "map"),
             ),
+            make_required_get_image_step(
+                "agent_1",
+                reasoning="I should inspect the full scene before the task begins.",
+                views=("top_view", "room_view", "map"),
+            ),
+            candidate["steps"][0],
+            candidate["steps"][1],
             make_required_get_image_step(
                 "agent_0",
                 reasoning="I should inspect the path before navigation.",
@@ -3775,6 +3832,7 @@ class GenerationTests(unittest.TestCase):
         self.assertEqual(
             payload["model_config"],
             {
+                "initialization": {"random_start_location": True},
                 "reasoning": {"thinking_level": None},
                 "sampling": {"temperature": 0.5, "strategy": "base"},
             },
@@ -6532,7 +6590,7 @@ class GenerationTests(unittest.TestCase):
                         )
 
             self.assertEqual(exit_code, 0)
-            self.assertFalse(mocked_generate.call_args.kwargs["show_progress"])
+            self.assertTrue(mocked_generate.call_args.kwargs["show_progress"])
             self.assertTrue(summary_path.exists())
             self.assertTrue(cost_output_path.exists())
             self.assertTrue(error_output_path.exists())
@@ -7006,22 +7064,27 @@ class GenerationTests(unittest.TestCase):
                     "data_generation.task_level.generation.raw.cli.resolve_request_output_path",
                     return_value=request_summary_path,
                 ):
-                    with mock.patch.object(
-                        trajectory_generation_module,
-                        "ThreadPoolExecutor",
-                        ImmediateExecutor,
+                    task_progress = mock.Mock()
+                    with mock.patch(
+                        "data_generation.task_level.generation.raw.cli._create_task_progress_bar",
+                        return_value=task_progress,
                     ):
-                        with mock.patch("builtins.print") as mocked_print:
-                            exit_code = main(
-                                [
-                                    "--tasks",
-                                    "PrepareCoffee",
-                                    "HotDogSetup",
-                                    "--num-runs",
-                                    "1",
-                                    "--paralleize-tasks",
-                                ]
-                            )
+                        with mock.patch.object(
+                            trajectory_generation_module,
+                            "ThreadPoolExecutor",
+                            ImmediateExecutor,
+                        ):
+                            with mock.patch("builtins.print") as mocked_print:
+                                exit_code = main(
+                                    [
+                                        "--tasks",
+                                        "PrepareCoffee",
+                                        "HotDogSetup",
+                                        "--num-runs",
+                                        "1",
+                                        "--paralleize-tasks",
+                                    ]
+                                )
             combined_summary = json.loads(
                 request_summary_path.read_text(encoding="utf-8")
             )
@@ -7034,6 +7097,8 @@ class GenerationTests(unittest.TestCase):
             [call.kwargs["show_progress"] for call in mocked_generate.call_args_list],
             [False, False],
         )
+        self.assertEqual(task_progress.update.call_count, 2)
+        task_progress.close.assert_called_once_with()
         self.assertEqual(
             [call.args[0] for call in mocked_print.call_args_list],
             [

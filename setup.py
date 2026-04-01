@@ -21,6 +21,7 @@ setup(
         "mujoco==3.3.1",
         "pygame",
         "Pillow",
+        "matplotlib",
         "opencv-python",
         "pyyaml",
         "pynput",

@@ -52,6 +52,7 @@ class RuntimeConfig:
     temperature: float
     max_workers: int
     max_retries: int
+    random_start_location: bool = True
     parallelize_tasks: bool = False
     sampling: str = "base"
     verbalized_k: int = 1

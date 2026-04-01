@@ -19,7 +19,7 @@ def _sample_agent_locations(
     fixture_ids: Sequence[str],
     run_index: int,
 ) -> dict[str, str]:
-    """Samples deterministic starting fixtures for each agent."""
+    """Samples deterministic starting fixtures for each agent independently."""
 
     seed_material = stable_json_sha256(
         {
@@ -30,6 +30,8 @@ def _sample_agent_locations(
         }
     )
     rng = random.Random(seed_material)
+    # Sample each agent independently so different runs may start agents on the
+    # same fixture or on different fixtures.
     return {agent_id: rng.choice(tuple(fixture_ids)) for agent_id in agent_ids}
 
 
@@ -68,14 +70,28 @@ def build_randomized_fixture_task_instance(
     initial_state: dict[str, Any],
     allowed_tool_specs: dict[str, dict[str, Any]],
     run_index: int,
+    runtime_config: Any | None = None,
 ) -> TaskInstance:
-    """Builds one deterministic per-run task instance with randomized start fixtures."""
+    """Builds one per-run task instance with configurable agent start fixtures."""
+
+    sampled_initial_state = deepcopy(initial_state)
+    random_start_location = True
+    if runtime_config is not None:
+        random_start_location = bool(
+            getattr(runtime_config, "random_start_location", True)
+        )
+    if not random_start_location:
+        for agent_id in agent_ids:
+            agent_state = sampled_initial_state.setdefault("agents", {}).setdefault(
+                agent_id, {}
+            )
+            agent_state.setdefault("held_object", None)
+        return TaskInstance(initial_state=sampled_initial_state)
 
     fixture_ids = resolve_initial_position_fixture_ids(
         initial_state=initial_state,
         allowed_tool_specs=allowed_tool_specs,
     )
-    sampled_initial_state = deepcopy(initial_state)
     sampled_agent_locations = _sample_agent_locations(
         composite_task=composite_task,
         agent_ids=agent_ids,

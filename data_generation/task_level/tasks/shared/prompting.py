@@ -200,7 +200,7 @@ Important rules:
 - Every step must be executable and valid for the current task state.
 - Track each agent’s current fixture after every navigation and verify that each non-navigation action matches that current fixture.
 - Number steps consecutively starting at 0 with no gaps.
-- The reasoning text should explain why the agent is using the tool call, referencing what happened before or what the agent plans on doing. Each reasoning text must be a single short sentence.
+- The reasoning text should explain why the agent is using the tool call from a first-person point-of-view. Each reasoning text must be a single short sentence.
 - In reasoning text and communicate.message text, refer to agents using exact IDs like agent_0 and agent_1, not Agent 0 or Agent 1.
 - Agents can pass each other freely in the kitchen, including around the island.
 - If an agent has no immediate legal task action because it is waiting on the other agent, use communicate to explain the dependency before the other agent proceeds.
@@ -220,7 +220,7 @@ Initial agent positions:
 Initial task state:
 {initial_state_text}
 
-Allowed tools and exact IDs for this task:
+Allowed tools and exact symbolic arguments for this task:
 {allowed_tools_text}
 
 """.strip()

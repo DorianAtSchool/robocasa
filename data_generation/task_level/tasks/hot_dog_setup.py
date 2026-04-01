@@ -284,6 +284,7 @@ HOT_DOG_SETUP_TASK = TaskDefinition(
         initial_state=HOT_DOG_SETUP_INITIAL_STATE,
         allowed_tool_specs=HOT_DOG_SETUP_ALLOWED_TOOL_SPECS,
         run_index=run_index,
+        runtime_config=runtime_config,
     ),
     build_prompt=build_hot_dog_setup_prompt,
     build_trajectory_record=build_hot_dog_setup_trajectory_record,

@@ -12,6 +12,8 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from tqdm import tqdm
+
 from data_generation.task_level.generation.raw.config import (
     ALL_COMPOSITE_TASKS_OPTION,
     DEFAULT_COMPOSITE_TASK,
@@ -74,6 +76,28 @@ class TaskRunResult:
     payload: dict[str, Any]
     output_paths: OutputPaths
     should_write_outputs: bool
+
+
+def _parse_bool_cli_argument(value: str) -> bool:
+    """Parses one explicit CLI boolean argument value."""
+
+    normalized_value = str(value).strip().lower()
+    if normalized_value in {"true", "1", "yes", "y", "on"}:
+        return True
+    if normalized_value in {"false", "0", "no", "n", "off"}:
+        return False
+    raise argparse.ArgumentTypeError("Expected a boolean value: true or false.")
+
+
+def _create_task_progress_bar(*, total_tasks: int) -> Any:
+    """Builds the outer task bar used for concurrent multi-task CLI runs."""
+
+    return tqdm(
+        total=total_tasks,
+        desc="Tasks",
+        disable=not os.isatty(2),
+        dynamic_ncols=True,
+    )
 
 
 def _resume_directory_summary_payload(resume_path: Path) -> dict[str, Any] | None:
@@ -264,6 +288,7 @@ def _generate_task_result(
     composite_task: str,
     request_summary_path: Path | None = None,
     finalize_outputs: bool = False,
+    show_progress: bool = True,
 ) -> TaskRunResult:
     """Runs generation for one task so serial and threaded paths share behavior."""
 
@@ -276,7 +301,7 @@ def _generate_task_result(
     payload, should_write_outputs = _generate_or_resume_task_payload(
         task_runtime_config,
         output_paths=output_paths,
-        show_progress=False,
+        show_progress=show_progress,
     )
     _raise_if_task_cancelled(task_runtime_config)
     task_run_result = TaskRunResult(
@@ -339,6 +364,7 @@ def _generate_task_results(
                 composite_task=composite_task,
                 request_summary_path=request_summary_path,
                 finalize_outputs=True,
+                show_progress=True,
             )
         return [result for result in ordered_results if result is not None]
 
@@ -346,6 +372,7 @@ def _generate_task_results(
         threading.Event()
     )
     executor = ThreadPoolExecutor(max_workers=len(indexed_tasks))
+    task_progress = _create_task_progress_bar(total_tasks=len(indexed_tasks))
     futures: dict[Any, int] = {}
     wait_for_shutdown = True
     try:
@@ -356,11 +383,13 @@ def _generate_task_results(
                 composite_task=composite_task,
                 request_summary_path=request_summary_path,
                 finalize_outputs=True,
+                show_progress=False,
             ): task_index
             for task_index, composite_task in indexed_tasks
         }
         for future in as_completed(futures):
             ordered_results[futures[future]] = future.result()
+            task_progress.update(1)
     except KeyboardInterrupt:
         wait_for_shutdown = False
         _cancel_task_futures(
@@ -380,6 +409,7 @@ def _generate_task_results(
     finally:
         if wait_for_shutdown:
             executor.shutdown(wait=True, cancel_futures=False)
+        task_progress.close()
     return [result for result in ordered_results if result is not None]
 
 
@@ -465,6 +495,22 @@ def parse_args(argv: list[str] | None = None) -> RuntimeConfig:
         type=float,
         default=0.6,
         help="Model sampling temperature.",
+    )
+    parser.add_argument(
+        "--random-start-location",
+        type=_parse_bool_cli_argument,
+        default=True,
+        dest="random_start_location",
+        help=(
+            "Whether to randomize each agent's starting fixture for raw trajectory "
+            "generation. Accepts true or false. Default: true."
+        ),
+    )
+    parser.add_argument(
+        "--random_start_location",
+        type=_parse_bool_cli_argument,
+        dest="random_start_location",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--sampling",
@@ -613,6 +659,7 @@ def parse_args(argv: list[str] | None = None) -> RuntimeConfig:
         project=args.project,
         location=args.location,
         temperature=args.temperature,
+        random_start_location=args.random_start_location,
         sampling=args.sampling,
         verbalized_k=args.verbalized_k,
         thinking_level=args.thinking_level,

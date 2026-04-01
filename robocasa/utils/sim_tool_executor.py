@@ -76,6 +76,18 @@ _APPROACH_CENTER_TYPES = _REQUIRE_FRONT_TYPES | _COUNTERTOP_APPLIANCE_TYPES
 _FRONT_READY_MIN_GAP = 0.05
 _FRONT_READY_MAX_GAP = 0.75
 _FRONT_READY_MAX_CENTER_DISTANCE = 1.0
+_SWEEP_VERBOSE_ENV_VAR = "ROBOCASA_SWEEP_VERBOSE"
+
+
+def _sim_tool_debug_enabled() -> bool:
+    """Return whether sweep-level simulator debug prints should be shown."""
+
+    return os.environ.get(_SWEEP_VERBOSE_ENV_VAR, "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def _is_approach_center(fixture) -> bool:
@@ -182,7 +194,9 @@ class SimToolExecutor:
         return self.runner.render()
 
     def save_placement_map(
-        self, output_dir: str | Path, prefix: str = "placement",
+        self,
+        output_dir: str | Path,
+        prefix: str = "placement",
         clean_labels: bool = True,
     ) -> Path:
         """Render the 2D placement map and save it to *output_dir*.
@@ -193,11 +207,14 @@ class SimToolExecutor:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         return self._save_map_image(
-            output_dir / f"{prefix}_map.png", clean_labels=clean_labels,
+            output_dir / f"{prefix}_map.png",
+            clean_labels=clean_labels,
         )
 
     def _save_map_image(
-        self, image_path: str | Path, clean_labels: bool = True,
+        self,
+        image_path: str | Path,
+        clean_labels: bool = True,
     ) -> Path:
         """Render the placement map and save it to an explicit output path.
 
@@ -581,11 +598,12 @@ class SimToolExecutor:
         eef_pos = self._get_robot_eef_pos(robot_idx)
         held_pos = eef_pos.copy()
         held_pos[2] += self._HELD_Z_OFFSET
-        print(
-            f"[_sync_held] robot{robot_idx} holds {object_id}: "
-            f"eef=({eef_pos[0]:.3f}, {eef_pos[1]:.3f}, {eef_pos[2]:.3f}) "
-            f"-> held=({held_pos[0]:.3f}, {held_pos[1]:.3f}, {held_pos[2]:.3f})"
-        )
+        if _sim_tool_debug_enabled():
+            print(
+                f"[_sync_held] robot{robot_idx} holds {object_id}: "
+                f"eef=({eef_pos[0]:.3f}, {eef_pos[1]:.3f}, {eef_pos[2]:.3f}) "
+                f"-> held=({held_pos[0]:.3f}, {held_pos[1]:.3f}, {held_pos[2]:.3f})"
+            )
         # _set_object_pose already moves contained objects (e.g. slices
         # inside a bowl) by the same delta — no extra handling needed.
         self._set_object_pose(object_id, held_pos)
@@ -1474,7 +1492,8 @@ class SimToolExecutor:
             normalized_view_names.append(normalized_view)
             if normalized_view == "map":
                 saved_path = self._save_map_image(
-                    requested_path, clean_labels=self._clean_map_labels,
+                    requested_path,
+                    clean_labels=self._clean_map_labels,
                 )
                 camera_name = "map"
             elif normalized_view in {"room_view", "top_view"}:
@@ -1755,20 +1774,26 @@ class SimToolExecutor:
                 return ToolResult(
                     "pick_up_object",
                     False,
-                    {"object_id": object_id, "source_id": source_id, "robot_idx": robot_idx},
+                    {
+                        "object_id": object_id,
+                        "source_id": source_id,
+                        "robot_idx": robot_idx,
+                    },
                 )
             self._sync_held_object(robot_idx)
         obj_pos_before, _ = self._get_object_pose(object_id)
-        print(
-            f"[pick_up] robot{robot_idx} picking {object_id} from {source_id}: "
-            f"obj_before=({obj_pos_before[0]:.3f}, {obj_pos_before[1]:.3f}, {obj_pos_before[2]:.3f})"
-        )
+        if _sim_tool_debug_enabled():
+            print(
+                f"[pick_up] robot{robot_idx} picking {object_id} from {source_id}: "
+                f"obj_before=({obj_pos_before[0]:.3f}, {obj_pos_before[1]:.3f}, {obj_pos_before[2]:.3f})"
+            )
         self._held_objects[robot_idx] = object_id
         self._sync_held_object(robot_idx)
         obj_pos_after, _ = self._get_object_pose(object_id)
-        print(
-            f"[pick_up] after sync: obj=({obj_pos_after[0]:.3f}, {obj_pos_after[1]:.3f}, {obj_pos_after[2]:.3f})"
-        )
+        if _sim_tool_debug_enabled():
+            print(
+                f"[pick_up] after sync: obj=({obj_pos_after[0]:.3f}, {obj_pos_after[1]:.3f}, {obj_pos_after[2]:.3f})"
+            )
         return ToolResult(
             "pick_up_object",
             True,
@@ -2428,7 +2453,8 @@ def _main():
         if args.plan is None and args.demo_plan is None and args.trajectory is None:
             # No trajectory/plan — save map and frames now
             map_path = executor.save_placement_map(
-                args.output_dir, prefix="initial",
+                args.output_dir,
+                prefix="initial",
                 clean_labels=executor._clean_map_labels,
             )
             print(f"Placement map: {map_path}")
@@ -2474,7 +2500,8 @@ def _main():
             # Save map after execution for demo_plan/plan paths
             if args.trajectory is None:
                 map_path = executor.save_placement_map(
-                    args.output_dir, prefix="initial",
+                    args.output_dir,
+                    prefix="initial",
                     clean_labels=executor._clean_map_labels,
                 )
                 print(f"Placement map: {map_path}")

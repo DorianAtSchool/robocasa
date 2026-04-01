@@ -220,6 +220,9 @@ def _build_model_config_payload(runtime_config: RuntimeConfig) -> dict[str, Any]
         sampling_payload["verbalized_k"] = runtime_config.verbalized_k
 
     return {
+        "initialization": {
+            "random_start_location": runtime_config.random_start_location,
+        },
         "reasoning": {
             "thinking_level": runtime_config.thinking_level,
         },
@@ -1202,7 +1205,7 @@ def validate_resume_payload(
     if payload.get("model_config") != expected_model_config:
         raise TrajectoryGenerationError(
             "Resume directory model configuration does not match the requested "
-            "sampling, temperature, or thinking settings."
+            "sampling, temperature, thinking, or initialization settings."
         )
 
 

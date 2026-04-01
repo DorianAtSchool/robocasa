@@ -270,6 +270,7 @@ PREPARE_SANDWICH_STATION_TASK = TaskDefinition(
         initial_state=PREPARE_SANDWICH_STATION_INITIAL_STATE,
         allowed_tool_specs=PREPARE_SANDWICH_STATION_ALLOWED_TOOL_SPECS,
         run_index=run_index,
+        runtime_config=runtime_config,
     ),
     build_prompt=build_prepare_sandwich_station_prompt,
     build_trajectory_record=build_prepare_sandwich_station_trajectory_record,
