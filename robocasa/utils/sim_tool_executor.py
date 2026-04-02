@@ -17,7 +17,7 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 from copy import deepcopy
 
 import imageio
@@ -135,6 +135,7 @@ class SimToolExecutor:
         robot_radius: float = 0.18,
         robot_spawn: str = "trajectory",
         full_scene_view: bool = True,
+        robot_colors: Sequence[Sequence[float]] | None = None,
     ):
         os.environ["MUJOCO_GL"] = gl_backend
         self.runner = TrajectoryRunner(
@@ -154,6 +155,7 @@ class SimToolExecutor:
             sample_spacing=sample_spacing,
             robot_radius=robot_radius,
             full_scene_view=full_scene_view,
+            robot_colors=robot_colors,
         )
         self.env = self.runner.env
         self._held_objects: dict[int, str] = {}

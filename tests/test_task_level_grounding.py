@@ -7,43 +7,66 @@ from data_generation.task_level.grounding_specs import (
     build_resolved_grounding_payload,
     resolve_grounding_map,
 )
-from data_generation.task_level.tasks.hot_dog_setup import (
-    HOT_DOG_SETUP_INITIAL_STATE,
-    build_hot_dog_setup_trajectory_record,
-)
-from data_generation.task_level.tasks.prepare_coffee import (
-    PREPARE_COFFEE_INITIAL_STATE,
-    build_prepare_coffee_trajectory_record,
-)
-from data_generation.task_level.tasks.prepare_sandwich_station import (
-    PREPARE_SANDWICH_STATION_INITIAL_STATE,
-    build_prepare_sandwich_station_trajectory_record,
-)
+from data_generation.task_level.tasks import get_task_definition
+from data_generation.task_level.tasks.specs import load_all_task_specs, load_task_spec
 from data_generation.task_level.tasks.shared.types import TaskInstance
+
+HOT_DOG_SETUP_INITIAL_STATE = load_task_spec("HotDogSetup").initial_state
+PREPARE_COFFEE_INITIAL_STATE = load_task_spec("PrepareCoffee").initial_state
+PREPARE_SANDWICH_STATION_INITIAL_STATE = load_task_spec(
+    "PrepareSandwichStation"
+).initial_state
 
 
 class TaskLevelGroundingTests(unittest.TestCase):
+    def test_every_task_spec_example_validates_and_persists_grounding(self):
+        generation_usage = {"total_cost_usd": 0.0}
+
+        for task_spec in load_all_task_specs():
+            task_definition = get_task_definition(task_spec.composite_task)
+            self.assertIsNotNone(task_definition)
+            validator = task_definition.validator_factory(
+                TaskInstance(initial_state=task_spec.initial_state)
+            )
+            validation = validator.validate(task_spec.example_trajectory)
+            trajectory_record = task_definition.build_trajectory_record(
+                task_spec.example_trajectory,
+                validation,
+                "traj_spec_example",
+                generation_usage,
+                TaskInstance(initial_state=task_spec.initial_state),
+            )
+
+            grounding_map = trajectory_record.get("grounding_map")
+            self.assertIsInstance(grounding_map, dict)
+            self.assertEqual(grounding_map["map_kind"], "scene_agnostic")
+            self.assertEqual(
+                grounding_map["composite_task"],
+                task_spec.composite_task,
+            )
+            self.assertTrue(grounding_map["symbols"])
+
     def test_task_record_builders_persist_scene_agnostic_grounding_map(self):
         candidate = {"steps": []}
         validation = {"is_valid": True}
         generation_usage = {"total_cost_usd": 0.0}
 
         trajectory_records = [
-            build_hot_dog_setup_trajectory_record(
+            get_task_definition("HotDogSetup").build_trajectory_record(
                 candidate,
                 validation,
                 "traj_000001",
                 generation_usage,
                 TaskInstance(initial_state=HOT_DOG_SETUP_INITIAL_STATE),
             ),
-            build_prepare_coffee_trajectory_record(
+            get_task_definition("PrepareCoffee").build_trajectory_record(
                 candidate,
                 validation,
                 "traj_000002",
                 generation_usage,
                 TaskInstance(initial_state=PREPARE_COFFEE_INITIAL_STATE),
             ),
-            build_prepare_sandwich_station_trajectory_record(
+            get_task_definition("PrepareSandwichStation").build_trajectory_record(
                 candidate,
                 validation,
                 "traj_000003",
@@ -68,7 +91,7 @@ class TaskLevelGroundingTests(unittest.TestCase):
         generation_usage = {"total_cost_usd": 0.0}
         task_instance = TaskInstance(initial_state=PREPARE_COFFEE_INITIAL_STATE)
 
-        trajectory_record = build_prepare_coffee_trajectory_record(
+        trajectory_record = get_task_definition("PrepareCoffee").build_trajectory_record(
             candidate,
             validation,
             "traj_000010",

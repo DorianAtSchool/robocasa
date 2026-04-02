@@ -38,8 +38,6 @@ from data_generation.task_level.tasks.base import (
 )
 from data_generation.task_level.tasks import (
     HeldObjectSemanticValidationError,
-    HOT_DOG_SETUP_TASK,
-    HotDogSetupValidator,
     InsufficientValidUniqueTrajectoriesDuplicateError,
     InsufficientValidUniqueTrajectoriesInvalidError,
     InsufficientValidUniqueTrajectoriesMixedError,
@@ -47,31 +45,16 @@ from data_generation.task_level.tasks import (
     NavigationSemanticValidationError,
     ObservationSequenceSemanticValidationError,
     DuplicateTrajectoryValidationError,
-    PREPARE_COFFEE_TASK,
-    PREPARE_SANDWICH_STATION_TASK,
-    PrepareSandwichStationValidator,
     ResponseFormatValidationError,
     TaskSemanticValidationError,
     TaskPreconditionSemanticValidationError,
     TrajectoryStructureValidationError,
     TrajectoryValidationError,
     ToolArgumentSemanticValidationError,
+    get_task_definition,
     supported_task_names,
 )
-from data_generation.task_level.tasks.hot_dog_setup import (
-    HOT_DOG_SETUP_INITIAL_STATE,
-)
-from data_generation.task_level.tasks.prepare_coffee import (
-    PREPARE_COFFEE_ALLOWED_TOOL_SPECS,
-    PREPARE_COFFEE_NON_COMMUNICATE_TOOL_NAMES,
-    PREPARE_COFFEE_INITIAL_STATE,
-    PrepareCoffeeValidator,
-    build_prepare_coffee_prompt,
-)
-from data_generation.task_level.tasks.prepare_sandwich_station import (
-    PREPARE_SANDWICH_STATION_INITIAL_STATE,
-    build_prepare_sandwich_station_prompt,
-)
+from data_generation.task_level.tasks.specs import load_task_spec
 from data_generation.task_level.subatomic_tool_calls import discover_subatomic_tools
 from data_generation.task_level.runtime.batch_generation import (
     BatchRunContext,
@@ -129,6 +112,45 @@ from data_generation.task_level.generation.raw.runtime_support import (
     _maybe_reserve_signature,
     extract_json_candidate,
 )
+
+HOT_DOG_SETUP_SPEC = load_task_spec("HotDogSetup")
+PREPARE_COFFEE_SPEC = load_task_spec("PrepareCoffee")
+PREPARE_SANDWICH_STATION_SPEC = load_task_spec("PrepareSandwichStation")
+
+HOT_DOG_SETUP_TASK = get_task_definition("HotDogSetup")
+PREPARE_COFFEE_TASK = get_task_definition("PrepareCoffee")
+PREPARE_SANDWICH_STATION_TASK = get_task_definition("PrepareSandwichStation")
+
+HOT_DOG_SETUP_INITIAL_STATE = HOT_DOG_SETUP_SPEC.initial_state
+PREPARE_COFFEE_INITIAL_STATE = PREPARE_COFFEE_SPEC.initial_state
+PREPARE_SANDWICH_STATION_INITIAL_STATE = PREPARE_SANDWICH_STATION_SPEC.initial_state
+
+PREPARE_COFFEE_ALLOWED_TOOL_SPECS = PREPARE_COFFEE_SPEC.allowed_tool_specs
+PREPARE_COFFEE_NON_COMMUNICATE_TOOL_NAMES = tuple(
+    tool_name
+    for tool_name in PREPARE_COFFEE_ALLOWED_TOOL_SPECS
+    if tool_name != "communicate"
+)
+
+
+def PrepareCoffeeValidator(task_instance=None):
+    return PREPARE_COFFEE_TASK.validator_factory(task_instance)
+
+
+def HotDogSetupValidator(task_instance=None):
+    return HOT_DOG_SETUP_TASK.validator_factory(task_instance)
+
+
+def PrepareSandwichStationValidator(task_instance=None):
+    return PREPARE_SANDWICH_STATION_TASK.validator_factory(task_instance)
+
+
+def build_prepare_coffee_prompt(*args, **kwargs):
+    return PREPARE_COFFEE_TASK.build_prompt(*args, **kwargs)
+
+
+def build_prepare_sandwich_station_prompt(*args, **kwargs):
+    return PREPARE_SANDWICH_STATION_TASK.build_prompt(*args, **kwargs)
 
 PREPARE_COFFEE_ACTION_SPECS = (
     ("navigate_to_fixture", {"fixture_id": "mug_source_fixture"}),
@@ -7248,6 +7270,7 @@ class GenerationTests(unittest.TestCase):
             "sdk": "google-genai",
             "model": "gemini-3-flash-preview",
             "model_config": {
+                "initialization": {"random_start_location": True},
                 "reasoning": {"thinking_level": None},
                 "sampling": {"temperature": 0.6, "strategy": "base"},
             },
@@ -7321,6 +7344,7 @@ class GenerationTests(unittest.TestCase):
             "sdk": "google-genai",
             "model": "gemini-3-flash-preview",
             "model_config": {
+                "initialization": {"random_start_location": True},
                 "reasoning": {"thinking_level": None},
                 "sampling": {"temperature": 0.6, "strategy": "base"},
             },

@@ -6,61 +6,9 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
 
+from data_generation.task_level.tasks.specs import load_task_spec
+
 GROUNDING_MAP_VERSION = 2
-
-_LEGACY_SYMBOL_ALIASES_BY_TASK = {
-    "HotDogSetup": {
-        "hotdog_bun_1": "bun",
-        "sausage_1": "sausage",
-        "condiment_1": "condiment",
-        "plate_1": "serving_plate",
-        "counter_1": "bun_source_fixture",
-        "fridge_1": "sausage_source_fixture",
-        "cabinet_1": "condiment_source_fixture",
-        "dining_table_1": "serving_surface",
-    },
-    "PrepareCoffee": {
-        "mug_1": "mug",
-        "cabinet_1": "mug_source_fixture",
-        "counter_1": "staging_surface",
-        "coffee_machine_1": "coffee_machine",
-    },
-    "PrepareSandwichStation": {
-        "ingredient_bowl_1": "ingredient_bowl",
-        "baguette_1": "baguette",
-        "tomato_slice_1": "tomato_slice",
-        "pickle_slice_1": "pickle_slice",
-        "turkey_slice_1": "turkey_slice",
-        "fridge_1": "ingredient_source_fixture",
-        "counter_1": "staging_surface",
-        "toaster_oven_1": "toaster_oven",
-    },
-}
-
-_CABINET_FIXTURE_TYPES = (
-    "cabinet",
-    "cabinet_single_door",
-    "cabinet_double_door",
-    "cabinet_with_door",
-)
-_COUNTER_FIXTURE_TYPES = (
-    "counter",
-    "counter_non_corner",
-    "counter_non_dining",
-)
-_DINING_SURFACE_FIXTURE_TYPES = (
-    "dining_counter",
-    "island",
-    "counter_non_dining",
-)
-_PLACEABLE_SURFACE_FIXTURE_TYPES = (
-    "counter",
-    "counter_non_corner",
-    "counter_non_dining",
-    "dining_counter",
-    "island",
-)
-
 
 def build_grounding_map_for_task(
     composite_task: str,
@@ -68,15 +16,28 @@ def build_grounding_map_for_task(
 ) -> dict[str, Any]:
     """Builds one scene-agnostic grounding map for a supported task."""
 
-    initial_state = _normalize_initial_state_symbols(composite_task, initial_state)
+    task_spec = load_task_spec(composite_task)
+    normalized_initial_state = _normalize_initial_state_symbols(
+        composite_task, initial_state
+    )
+    grounding_spec = dict(task_spec.grounding)
+    symbols = deepcopy(dict(grounding_spec.get("symbols", {})))
 
-    if composite_task == "HotDogSetup":
-        return _build_hot_dog_setup_grounding_map(initial_state)
-    if composite_task == "PrepareCoffee":
-        return _build_prepare_coffee_grounding_map(initial_state)
-    if composite_task == "PrepareSandwichStation":
-        return _build_prepare_sandwich_station_grounding_map(initial_state)
-    raise ValueError(f"Unsupported grounding-map task {composite_task!r}.")
+    for symbol_name, symbol_spec in symbols.items():
+        if not isinstance(symbol_spec, dict):
+            continue
+        if symbol_spec.get("entity_type") == "object":
+            object_state = normalized_initial_state["objects"][symbol_name]
+            symbol_spec.setdefault("object_type", object_state["object_type"])
+            symbol_spec.setdefault("symbolic_location", object_state.get("location"))
+        elif symbol_spec.get("entity_type") == "fixture":
+            fixture_state = normalized_initial_state["fixtures"][symbol_name]
+            symbol_spec.setdefault("fixture_type", fixture_state["fixture_type"])
+
+    return _grounding_map(
+        composite_task,
+        symbols=symbols,
+    )
 
 
 def build_resolved_grounding_payload(
@@ -205,170 +166,15 @@ def build_scene_summary(scene: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _build_hot_dog_setup_grounding_map(
-    initial_state: dict[str, Any],
-) -> dict[str, Any]:
-    """Builds the reusable HotDogSetup grounding map."""
-
-    return _grounding_map(
-        "HotDogSetup",
-        symbols={
-            "bun": _object_entry(
-                initial_state,
-                "bun",
-                preferred_fixture_types=_COUNTER_FIXTURE_TYPES,
-                role="bun",
-            ),
-            "sausage": _object_entry(
-                initial_state,
-                "sausage",
-                preferred_fixture_types=("fridge",),
-                role="sausage",
-            ),
-            "condiment": _object_entry(
-                initial_state,
-                "condiment",
-                preferred_fixture_types=_CABINET_FIXTURE_TYPES,
-                role="condiment",
-            ),
-            "serving_plate": _object_entry(
-                initial_state,
-                "serving_plate",
-                preferred_fixture_types=_DINING_SURFACE_FIXTURE_TYPES,
-                role="serving_plate",
-            ),
-            "bun_source_fixture": _fixture_entry(
-                initial_state,
-                "bun_source_fixture",
-                resolver="source_fixture_for_object",
-                object_symbol="bun",
-                preferred_fixture_types=_COUNTER_FIXTURE_TYPES,
-                role="bun_source_fixture",
-            ),
-            "sausage_source_fixture": _fixture_entry(
-                initial_state,
-                "sausage_source_fixture",
-                resolver="source_fixture_for_object",
-                object_symbol="sausage",
-                preferred_fixture_types=("fridge",),
-                role="sausage_source_fixture",
-            ),
-            "condiment_source_fixture": _fixture_entry(
-                initial_state,
-                "condiment_source_fixture",
-                resolver="source_fixture_for_object",
-                object_symbol="condiment",
-                preferred_fixture_types=_CABINET_FIXTURE_TYPES,
-                role="condiment_source_fixture",
-            ),
-            "serving_surface": _fixture_entry(
-                initial_state,
-                "serving_surface",
-                resolver="support_fixture_for_object",
-                object_symbol="serving_plate",
-                preferred_fixture_types=_DINING_SURFACE_FIXTURE_TYPES,
-                role="serving_surface",
-            ),
-        },
-    )
-
-
-def _build_prepare_coffee_grounding_map(
-    initial_state: dict[str, Any],
-) -> dict[str, Any]:
-    """Builds the reusable PrepareCoffee grounding map."""
-
-    return _grounding_map(
-        "PrepareCoffee",
-        symbols={
-            "mug": _object_entry(
-                initial_state,
-                "mug",
-                preferred_fixture_types=_CABINET_FIXTURE_TYPES
-                + _PLACEABLE_SURFACE_FIXTURE_TYPES,
-                role="mug",
-            ),
-            "mug_source_fixture": _fixture_entry(
-                initial_state,
-                "mug_source_fixture",
-                resolver="source_fixture_for_object",
-                object_symbol="mug",
-                preferred_fixture_types=_CABINET_FIXTURE_TYPES,
-                role="mug_source_fixture",
-            ),
-            "coffee_machine": _fixture_entry(
-                initial_state,
-                "coffee_machine",
-                resolver="unique_fixture_type",
-                fixture_type="coffee_machine",
-                role="coffee_machine",
-            ),
-            "staging_surface": _fixture_entry(
-                initial_state,
-                "staging_surface",
-                resolver="nearest_placeable_surface_to_fixture",
-                anchor_fixture_symbol="coffee_machine",
-                preferred_fixture_types=_PLACEABLE_SURFACE_FIXTURE_TYPES,
-                role="staging_surface",
-            ),
-        },
-    )
-
-
-def _build_prepare_sandwich_station_grounding_map(
-    initial_state: dict[str, Any],
-) -> dict[str, Any]:
-    """Builds the reusable PrepareSandwichStation grounding map."""
-
-    return _grounding_map(
-        "PrepareSandwichStation",
-        symbols={
-            "ingredient_bowl": _object_entry(
-                initial_state,
-                "ingredient_bowl",
-                preferred_fixture_types=("fridge",) + _PLACEABLE_SURFACE_FIXTURE_TYPES,
-                role="ingredient_bowl",
-            ),
-            "baguette": _object_entry(
-                initial_state,
-                "baguette",
-                preferred_fixture_types=("fridge",) + _PLACEABLE_SURFACE_FIXTURE_TYPES,
-                role="baguette",
-            ),
-            "ingredient_source_fixture": _fixture_entry(
-                initial_state,
-                "ingredient_source_fixture",
-                resolver="source_fixture_for_object",
-                object_symbol="ingredient_bowl",
-                preferred_fixture_types=("fridge",),
-                role="ingredient_source_fixture",
-            ),
-            "toaster_oven": _fixture_entry(
-                initial_state,
-                "toaster_oven",
-                resolver="unique_fixture_type",
-                fixture_type="toaster_oven",
-                role="toaster_oven",
-            ),
-            "staging_surface": _fixture_entry(
-                initial_state,
-                "staging_surface",
-                resolver="nearest_placeable_surface_to_fixture",
-                anchor_fixture_symbol="toaster_oven",
-                preferred_fixture_types=_PLACEABLE_SURFACE_FIXTURE_TYPES,
-                role="staging_surface",
-            ),
-        },
-    )
-
-
 def _normalize_initial_state_symbols(
     composite_task: str,
     initial_state: dict[str, Any],
 ) -> dict[str, Any]:
     """Normalizes legacy task symbols so grounding maps use canonical role names."""
 
-    legacy_aliases = _LEGACY_SYMBOL_ALIASES_BY_TASK.get(composite_task, {})
+    task_spec = load_task_spec(composite_task)
+    grounding_spec = dict(task_spec.grounding)
+    legacy_aliases = dict(grounding_spec.get("legacy_symbol_aliases", {}))
     if not legacy_aliases:
         return deepcopy(initial_state)
     return _rename_symbol_aliases(initial_state, legacy_aliases)
@@ -405,47 +211,6 @@ def _grounding_map(
         "composite_task": composite_task,
         "symbols": symbols,
     }
-
-
-def _object_entry(
-    initial_state: dict[str, Any],
-    symbol: str,
-    *,
-    preferred_fixture_types: tuple[str, ...] = (),
-    role: str | None = None,
-) -> dict[str, Any]:
-    """Builds one reusable object-grounding entry."""
-
-    object_state = initial_state["objects"][symbol]
-    return {
-        "entity_type": "object",
-        "resolver": "object_by_type",
-        "role": role or symbol,
-        "object_type": object_state["object_type"],
-        "symbolic_location": object_state.get("location"),
-        "preferred_fixture_types": list(preferred_fixture_types),
-    }
-
-
-def _fixture_entry(
-    initial_state: dict[str, Any],
-    symbol: str,
-    *,
-    resolver: str,
-    role: str | None = None,
-    **resolver_args: Any,
-) -> dict[str, Any]:
-    """Builds one reusable fixture-grounding entry."""
-
-    fixture_state = initial_state["fixtures"][symbol]
-    entry = {
-        "entity_type": "fixture",
-        "resolver": resolver,
-        "role": role or symbol,
-        "fixture_type": fixture_state["fixture_type"],
-    }
-    entry.update(deepcopy(resolver_args))
-    return entry
 
 
 def _resolve_symbol(

@@ -27,6 +27,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Sequence
 
 import numpy as np
 import robosuite.utils.transform_utils as T
@@ -98,6 +99,10 @@ ROOM_VIEW_BASE_DISTANCE_SCALE = 1.00
 ROOM_VIEW_MIN_DISTANCE = 4.0
 TOP_VIEW_XY_MARGIN = 1.12
 TOP_VIEW_MIN_DISTANCE = 6.0
+DEFAULT_MULTI_ROBOT_COLORS: tuple[tuple[float, float, float, float], ...] = (
+    (1.0, 1.0, 1.0, 1.0),  # white
+    (1.0, 0.55, 0.10, 1.0),  # orange
+)
 
 
 def _classify_fixture(fixture: Fixture) -> str | None:
@@ -371,6 +376,7 @@ class TrajectoryRunner:
         sample_spacing: float = 0.08,
         robot_radius: float = 0.18,
         full_scene_view: bool = False,
+        robot_colors: Sequence[Sequence[float]] | None = DEFAULT_MULTI_ROBOT_COLORS,
     ):
         os.environ.setdefault("MUJOCO_GL", gl_backend)
 
@@ -399,6 +405,8 @@ class TrajectoryRunner:
         # free camera to see through walls, same as two_robot_video_sample.py)
         self.env = EnclosingWallRenderWrapper(self.env, alpha=0.1, enabled=True)
         self.env.reset()
+        self._robot_colors = self._normalize_robot_colors(robot_colors)
+        self._apply_robot_colors()
 
         self.render_width = render_width
         self.render_height = render_height
@@ -428,6 +436,46 @@ class TrajectoryRunner:
 
         self._scene: dict | None = None
         self._object_locations: dict[str, str] = {}
+
+    def _normalize_robot_colors(
+        self,
+        robot_colors: Sequence[Sequence[float]] | None,
+    ) -> tuple[tuple[float, float, float, float], ...]:
+        """Normalize robot colors to RGBA tuples aligned to the active robots."""
+        if robot_colors is None:
+            return tuple()
+
+        normalized: list[tuple[float, float, float, float]] = []
+        for color in robot_colors[: len(self.env.robots)]:
+            rgba = tuple(float(channel) for channel in color)
+            if len(rgba) == 3:
+                rgba = rgba + (1.0,)
+            if len(rgba) != 4:
+                raise ValueError(
+                    "Each robot color must be an RGB or RGBA sequence."
+                )
+            normalized.append(rgba)
+        return tuple(normalized)
+
+    def _apply_robot_colors(self) -> None:
+        """Tint each robot's visual geoms and materials while preserving alpha."""
+        if not self._robot_colors:
+            return
+
+        for robot_idx, robot in enumerate(self.env.robots):
+            if robot_idx >= len(self._robot_colors):
+                break
+            rgb = np.asarray(self._robot_colors[robot_idx][:3], dtype=float)
+            seen_material_ids: set[int] = set()
+            for geom_name in robot.robot_model.visual_geoms:
+                geom_id = self.env.sim.model.geom_name2id(geom_name)
+                geom_rgba = self.env.sim.model.geom_rgba[geom_id]
+                geom_rgba[:3] = rgb
+                material_id = int(self.env.sim.model.geom_matid[geom_id])
+                if material_id >= 0 and material_id not in seen_material_ids:
+                    material_rgba = self.env.sim.model.mat_rgba[material_id]
+                    material_rgba[:3] = rgb
+                    seen_material_ids.add(material_id)
 
     def _build_camera_list(self) -> list[str]:
         """Build the trimmed camera list: per-robot cameras + shared room_view."""
