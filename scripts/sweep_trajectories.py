@@ -55,6 +55,12 @@ Usage:
         --styles 34 42 \
         --seeds 1 2 3 4 5 6 7 \
         --push-to-hub DorianAtSchool/robocasa-trajectories-single
+
+    # Write one row per trajectory instead of one row per step:
+    python scripts/sweep_trajectories.py \
+        --input-dir data_generation/task_level/data/image/20260324T031125Z \
+        --output-dir tmp/sweep_output_traj \
+        --row-granularity trajectory
 """
 
 from __future__ import annotations
@@ -93,6 +99,11 @@ CLI_EPILOG = textwrap.dedent(
         --styles 34 42 \\
         --seeds 1 2 3 4 5 6 7 \\
         --push-to-hub DorianAtSchool/robocasa-trajectories-single
+
+      python scripts/sweep_trajectories.py \\
+        --input-dir data_generation/task_level/data/image/20260324T031125Z \\
+        --output-dir tmp/sweep_output_traj \\
+        --row-granularity trajectory
     """
 )
 
@@ -280,13 +291,31 @@ def upload_sweep_sidecars(repo_id: str, output_root: Path) -> None:
     )
 
 
-def sweep_output_to_dataset(output_root: Path) -> "datasets.Dataset":
-    """Convert sweep output directory into a single flat step-level dataset.
+def _resolve_step_images(image_paths: list[str] | None, image_columns: list[str]) -> dict[str, str | None]:
+    images = {col: None for col in image_columns}
+    for img_path_str in image_paths or []:
+        img_path = Path(img_path_str)
+        if not img_path.exists() and img_path.suffix == ".png":
+            img_path = img_path.with_suffix(".jpg")
+        if not img_path.exists():
+            continue
+        fname = img_path.stem
+        for view_token in image_columns:
+            if f"_{view_token}_" in f"_{fname}_":
+                images[view_token] = str(img_path)
+                break
+    return images
 
-    Each row is one tool step. Large episode-level JSON blobs are kept as
-    sidecar files in the dataset repo and referenced by path columns so the
-    HF table stays flat and viewable.
-    """
+
+def _read_compact_json(path: Path) -> str:
+    if not path.exists():
+        return ""
+    with open(path) as f:
+        return json.dumps(json.load(f), separators=(",", ":"))
+
+
+def _build_step_level_dataset(output_root: Path) -> "datasets.Dataset":
+    """Convert sweep output directory into a flat step-level dataset."""
     from datasets import Dataset, Features, Value, Image as HFImage
 
     IMAGE_COLUMNS = [
@@ -294,7 +323,6 @@ def sweep_output_to_dataset(output_root: Path) -> "datasets.Dataset":
         "agentview_center", "agentview_left", "agentview_right", "wrist",
     ]
 
-    VIEW_TOKENS = IMAGE_COLUMNS  # filename tokens match column names
     rows: list[dict] = []
     for run in _iter_completed_runs(output_root):
         metadata = run["metadata"]
@@ -306,20 +334,7 @@ def sweep_output_to_dataset(output_root: Path) -> "datasets.Dataset":
             robot_idx = step.get("robot_idx", 0)
             args = step.get("args", {})
             success = step.get("success", False)
-
-            images = {col: None for col in IMAGE_COLUMNS}
-            image_paths = step.get("image_paths") or []
-            for img_path_str in image_paths:
-                img_path = Path(img_path_str)
-                if not img_path.exists() and img_path.suffix == ".png":
-                    img_path = img_path.with_suffix(".jpg")
-                if not img_path.exists():
-                    continue
-                fname = img_path.stem
-                for view_token in VIEW_TOKENS:
-                    if f"_{view_token}_" in f"_{fname}_":
-                        images[view_token] = str(img_path)
-                        break
+            images = _resolve_step_images(step.get("image_paths"), IMAGE_COLUMNS)
 
             args_clean = {k: v for k, v in args.items() if k != "image_paths"}
 
@@ -368,12 +383,137 @@ def sweep_output_to_dataset(output_root: Path) -> "datasets.Dataset":
     return ds
 
 
-def build_dataset_card(repo_id: str, ds: "datasets.Dataset") -> str:
+def _build_trajectory_level_dataset(output_root: Path) -> "datasets.Dataset":
+    """Convert sweep output directory into a trajectory-level dataset."""
+    from datasets import Dataset, Features, Sequence, Value, Image as HFImage
+
+    IMAGE_COLUMNS = [
+        "room_view", "top_view", "map",
+        "agentview_center", "agentview_left", "agentview_right", "wrist",
+    ]
+
+    rows: list[dict] = []
+    for run in _iter_completed_runs(output_root):
+        metadata = run["metadata"]
+        row = {
+            "episode_id": run["episode_id"],
+            "task": run["task"],
+            "task_dir": run["task_dir"],
+            "layout": run["layout"],
+            "style": run["style"],
+            "seed": run["seed"],
+            "num_steps": len(metadata.get("steps", [])),
+            "run_dir": run["run_dir_rel"],
+            "adapted_trajectory": _read_compact_json(run["run_dir"] / "adapted_trajectory.json"),
+            "original_trajectory": _read_compact_json(run["run_dir"] / "original_trajectory.json"),
+            "execution_metadata": json.dumps(metadata, separators=(",", ":")),
+            "step_index": [],
+            "tool_name": [],
+            "tool_args": [],
+            "robot_idx": [],
+            "success": [],
+            **{col: [] for col in IMAGE_COLUMNS},
+        }
+
+        for step in metadata.get("steps", []):
+            images = _resolve_step_images(step.get("image_paths"), IMAGE_COLUMNS)
+            args_clean = {k: v for k, v in (step.get("args") or {}).items() if k != "image_paths"}
+
+            row["step_index"].append(step.get("step_index", 0))
+            row["tool_name"].append(step.get("tool", ""))
+            row["tool_args"].append(json.dumps(args_clean, separators=(",", ":")))
+            row["robot_idx"].append(step.get("robot_idx", 0))
+            row["success"].append(step.get("success", False))
+            for col in IMAGE_COLUMNS:
+                row[col].append(images[col])
+
+        rows.append(row)
+
+    features = Features({
+        "episode_id": Value("string"),
+        "task": Value("string"),
+        "task_dir": Value("string"),
+        "layout": Value("int32"),
+        "style": Value("int32"),
+        "seed": Value("int32"),
+        "num_steps": Value("int32"),
+        "run_dir": Value("string"),
+        "adapted_trajectory": Value("large_string"),
+        "original_trajectory": Value("large_string"),
+        "execution_metadata": Value("large_string"),
+        "step_index": Sequence(Value("int32")),
+        "tool_name": Sequence(Value("string")),
+        "tool_args": Sequence(Value("string")),
+        "robot_idx": Sequence(Value("int32")),
+        "success": Sequence(Value("bool")),
+        **{col: Sequence(HFImage()) for col in IMAGE_COLUMNS},
+    })
+
+    ds = Dataset.from_list(rows, features=features)
+    print(f"Built dataset: {len(ds)} trajectory rows")
+    return ds
+
+
+def sweep_output_to_dataset(
+    output_root: Path,
+    *,
+    row_granularity: str = "step",
+) -> "datasets.Dataset":
+    """Convert sweep output into a dataset with configurable row granularity."""
+    if row_granularity == "step":
+        return _build_step_level_dataset(output_root)
+    if row_granularity == "trajectory":
+        return _build_trajectory_level_dataset(output_root)
+    raise ValueError(f"Unsupported row granularity: {row_granularity}")
+
+
+def build_dataset_card(
+    repo_id: str,
+    ds: "datasets.Dataset",
+    *,
+    row_granularity: str = "step",
+) -> str:
     """Build a readable HuggingFace dataset card."""
     tasks = sorted(set(ds["task"]))
     episode_ids = ds["episode_id"]
     episodes = len(set(episode_ids))
-    avg_steps = len(ds) / max(episodes, 1)
+    if row_granularity == "step":
+        avg_steps = len(ds) / max(episodes, 1)
+        intro = "This dataset contains flat RoboCasa step rows with sidecar episode JSON."
+        row_text = "Each row is one tool step."
+        episode_json_text = textwrap.dedent(
+            """\
+            Episode-level JSON is not duplicated into parquet. Instead, each row
+            carries repo-relative references:
+
+            - `adapted_trajectory_path`
+            - `original_trajectory_path`
+            - `execution_metadata_path`
+            """
+        ).strip()
+        notes_tail = "- Episode JSON sidecars are available in the repo files at the paths referenced by `*_path` columns."
+    else:
+        avg_steps = sum(ds["num_steps"]) / max(len(ds), 1)
+        intro = "This dataset contains one row per RoboCasa trajectory / episode."
+        row_text = "Each row is one trajectory / episode."
+        episode_json_text = textwrap.dedent(
+            """\
+            Episode-level JSON is stored inline:
+
+            - `adapted_trajectory`
+            - `original_trajectory`
+            - `execution_metadata`
+
+            Step-level data is stored in aligned sequence columns:
+
+            - `step_index`
+            - `tool_name`
+            - `tool_args`
+            - `robot_idx`
+            - `success`
+            """
+        ).strip()
+        notes_tail = "- This layout is self-contained under `load_dataset()`, but nested sequence columns are less friendly for the HF table viewer."
     task_list = ", ".join(tasks) if tasks else "Unknown"
     return textwrap.dedent(
         f"""\
@@ -388,18 +528,13 @@ def build_dataset_card(repo_id: str, ds: "datasets.Dataset") -> str:
 
         # RoboCasa Trajectories Single
 
-        This dataset contains flat RoboCasa step rows with sidecar episode JSON.
+        {intro}
 
         ## Structure
 
-        Each row is one tool step.
+        {row_text}
 
-        Episode-level JSON is not duplicated into parquet. Instead, each row
-        carries repo-relative references:
-
-        - `adapted_trajectory_path`
-        - `original_trajectory_path`
-        - `execution_metadata_path`
+        {episode_json_text}
 
         Image columns stay inline and viewable in the dataset table:
 
@@ -431,19 +566,25 @@ def build_dataset_card(repo_id: str, ds: "datasets.Dataset") -> str:
         - Camera renders are stored as JPEG. Maps remain PNG.
         - MP4 videos are not included in the dataset.
         - Debug `initial` / `pre_initial_state` camera frames are not part of the dataset.
-        - Episode JSON sidecars are available in the repo files at the paths referenced by `*_path` columns.
+        - Row granularity: `{row_granularity}`.
+        {notes_tail}
         """
     )
 
 
-def upload_dataset_card(repo_id: str, ds: "datasets.Dataset") -> None:
+def upload_dataset_card(
+    repo_id: str,
+    ds: "datasets.Dataset",
+    *,
+    row_granularity: str = "step",
+) -> None:
     """Overwrite the auto-generated Hub README with a readable dataset card."""
     from io import BytesIO
 
     from huggingface_hub import HfApi
 
     HfApi().upload_file(
-        path_or_fileobj=BytesIO(build_dataset_card(repo_id, ds).encode("utf-8")),
+        path_or_fileobj=BytesIO(build_dataset_card(repo_id, ds, row_granularity=row_granularity).encode("utf-8")),
         path_in_repo="README.md",
         repo_id=repo_id,
         repo_type="dataset",
@@ -477,6 +618,12 @@ def main():
         ),
     )
     parser.add_argument("--videos", action="store_true", help="Record per-camera MP4 videos for each run")
+    parser.add_argument(
+        "--row-granularity",
+        choices=["step", "trajectory"],
+        default="step",
+        help="Dataset row shape when exporting or pushing (default: step)",
+    )
     parser.add_argument(
         "--push-to-hub", type=str, default=None, metavar="REPO_ID",
         help="Push dataset to HuggingFace Hub (e.g. 'username/robocasa-trajectories')",
@@ -603,13 +750,14 @@ def main():
     # Push to HuggingFace Hub if requested
     if args.push_to_hub:
         print(f"\nConverting sweep output to HuggingFace dataset...")
-        ds = sweep_output_to_dataset(output_root)
+        ds = sweep_output_to_dataset(output_root, row_granularity=args.row_granularity)
         print(f"Pushing to {args.push_to_hub}...")
         ds.push_to_hub(args.push_to_hub)
-        print("Uploading sweep metadata sidecars...")
-        upload_sweep_sidecars(args.push_to_hub, output_root)
+        if args.row_granularity == "step":
+            print("Uploading sweep metadata sidecars...")
+            upload_sweep_sidecars(args.push_to_hub, output_root)
         print("Uploading dataset card...")
-        upload_dataset_card(args.push_to_hub, ds)
+        upload_dataset_card(args.push_to_hub, ds, row_granularity=args.row_granularity)
         print(f"Done! Dataset pushed to https://huggingface.co/datasets/{args.push_to_hub}")
 
 
