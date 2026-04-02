@@ -1,0 +1,379 @@
+{
+  "spec_version": 1,
+  "composite_task": "OrganizeCondiments",
+  "source_python_module": "robocasa.environments.kitchen.composite.arranging_condiments.organize_condiments",
+  "agent_ids": [
+    "agent_0",
+    "agent_1"
+  ],
+  "max_reasoning_chars": 200,
+  "validator_checks": [
+    "initial_communication",
+    "allowed_tools",
+    "navigation_preconditions",
+    "manipulation_preconditions",
+    "effects",
+    "final_success"
+  ],
+  "preflight_token_estimate": {
+    "prompt_tokens": 3350,
+    "output_tokens": 4100,
+    "reasoning_tokens": 0
+  },
+  "initial_state": {
+    "agents": {
+      "agent_0": {
+        "location": "counter",
+        "held_object": null
+      },
+      "agent_1": {
+        "location": "counter",
+        "held_object": null
+      }
+    },
+    "objects": {
+      "condiment1": {
+        "object_type": "condiment_bottle",
+        "location": "counter"
+      },
+      "condiment2": {
+        "object_type": "salt_and_pepper_shaker",
+        "location": "counter"
+      },
+      "condiment3": {
+        "object_type": "ketchup",
+        "location": "counter"
+      },
+      "distractor": {
+        "object_type": "apple",
+        "location": "counter"
+      }
+    },
+    "fixtures": {
+      "cabinet": {
+        "fixture_type": "cabinet"
+      },
+      "counter": {
+        "fixture_type": "counter"
+      }
+    },
+    "machine_state": {}
+  },
+  "allowed_tool_specs": {
+    "communicate": {
+      "description": "Send a short coordination message to the other agent in the scene. args.to must be that agent's exact ID.",
+      "tool_args": [
+        "to",
+        "message"
+      ]
+    },
+    "navigate_to_fixture": {
+      "description": "Move the robot base to the working pose of a fixture.",
+      "tool_args": [
+        "fixture_id"
+      ],
+      "allowed_fixture_ids": [
+        "cabinet",
+        "counter"
+      ]
+    },
+    "pick_up_object": {
+      "description": "Grasp and lift an object from a symbolic source region.",
+      "tool_args": [
+        "object_id",
+        "source_id"
+      ],
+      "allowed_object_ids": [
+        "condiment1",
+        "condiment2",
+        "condiment3"
+      ],
+      "allowed_source_ids": [
+        "counter"
+      ]
+    },
+    "place_in_receptacle": {
+      "description": "Place an object inside a movable receptacle.",
+      "tool_args": [
+        "object_id",
+        "receptacle_id"
+      ],
+      "allowed_object_ids": [
+        "condiment1",
+        "condiment2",
+        "condiment3"
+      ],
+      "allowed_receptacle_ids": [
+        "cabinet"
+      ]
+    },
+    "give_space": {
+      "description": "Yield working room at a fixture so the other agent can complete an action there.",
+      "tool_args": [
+        "fixture_id"
+      ],
+      "allowed_fixture_ids": [
+        "cabinet",
+        "counter"
+      ]
+    }
+  },
+  "task_goal": "move condiment1, condiment2, and condiment3 from counter into cabinet while leaving distractor on counter.",
+  "extra_execution_rules": [
+    "Only move condiment1, condiment2, and condiment3 into the cabinet.",
+    "Do not move distractor from the counter.",
+    "Split the three condiments across the two agents instead of repeatedly handling the same object."
+  ],
+  "initial_public_state": {
+    "condiment1_location": "counter",
+    "condiment2_location": "counter",
+    "condiment3_location": "counter",
+    "distractor_location": "counter"
+  },
+  "task_preconditions": [
+    {
+      "kind": "object_must_remain_at_location",
+      "object_id": "distractor",
+      "location": "counter",
+      "message": "distractor must remain on counter throughout OrganizeCondiments."
+    }
+  ],
+  "goal_conditions": [
+    {
+      "kind": "object_at_location",
+      "object_id": "condiment1",
+      "location": "cabinet"
+    },
+    {
+      "kind": "object_at_location",
+      "object_id": "condiment2",
+      "location": "cabinet"
+    },
+    {
+      "kind": "object_at_location",
+      "object_id": "condiment3",
+      "location": "cabinet"
+    },
+    {
+      "kind": "object_at_location",
+      "object_id": "distractor",
+      "location": "counter"
+    }
+  ],
+  "task_effects": [],
+  "grounding": {
+    "legacy_symbol_aliases": {
+      "condiment1_1": "condiment1",
+      "condiment2_1": "condiment2",
+      "condiment3_1": "condiment3",
+      "distractor_1": "distractor",
+      "cabinet_1": "cabinet",
+      "counter_1": "counter"
+    },
+    "symbols": {
+      "condiment1": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "role": "condiment1",
+        "preferred_fixture_types": [
+          "counter",
+          "counter_non_corner",
+          "counter_non_dining",
+          "dining_counter",
+          "island"
+        ]
+      },
+      "condiment2": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "role": "condiment2",
+        "preferred_fixture_types": [
+          "counter",
+          "counter_non_corner",
+          "counter_non_dining",
+          "dining_counter",
+          "island"
+        ]
+      },
+      "condiment3": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "role": "condiment3",
+        "preferred_fixture_types": [
+          "counter",
+          "counter_non_corner",
+          "counter_non_dining",
+          "dining_counter",
+          "island"
+        ]
+      },
+      "distractor": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "role": "distractor",
+        "preferred_fixture_types": [
+          "counter",
+          "counter_non_corner",
+          "counter_non_dining",
+          "dining_counter",
+          "island"
+        ]
+      },
+      "cabinet": {
+        "entity_type": "fixture",
+        "resolver": "unique_fixture_type",
+        "role": "cabinet",
+        "preferred_fixture_types": [
+          "cabinet",
+          "cabinet_single_door",
+          "cabinet_double_door",
+          "cabinet_with_door"
+        ]
+      },
+      "counter": {
+        "entity_type": "fixture",
+        "resolver": "support_fixture_for_object",
+        "role": "counter",
+        "object_symbol": "condiment1",
+        "preferred_fixture_types": [
+          "counter",
+          "counter_non_corner",
+          "counter_non_dining",
+          "dining_counter",
+          "island"
+        ]
+      }
+    }
+  },
+  "example_trajectory": {
+    "agents": [
+      {
+        "agent": "agent_0"
+      },
+      {
+        "agent": "agent_1"
+      }
+    ],
+    "steps": [
+      {
+        "step": 0,
+        "agent": "agent_0",
+        "tool": "communicate",
+        "args": {
+          "to": "agent_1",
+          "message": "I will move condiment1 and condiment3 from the counter into the cabinet."
+        },
+        "reasoning": "We should divide the three condiments before moving anything."
+      },
+      {
+        "step": 1,
+        "agent": "agent_1",
+        "tool": "communicate",
+        "args": {
+          "to": "agent_0",
+          "message": "I will move condiment2 into the cabinet and leave the distractor alone."
+        },
+        "reasoning": "I should confirm that we will ignore the distractor."
+      },
+      {
+        "step": 2,
+        "agent": "agent_0",
+        "tool": "pick_up_object",
+        "args": {
+          "object_id": "condiment1",
+          "source_id": "counter"
+        },
+        "reasoning": "I am already at the counter and can pick up the first condiment."
+      },
+      {
+        "step": 3,
+        "agent": "agent_1",
+        "tool": "pick_up_object",
+        "args": {
+          "object_id": "condiment2",
+          "source_id": "counter"
+        },
+        "reasoning": "I can retrieve the shaker from the counter in parallel."
+      },
+      {
+        "step": 4,
+        "agent": "agent_0",
+        "tool": "navigate_to_fixture",
+        "args": {
+          "fixture_id": "cabinet"
+        },
+        "reasoning": "I need to move to the cabinet to store the first condiment."
+      },
+      {
+        "step": 5,
+        "agent": "agent_0",
+        "tool": "place_in_receptacle",
+        "args": {
+          "object_id": "condiment1",
+          "receptacle_id": "cabinet"
+        },
+        "reasoning": "Placing condiment1 into the cabinet satisfies part of the goal."
+      },
+      {
+        "step": 6,
+        "agent": "agent_1",
+        "tool": "navigate_to_fixture",
+        "args": {
+          "fixture_id": "cabinet"
+        },
+        "reasoning": "I also need to reach the cabinet to store condiment2."
+      },
+      {
+        "step": 7,
+        "agent": "agent_1",
+        "tool": "place_in_receptacle",
+        "args": {
+          "object_id": "condiment2",
+          "receptacle_id": "cabinet"
+        },
+        "reasoning": "Putting condiment2 into the cabinet keeps the distractor untouched on the counter."
+      },
+      {
+        "step": 8,
+        "agent": "agent_0",
+        "tool": "navigate_to_fixture",
+        "args": {
+          "fixture_id": "counter"
+        },
+        "reasoning": "I need to go back to the counter for the last condiment."
+      },
+      {
+        "step": 9,
+        "agent": "agent_0",
+        "tool": "pick_up_object",
+        "args": {
+          "object_id": "condiment3",
+          "source_id": "counter"
+        },
+        "reasoning": "I can take the last target condiment while leaving the distractor in place."
+      },
+      {
+        "step": 10,
+        "agent": "agent_0",
+        "tool": "navigate_to_fixture",
+        "args": {
+          "fixture_id": "cabinet"
+        },
+        "reasoning": "I need to return to the cabinet to store the last condiment."
+      },
+      {
+        "step": 11,
+        "agent": "agent_0",
+        "tool": "place_in_receptacle",
+        "args": {
+          "object_id": "condiment3",
+          "receptacle_id": "cabinet"
+        },
+        "reasoning": "Placing condiment3 into the cabinet completes the organization task."
+      }
+    ]
+  },
+  "notes": [
+    "This task currently keeps the cabinet as an always-accessible receptacle in the symbolic layer because placement-specific door-state preconditions are not implemented yet."
+  ]
+}

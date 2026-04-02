@@ -320,6 +320,50 @@ the final `Done` and `Summary` lines. The wrapper owns `--workers` and
 `--verbose`, then forwards any remaining arguments to
 `python scripts/sweep_trajectories.py`.
 
+By default, each trajectory is executed in one simulator scene configuration.
+You can also sweep each trajectory across multiple layout, style, and seed
+combinations by forwarding `--layouts`, `--styles`, and `--seeds` to
+`scripts/sweep_trajectories.py`. The total simulator executions become:
+
+```text
+num_trajectories x len(layouts) x len(styles) x len(seeds)
+```
+
+For example, this runs every trajectory for 2 layouts x 2 styles x 3 seeds:
+
+```bash
+bash scripts/generate_and_insert_images.sh {timestamp} \
+  --layouts 1 2 \
+  --styles 0 1 \
+  --seeds 0 1 2
+```
+
+You can pass the same arguments directly to `scripts/sweep_trajectories.py`:
+
+```bash
+python scripts/sweep_trajectories.py \
+  --input-dir data_generation/task_level/data/pre_image/{timestamp} \
+  --output-dir data_generation/task_level/data/image/{timestamp} \
+  --layouts 1 2 \
+  --styles 0 1 \
+  --seeds 0 1 2
+```
+
+When more than one scene combo is requested, each trajectory gets one output
+subdirectory per combo, for example:
+
+```text
+data_generation/task_level/data/image/{timestamp}/{task}/traj_000000/
+├── L1_S0_sd0/
+├── L1_S0_sd1/
+├── L1_S0_sd2/
+├── L1_S1_sd0/
+└── ...
+```
+
+This scene-combo sweep only changes simulator execution and rendered outputs. It
+does not change the symbolic raw trajectory itself.
+
 If you export or push the sweep output as a Hugging Face dataset, you can choose
 the dataset row shape with `--row-granularity step|trajectory`. This does not
 change the on-disk sweep artifacts under `data/image/{timestamp}`; it only

@@ -1,0 +1,324 @@
+{
+  "spec_version": 1,
+  "composite_task": "SetupFruitBowl",
+  "source_python_module": "robocasa.environments.kitchen.composite.setting_the_table.setup_fruit_bowl",
+  "agent_ids": [
+    "agent_0",
+    "agent_1"
+  ],
+  "max_reasoning_chars": 200,
+  "validator_checks": [
+    "initial_communication",
+    "allowed_tools",
+    "navigation_preconditions",
+    "manipulation_preconditions",
+    "effects",
+    "final_success"
+  ],
+  "preflight_token_estimate": {
+    "prompt_tokens": 3300,
+    "output_tokens": 3950,
+    "reasoning_tokens": 0
+  },
+  "initial_state": {
+    "agents": {
+      "agent_0": {
+        "location": "fridge",
+        "held_object": null
+      },
+      "agent_1": {
+        "location": "fridge",
+        "held_object": null
+      }
+    },
+    "objects": {
+      "fruit1": {
+        "object_type": "apple",
+        "location": "fridge"
+      },
+      "fruit2": {
+        "object_type": "banana",
+        "location": "fridge"
+      },
+      "bowl": {
+        "object_type": "bowl",
+        "location": "dining_counter"
+      }
+    },
+    "fixtures": {
+      "fridge": {
+        "fixture_type": "fridge",
+        "parts": {
+          "door": {
+            "part_type": "hinged_part",
+            "state": "closed"
+          }
+        }
+      },
+      "dining_counter": {
+        "fixture_type": "dining_counter"
+      }
+    },
+    "machine_state": {}
+  },
+  "allowed_tool_specs": {
+    "communicate": {
+      "description": "Send a short coordination message to the other agent in the scene. args.to must be that agent's exact ID.",
+      "tool_args": [
+        "to",
+        "message"
+      ]
+    },
+    "navigate_to_fixture": {
+      "description": "Move the robot base to the working pose of a fixture.",
+      "tool_args": [
+        "fixture_id"
+      ],
+      "allowed_fixture_ids": [
+        "fridge",
+        "dining_counter"
+      ]
+    },
+    "pick_up_object": {
+      "description": "Grasp and lift an object from a symbolic source region.",
+      "tool_args": [
+        "object_id",
+        "source_id"
+      ],
+      "allowed_object_ids": [
+        "fruit1",
+        "fruit2"
+      ],
+      "allowed_source_ids": [
+        "fridge",
+        "dining_counter"
+      ]
+    },
+    "place_on_object": {
+      "description": "Place an object on top of another movable support object.",
+      "tool_args": [
+        "object_id",
+        "support_object_id"
+      ],
+      "allowed_object_ids": [
+        "fruit1",
+        "fruit2"
+      ],
+      "allowed_support_object_ids": [
+        "bowl"
+      ]
+    },
+    "give_space": {
+      "description": "Yield working room at a fixture so the other agent can complete an action there.",
+      "tool_args": [
+        "fixture_id"
+      ],
+      "allowed_fixture_ids": [
+        "fridge",
+        "dining_counter"
+      ]
+    }
+  },
+  "task_goal": "retrieve fruit1 and fruit2 from fridge, then place both into bowl on dining_counter.",
+  "extra_execution_rules": [
+    "Place both fruits onto bowl so their final symbolic location is the bowl.",
+    "Do not move the bowl from the dining_counter.",
+    "Each agent should take one fruit so the task is completed in parallel."
+  ],
+  "initial_public_state": {
+    "fruit1_location": "fridge",
+    "fruit2_location": "fridge",
+    "bowl_location": "dining_counter"
+  },
+  "task_preconditions": [
+    {
+      "kind": "object_must_remain_at_location",
+      "object_id": "bowl",
+      "location": "dining_counter",
+      "message": "bowl must remain on dining_counter throughout SetupFruitBowl."
+    },
+    {
+      "kind": "fixture_part_state_required_for_pickup",
+      "tool": "pick_up_object",
+      "source_id": "fridge",
+      "fixture_id": "fridge",
+      "part_id": "door",
+      "required_state": "open",
+      "message": "pick_up_object from fridge requires the fridge door to be open."
+    }
+  ],
+  "goal_conditions": [
+    {
+      "kind": "object_at_location",
+      "object_id": "fruit1",
+      "location": "bowl"
+    },
+    {
+      "kind": "object_at_location",
+      "object_id": "fruit2",
+      "location": "bowl"
+    },
+    {
+      "kind": "object_at_location",
+      "object_id": "bowl",
+      "location": "dining_counter"
+    }
+  ],
+  "task_effects": [],
+  "grounding": {
+    "legacy_symbol_aliases": {
+      "fruit1_1": "fruit1",
+      "fruit2_1": "fruit2",
+      "bowl_1": "bowl",
+      "fridge_1": "fridge",
+      "dining_counter_1": "dining_counter"
+    },
+    "symbols": {
+      "fruit1": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "role": "fruit1",
+        "preferred_fixture_types": [
+          "fridge"
+        ]
+      },
+      "fruit2": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "role": "fruit2",
+        "preferred_fixture_types": [
+          "fridge"
+        ]
+      },
+      "bowl": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "role": "bowl",
+        "preferred_fixture_types": [
+          "dining_counter"
+        ]
+      },
+      "fridge": {
+        "entity_type": "fixture",
+        "resolver": "source_fixture_for_object",
+        "role": "fridge",
+        "object_symbol": "fruit1",
+        "preferred_fixture_types": [
+          "fridge"
+        ]
+      },
+      "dining_counter": {
+        "entity_type": "fixture",
+        "resolver": "support_fixture_for_object",
+        "role": "dining_counter",
+        "object_symbol": "bowl",
+        "preferred_fixture_types": [
+          "dining_counter"
+        ]
+      }
+    }
+  },
+  "example_trajectory": {
+    "agents": [
+      {
+        "agent": "agent_0"
+      },
+      {
+        "agent": "agent_1"
+      }
+    ],
+    "steps": [
+      {
+        "step": 0,
+        "agent": "agent_0",
+        "tool": "communicate",
+        "args": {
+          "to": "agent_1",
+          "message": "I will take fruit1 from the fridge and place it into the bowl."
+        },
+        "reasoning": "We should split the two fruits before the first pickup."
+      },
+      {
+        "step": 1,
+        "agent": "agent_1",
+        "tool": "communicate",
+        "args": {
+          "to": "agent_0",
+          "message": "I will take fruit2 and put it into the bowl as well."
+        },
+        "reasoning": "I should confirm the complementary fruit transfer."
+      },
+      {
+        "step": 2,
+        "agent": "agent_0",
+        "tool": "open_hinged_part",
+        "args": {
+          "target_id": "fridge",
+          "part_id": "door"
+        },
+        "reasoning": "The fridge door must be open before either fruit can be retrieved."
+      },
+      {
+        "step": 3,
+        "agent": "agent_0",
+        "tool": "pick_up_object",
+        "args": {
+          "object_id": "fruit1",
+          "source_id": "fridge"
+        },
+        "reasoning": "I am already at the fridge, so I can retrieve fruit1 now."
+      },
+      {
+        "step": 4,
+        "agent": "agent_1",
+        "tool": "pick_up_object",
+        "args": {
+          "object_id": "fruit2",
+          "source_id": "fridge"
+        },
+        "reasoning": "The fridge is open and I can retrieve fruit2 in parallel."
+      },
+      {
+        "step": 5,
+        "agent": "agent_0",
+        "tool": "navigate_to_fixture",
+        "args": {
+          "fixture_id": "dining_counter"
+        },
+        "reasoning": "I need to move to the bowl on the dining counter."
+      },
+      {
+        "step": 6,
+        "agent": "agent_1",
+        "tool": "navigate_to_fixture",
+        "args": {
+          "fixture_id": "dining_counter"
+        },
+        "reasoning": "I also need to move to the bowl to place fruit2 into it."
+      },
+      {
+        "step": 7,
+        "agent": "agent_0",
+        "tool": "place_on_object",
+        "args": {
+          "object_id": "fruit1",
+          "support_object_id": "bowl"
+        },
+        "reasoning": "Putting fruit1 into the bowl satisfies half of the table setup."
+      },
+      {
+        "step": 8,
+        "agent": "agent_1",
+        "tool": "place_on_object",
+        "args": {
+          "object_id": "fruit2",
+          "support_object_id": "bowl"
+        },
+        "reasoning": "Putting fruit2 into the bowl completes the fruit bowl setup."
+      }
+    ]
+  },
+  "notes": [
+    "This spec fixes the fruit categories to apple and banana for the symbolic layer even though the RoboCasa source task samples fruit types."
+  ]
+}
