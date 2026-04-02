@@ -73,6 +73,7 @@ Generate validated symbolic two-agent trajectories for `PrepareCoffee` with base
 python -m data_generation.task_level.generation.raw.cli \
   --tasks PrepareCoffee \
   --num-runs 2 \
+  --random-start-location true \
   --sampling base \
   --model gemini-3.1-flash-lite-preview \
   --location global \
@@ -89,6 +90,7 @@ trajectories plus a probability label for each one:
 python -m data_generation.task_level.generation.raw.cli \
   --tasks PrepareCoffee \
   --num-runs 2 \
+  --random-start-location true \
   --sampling verbalized \
   --verbalized-k 3 \
   --model gemini-3.1-flash-lite-preview \
@@ -106,6 +108,8 @@ to each task, so the example below runs 10 model calls total:
 python -m data_generation.task_level.generation.raw.cli \
   --tasks PrepareCoffee HotDogSetup \
   --num-runs 5 \
+  --random-start-location true \
+  --paralleize-tasks \
   --sampling base \
   --model gemini-3.1-flash-lite-preview \
   --location global \
@@ -114,6 +118,15 @@ python -m data_generation.task_level.generation.raw.cli \
   --max-retries 5 \
   --enable-validation
 ```
+
+Use `--paralleize-tasks` to run the selected tasks concurrently. `--max-workers`
+still controls the per-task run workers inside each task.
+
+Raw generation randomizes each agent's initial symbolic fixture location by
+default. Use `--random-start-location false` to keep the canonical task
+template positions instead (note that this maintains the same start position for N verbalized samples of a single run, if verablized sampling is enabled). When randomization is enabled, agents are sampled
+independently, so some runs may start them at the same fixture and others may
+start them at different fixtures.
 
 For Gemini 3 models, you can optionally tune reasoning depth with
 `--thinking-level minimal|low|medium|high`.
@@ -157,6 +170,8 @@ Use `--batch-processing` when launching the task-level generator CLI.
 python -m data_generation.task_level.generation.raw.cli \
   --tasks PrepareCoffee HotDogSetup \
   --num-runs 4 \
+  --random-start-location true \
+  --paralleize-tasks \
   --sampling verbalized \
   --verbalized-k 3 \
   --model gemini-3-flash-preview \
@@ -175,6 +190,7 @@ generator now supports in-place resume for both batch and on-demand runs:
 python -m data_generation.task_level.generation.raw.cli \
   --tasks PrepareCoffee HotDogSetup \
   --num-runs 4 \
+  --paralleize-tasks \
   --sampling verbalized \
   --verbalized-k 3 \
   --model gemini-3-flash-preview \
@@ -207,7 +223,7 @@ python -m data_generation.task_level.generation.image.cli \
 ```
 
 Default post-processing behavior:
-- Add one initial `get_image(views=[top_view, room_view, map])` step before any task action.
+- Add one initial `get_image(views=[top_view, room_view, map])` step per agent after the opening coordination block and before the first task action.
 - Wrap each navigation action with one `get_image` step before and after using
   `agentview_center`, `agentview_left`, and `agentview_right`.
 - Wrap each non-navigation action with one `get_image` step before and after using
@@ -215,15 +231,40 @@ Default post-processing behavior:
 - Store the rendered artifacts for each inserted observation step in `image_paths`,
   ordered to match the requested `views`.
 
-To post-process every task summary inside one multi-task run directory, run
-directly in CLI:
+To post-process every task summary inside one multi-task run directory, pass the
+raw run timestamp to the helper script:
 
 ```bash
-for summary in data_generation/task_level/data/raw/{timestamp}/*/summary.json; do
-  python -m data_generation.task_level.generation.image.cli \
-    --dataset "$summary"
-done
+bash scripts/post_process_task_level_images.sh {timestamp}
 ```
+
+The wrapper expands `{timestamp}` to
+`data_generation/task_level/data/raw/{timestamp}/*/summary.json` and runs the
+image post-processing CLI once per task. It writes the copied post-processed
+trajectories to `data_generation/task_level/data/pre_image/{timestamp}/...`.
+You can pass shared CLI flags after the timestamp, for example
+`--disable-progress`.
+
+To sweep one post-processed timestamp through the simulator, use the matching
+timestamp wrapper:
+
+```bash
+bash scripts/generate_and_insert_images.sh {timestamp}
+
+# Parallelize across trajectories with 4 workers.
+bash scripts/generate_and_insert_images.sh {timestamp} --workers 4
+```
+
+That wrapper reads trajectories from
+`data_generation/task_level/data/pre_image/{timestamp}` and writes the rendered
+outputs to `data_generation/task_level/data/image/{timestamp}`. It exits with an
+error if `data_generation/task_level/data/pre_image/{timestamp}` does not exist.
+Pass `--workers N` or `-j N` to parallelize trajectory execution within that
+timestamped sweep. The wrapper shows a progress bar by default and suppresses
+the sweep CLI's normal stdout unless you pass `--verbose`, but it still prints
+the final `Done` and `Summary` lines. The wrapper owns `--workers` and
+`--verbose`, then forwards any remaining arguments to
+`python scripts/sweep_trajectories.py`.
 
 The raw generator writes artifacts next to the dataset summary:
 - `trajectories/`: saved trajectory JSON
@@ -244,7 +285,9 @@ Sampling notes:
 - Verbalized trajectories include `sampling_metadata` with the parsed probability.
 - The task files may define a template agent location such as `staging_area`, but
   actual per-run agent start positions are sampled from the task's allowed fixture
-  locations before prompt generation and validation.
+  locations before prompt generation and validation. Because the agents are
+  sampled independently, a run may start them at the same fixture or at
+  different fixtures.
 
 Notes:
 

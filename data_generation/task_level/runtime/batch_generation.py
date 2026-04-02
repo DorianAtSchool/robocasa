@@ -480,14 +480,21 @@ def _batch_round_display_name(
 def _wait_for_batch_job_completion(
     batch_service: BatchGenerationService,
     *,
+    runtime_config: RuntimeConfig,
     job_name: str,
 ) -> Any:
     while True:
+        _runtime_support._raise_if_task_cancelled(runtime_config)
         batch_job = batch_service.get_job(name=job_name)
         state_name = _batch_job_state_name(batch_job)
         if _is_terminal_batch_job_state(state_name):
             return batch_job
-        time.sleep(BATCH_POLL_INTERVAL_SECONDS)
+        cancel_event = runtime_config.task_cancellation_event
+        if cancel_event is None:
+            time.sleep(BATCH_POLL_INTERVAL_SECONDS)
+            continue
+        if cancel_event.wait(BATCH_POLL_INTERVAL_SECONDS):
+            _runtime_support._raise_if_task_cancelled(runtime_config)
 
 
 def _cancel_active_batch_jobs(
@@ -544,6 +551,7 @@ def generate_trajectories_batch(
 ) -> dict[str, Any]:
     """Generates batch trajectories while preserving partial successful runs."""
 
+    _runtime_support._raise_if_task_cancelled(runtime_config)
     sampling_strategy = _runtime_support._sampling_strategy_for_runtime(runtime_config)
     seen_signatures: set[str] = set()
     seen_signatures_lock = threading.Lock()
@@ -572,7 +580,10 @@ def generate_trajectories_batch(
     failed_run_indices: set[int] = set()
     requested_run_indices = _runtime_support._requested_run_indices(runtime_config)
     task_instances = {
-        trajectory_index: task_definition.build_task_instance(trajectory_index)
+        trajectory_index: task_definition.build_task_instance(
+            trajectory_index,
+            runtime_config,
+        )
         for trajectory_index in requested_run_indices
     }
     attempt_numbers = {
@@ -603,6 +614,7 @@ def generate_trajectories_batch(
         # Batch mode advances in rounds so failed runs can be resubmitted
         # without rebuilding successful trajectories.
         for round_number in range(1, runtime_config.max_retries + 1):
+            _runtime_support._raise_if_task_cancelled(runtime_config)
             if not pending_indices:
                 break
             _set_batch_progress_status(
@@ -678,6 +690,7 @@ def generate_trajectories_batch(
 
             batch_job = _wait_for_batch_job_completion(
                 batch_service,
+                runtime_config=runtime_config,
                 job_name=batch_job_name,
             )
             active_job_names.discard(batch_job_name)
@@ -715,6 +728,7 @@ def generate_trajectories_batch(
             # Match every returned row back to the request variation key so
             # retries remain stable even if Vertex reorders output files.
             for batch_request in batch_requests:
+                _runtime_support._raise_if_task_cancelled(runtime_config)
                 row = rows_by_variation_key.get(batch_request.variation_key)
                 if row is None:
                     row_error: Exception = ResponseFormatValidationError(
@@ -887,6 +901,14 @@ def generate_trajectories_batch(
             trajectory_count_text=accumulated_cost_tracker.completed_trajectory_count_text(),
             accumulated_cost_text=accumulated_cost_tracker.status_text(),
         )
+    except _runtime_support.TaskGenerationCancelledError:
+        _cancel_active_batch_jobs(
+            batch_service,
+            active_job_names=active_job_names,
+            enabled=show_progress,
+            writer=progress_handles.log_writer,
+        )
+        raise
     except KeyboardInterrupt:
         _cancel_active_batch_jobs(
             batch_service,

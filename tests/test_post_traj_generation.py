@@ -79,6 +79,7 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
             [step["tool"] for step in trajectory["steps"]],
             [
                 "get_image",
+                "get_image",
                 "communicate",
                 "communicate",
                 "get_image",
@@ -91,7 +92,7 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
         )
         self.assertEqual(
             [step["step"] for step in trajectory["steps"]],
-            list(range(9)),
+            list(range(10)),
         )
         self.assertEqual(
             trajectory["steps"][0]["args"],
@@ -106,7 +107,19 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
             ],
         )
         self.assertEqual(
-            trajectory["steps"][3]["args"],
+            trajectory["steps"][1]["args"],
+            {"views": ["top_view", "room_view", "map"]},
+        )
+        self.assertEqual(
+            trajectory["steps"][1]["image_paths"],
+            [
+                "images/traj_000000/1_top_view_agent_1.png",
+                "images/traj_000000/1_room_view_agent_1.png",
+                "images/traj_000000/1_map_agent_1.png",
+            ],
+        )
+        self.assertEqual(
+            trajectory["steps"][4]["args"],
             {
                 "views": [
                     "agentview_center",
@@ -116,11 +129,11 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
             },
         )
         self.assertEqual(
-            trajectory["steps"][3]["image_paths"],
+            trajectory["steps"][4]["image_paths"],
             [
-                "images/traj_000000/3_agentview_center_agent_0.png",
-                "images/traj_000000/3_agentview_left_agent_0.png",
-                "images/traj_000000/3_agentview_right_agent_0.png",
+                "images/traj_000000/4_agentview_center_agent_0.png",
+                "images/traj_000000/4_agentview_left_agent_0.png",
+                "images/traj_000000/4_agentview_right_agent_0.png",
             ],
         )
         self.assertEqual(
@@ -128,7 +141,11 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
             "I need top-view, room-view, and map images before the task begins.",
         )
         self.assertEqual(
-            trajectory["steps"][3]["reasoning"],
+            trajectory["steps"][1]["reasoning"],
+            "I need top-view, room-view, and map images before the task begins.",
+        )
+        self.assertEqual(
+            trajectory["steps"][4]["reasoning"],
             (
                 "I need center agent-view, left agent-view, and right agent-view "
                 "images to observe the current scene before I execute "
@@ -136,11 +153,11 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
             ),
         )
         self.assertEqual(
-            trajectory["steps"][4]["reasoning"],
+            trajectory["steps"][5]["reasoning"],
             "I need to reach the cabinet.",
         )
         self.assertEqual(
-            trajectory["steps"][5]["reasoning"],
+            trajectory["steps"][6]["reasoning"],
             (
                 "I need center agent-view, left agent-view, and right agent-view "
                 "images to observe the current scene after I executed "
@@ -148,14 +165,16 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
             ),
         )
         self.assertEqual(
-            trajectory["steps"][6]["reasoning"],
+            trajectory["steps"][7]["reasoning"],
             (
                 "I need wrist and center agent-view images to observe the current "
                 "scene before I execute pick_up_object."
             ),
         )
+        self.assertEqual(trajectory["steps"][2]["tool"], "communicate")
+        self.assertEqual(trajectory["steps"][3]["tool"], "communicate")
         self.assertEqual(
-            trajectory["steps"][8]["reasoning"],
+            trajectory["steps"][9]["reasoning"],
             (
                 "I need wrist and center agent-view images to observe the current "
                 "scene after I executed pick_up_object."
@@ -213,15 +232,17 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
         processed = post_process_trajectory(trajectory)
 
         self.assertNotIn("agents", processed)
+        self.assertEqual(processed["steps"][0]["agent"], "agent_0")
+        self.assertEqual(processed["steps"][1]["agent"], "agent_1")
 
-    def test_resolve_output_dataset_path_targets_image_copy(self):
+    def test_resolve_output_dataset_path_targets_pre_image_copy(self):
         dataset_path = Path(
             "/tmp/data/raw/prepare_coffee/20260316T022801Z/summary.json"
         )
 
         self.assertEqual(
             resolve_output_dataset_path(dataset_path),
-            Path("/tmp/data/image/prepare_coffee/20260316T022801Z/summary.json"),
+            Path("/tmp/data/pre_image/prepare_coffee/20260316T022801Z/summary.json"),
         )
 
     def test_resolve_output_dataset_path_preserves_multitask_layout(self):
@@ -231,7 +252,7 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
 
         self.assertEqual(
             resolve_output_dataset_path(dataset_path),
-            Path("/tmp/data/image/20260316T022801Z/prepare_coffee/summary.json"),
+            Path("/tmp/data/pre_image/20260316T022801Z/prepare_coffee/summary.json"),
         )
 
     def test_post_process_dataset_writes_summary_copy_without_mutating_source(self):
@@ -301,6 +322,7 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
             )
             self.assertEqual(source_trajectory["steps"][0]["tool"], "communicate")
             self.assertEqual(updated_trajectory["steps"][0]["tool"], "get_image")
+            self.assertEqual(updated_trajectory["steps"][2]["tool"], "communicate")
             self.assertEqual(
                 updated_trajectory["steps"][0]["image_paths"],
                 [

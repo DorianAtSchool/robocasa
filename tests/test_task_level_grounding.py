@@ -62,6 +62,29 @@ class TaskLevelGroundingTests(unittest.TestCase):
             )
             self.assertTrue(grounding_map["symbols"])
 
+    def test_symbolic_task_record_omits_raw_scene_metadata(self):
+        candidate = {"steps": []}
+        validation = {"is_valid": True}
+        generation_usage = {"total_cost_usd": 0.0}
+        task_instance = TaskInstance(initial_state=PREPARE_COFFEE_INITIAL_STATE)
+
+        trajectory_record = build_prepare_coffee_trajectory_record(
+            candidate,
+            validation,
+            "traj_000010",
+            generation_usage,
+            task_instance,
+        )
+
+        self.assertIn("grounding_map", trajectory_record)
+        self.assertNotIn("grounding_mode", trajectory_record)
+        self.assertNotIn("scene_config", trajectory_record)
+        self.assertNotIn("scene_summary", trajectory_record)
+        self.assertNotIn("layout", trajectory_record)
+        self.assertNotIn("style", trajectory_record)
+        self.assertNotIn("seed", trajectory_record)
+        self.assertNotIn("robots", trajectory_record)
+
     def test_hot_dog_grounding_map_resolves_across_scene_instances(self):
         grounding_map = build_grounding_map_for_task(
             "HotDogSetup",

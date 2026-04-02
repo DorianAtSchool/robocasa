@@ -15,6 +15,8 @@ from data_generation.task_level.tasks.shared.fsm import FiniteStateTaskValidator
 from data_generation.task_level.tasks.shared.instances import (
     build_canonical_agents,
     build_randomized_fixture_task_instance,
+    build_symbolic_trajectory_record,
+    make_symbolic_trajectory_record_builder,
     resolve_initial_position_fixture_ids,
 )
 from data_generation.task_level.tasks.shared.prompting import make_task_prompt_builder

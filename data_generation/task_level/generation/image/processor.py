@@ -72,8 +72,17 @@ POST_PROCESS_VALIDATION_ERROR = (
     "Trajectory was post-processed after validation and must be revalidated."
 )
 RAW_DATASET_DIRECTORY_NAME = "raw"
+PRE_IMAGE_DATASET_DIRECTORY_NAME = "pre_image"
 IMAGE_DATASET_DIRECTORY_NAME = "image"
 LEGACY_IMAGE_OUTPUT_DIRECTORY_NAME = "w_images"
+POST_PROCESS_OUTPUT_DIRECTORY_NAMES = frozenset(
+    {
+        RAW_DATASET_DIRECTORY_NAME,
+        PRE_IMAGE_DATASET_DIRECTORY_NAME,
+        IMAGE_DATASET_DIRECTORY_NAME,
+        LEGACY_IMAGE_OUTPUT_DIRECTORY_NAME,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -250,14 +259,12 @@ def _resolve_observation_step_view_names(step: dict[str, Any]) -> tuple[str, ...
 def rebuild_steps_with_image_observations(
     steps: list[dict[str, Any]],
     *,
-    initial_image_agent_id: str,
+    initial_image_agent_ids: Sequence[str],
     trajectory_id: str,
 ) -> list[dict[str, Any]]:
     """Rebuilds one step list with deterministic inserted observation steps."""
 
-    # Seed each rewritten trajectory with shared scene snapshots before any
-    # agent starts acting.
-    rebuilt_steps = [_build_initial_observation_step(initial_image_agent_id)]
+    cleaned_steps: list[dict[str, Any]] = []
     for step in steps:
         tool_name = step.get("tool")
         if tool_name in LEGACY_INSERTED_OBSERVATION_TOOL_NAMES:
@@ -265,7 +272,17 @@ def rebuild_steps_with_image_observations(
             # and old split-tool outputs can be upgraded in one pass.
             continue
 
-        copied_step = _copy_step_without_generated_fields(step)
+        cleaned_steps.append(_copy_step_without_generated_fields(step))
+
+    # Keep the shared scene-inspection steps at the very front so each agent
+    # captures the initial state before any coordination messages are emitted.
+    rebuilt_steps: list[dict[str, Any]] = []
+    rebuilt_steps.extend(
+        _build_initial_observation_step(agent_id)
+        for agent_id in initial_image_agent_ids
+    )
+    for copied_step in cleaned_steps:
+        tool_name = copied_step.get("tool")
         if tool_name == COMMUNICATE_TOOL_NAME:
             rebuilt_steps.append(copied_step)
             continue
@@ -311,21 +328,42 @@ def rebuild_steps_with_image_observations(
     return rebuilt_steps
 
 
-def _resolve_initial_image_agent_id(trajectory: dict[str, Any]) -> str:
-    """Chooses which agent owns the prepended top_view snapshot."""
+def _append_unique_agent_id(
+    agent_ids: list[str],
+    seen_agent_ids: set[str],
+    agent_id: Any,
+) -> None:
+    """Appends a non-empty agent ID once while preserving its discovery order."""
+
+    if not isinstance(agent_id, str) or not agent_id or agent_id in seen_agent_ids:
+        return
+    seen_agent_ids.add(agent_id)
+    agent_ids.append(agent_id)
+
+
+def _resolve_initial_image_agent_ids(trajectory: dict[str, Any]) -> tuple[str, ...]:
+    """Chooses which agents receive the opening shared-scene observations."""
+
+    resolved_agent_ids: list[str] = []
+    seen_agent_ids: set[str] = set()
+    for agent in trajectory.get("agents", ()):
+        _append_unique_agent_id(
+            resolved_agent_ids,
+            seen_agent_ids,
+            agent.get("agent"),
+        )
 
     for step in trajectory.get("steps", ()):
-        tool_name = step.get("tool")
-        agent_id = step.get("agent")
-        if tool_name in LEGACY_INSERTED_OBSERVATION_TOOL_NAMES:
+        if step.get("tool") in LEGACY_INSERTED_OBSERVATION_TOOL_NAMES:
             continue
-        if isinstance(agent_id, str) and agent_id:
-            return agent_id
+        _append_unique_agent_id(
+            resolved_agent_ids,
+            seen_agent_ids,
+            step.get("agent"),
+        )
 
-    for agent in trajectory.get("agents", ()):
-        agent_id = agent.get("agent")
-        if isinstance(agent_id, str) and agent_id:
-            return agent_id
+    if resolved_agent_ids:
+        return tuple(resolved_agent_ids)
 
     raise ValueError("Trajectory records must contain at least one valid agent.")
 
@@ -376,7 +414,7 @@ def post_process_trajectory(
     updated_trajectory = dict(trajectory)
     updated_trajectory["steps"] = rebuild_steps_with_image_observations(
         updated_trajectory["steps"],
-        initial_image_agent_id=_resolve_initial_image_agent_id(updated_trajectory),
+        initial_image_agent_ids=_resolve_initial_image_agent_ids(updated_trajectory),
         trajectory_id=trajectory_id,
     )
     _replace_validation_with_post_process_status(updated_trajectory)
@@ -393,44 +431,46 @@ def _load_json_file(path: Path) -> dict[str, Any]:
 
 
 def resolve_output_dataset_path(dataset_path: Path) -> Path:
-    """Maps one source dataset path to the default copied image destination."""
+    """Maps one source dataset path to the default copied pre-image destination."""
 
     resolved_path = dataset_path.resolve()
     parts = list(resolved_path.parts)
     try:
         data_index = parts.index("data")
     except ValueError:
-        return dataset_path.parent / IMAGE_DATASET_DIRECTORY_NAME / dataset_path.name
+        return (
+            dataset_path.parent / PRE_IMAGE_DATASET_DIRECTORY_NAME / dataset_path.name
+        )
 
     relative_parts = parts[data_index + 1 :]
     if not relative_parts:
-        return dataset_path.parent / IMAGE_DATASET_DIRECTORY_NAME / dataset_path.name
+        return (
+            dataset_path.parent / PRE_IMAGE_DATASET_DIRECTORY_NAME / dataset_path.name
+        )
 
-    if len(relative_parts) >= 2 and relative_parts[0] in {
-        RAW_DATASET_DIRECTORY_NAME,
-        IMAGE_DATASET_DIRECTORY_NAME,
-        LEGACY_IMAGE_OUTPUT_DIRECTORY_NAME,
-    }:
+    if (
+        len(relative_parts) >= 2
+        and relative_parts[0] in POST_PROCESS_OUTPUT_DIRECTORY_NAMES
+    ):
         return (
             Path(*parts[: data_index + 1])
-            / IMAGE_DATASET_DIRECTORY_NAME
+            / PRE_IMAGE_DATASET_DIRECTORY_NAME
             / relative_parts[1]
             / Path(*relative_parts[2:])
         )
-    if len(relative_parts) >= 2 and relative_parts[1] in {
-        RAW_DATASET_DIRECTORY_NAME,
-        IMAGE_DATASET_DIRECTORY_NAME,
-        LEGACY_IMAGE_OUTPUT_DIRECTORY_NAME,
-    }:
+    if (
+        len(relative_parts) >= 2
+        and relative_parts[1] in POST_PROCESS_OUTPUT_DIRECTORY_NAMES
+    ):
         return (
             Path(*parts[: data_index + 1])
-            / IMAGE_DATASET_DIRECTORY_NAME
+            / PRE_IMAGE_DATASET_DIRECTORY_NAME
             / relative_parts[0]
             / Path(*relative_parts[2:])
         )
     return (
         Path(*parts[: data_index + 1])
-        / IMAGE_DATASET_DIRECTORY_NAME
+        / PRE_IMAGE_DATASET_DIRECTORY_NAME
         / Path(*relative_parts)
     )
 
