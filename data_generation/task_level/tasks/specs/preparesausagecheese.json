@@ -55,7 +55,13 @@
     },
     "fixtures": {
       "fridge": {
-        "fixture_type": "fridge"
+        "fixture_type": "fridge",
+        "parts": {
+          "door": {
+            "part_type": "hinged_part",
+            "state": "closed"
+          }
+        }
       },
       "counter": {
         "fixture_type": "counter"
@@ -151,6 +157,15 @@
       "object_id": "cutting_board",
       "location": "counter",
       "message": "cutting_board must remain on counter throughout PrepareSausageCheese."
+    },
+    {
+      "kind": "fixture_part_state_required_for_pickup",
+      "tool": "pick_up_object",
+      "source_id": "fridge",
+      "fixture_id": "fridge",
+      "part_id": "door",
+      "required_state": "open",
+      "message": "pick_up_object from fridge requires the fridge door to be open."
     }
   ],
   "goal_conditions": [
@@ -291,6 +306,16 @@
       {
         "step": 2,
         "agent": "agent_0",
+        "tool": "open_hinged_part",
+        "args": {
+          "target_id": "fridge",
+          "part_id": "door"
+        },
+        "reasoning": "I need the fridge door open before I can take the sausage."
+      },
+      {
+        "step": 3,
+        "agent": "agent_0",
         "tool": "pick_up_object",
         "args": {
           "object_id": "sausage",
@@ -299,7 +324,7 @@
         "reasoning": "I am already at the fridge, so I can retrieve the sausage now."
       },
       {
-        "step": 3,
+        "step": 4,
         "agent": "agent_1",
         "tool": "pick_up_object",
         "args": {
@@ -309,7 +334,7 @@
         "reasoning": "I am also at the fridge and can retrieve the cheese in parallel."
       },
       {
-        "step": 4,
+        "step": 5,
         "agent": "agent_0",
         "tool": "navigate_to_fixture",
         "args": {
@@ -318,7 +343,7 @@
         "reasoning": "I need to move to the counter to reach the cutting board."
       },
       {
-        "step": 5,
+        "step": 6,
         "agent": "agent_1",
         "tool": "navigate_to_fixture",
         "args": {
@@ -327,7 +352,7 @@
         "reasoning": "I need to move to the counter to place the cheese on the cutting board."
       },
       {
-        "step": 6,
+        "step": 7,
         "agent": "agent_0",
         "tool": "place_on_object",
         "args": {
@@ -337,7 +362,7 @@
         "reasoning": "Placing the sausage on the cutting board satisfies half of the task goal."
       },
       {
-        "step": 7,
+        "step": 8,
         "agent": "agent_1",
         "tool": "place_on_object",
         "args": {

@@ -174,6 +174,7 @@ HOT_DOG_SETUP_ACTION_SPECS = (
     ("navigate_to_fixture", {"fixture_id": "serving_surface"}),
     ("place_on_object", {"object_id": "bun", "support_object_id": "serving_plate"}),
     ("navigate_to_fixture", {"fixture_id": "condiment_source_fixture"}),
+    ("open_hinged_part", {"target_id": "condiment_source_fixture", "part_id": "door"}),
     (
         "pick_up_object",
         {"object_id": "condiment", "source_id": "condiment_source_fixture"},
@@ -184,6 +185,7 @@ HOT_DOG_SETUP_ACTION_SPECS = (
         {"object_id": "condiment", "reference_object_id": "serving_plate"},
     ),
     ("navigate_to_fixture", {"fixture_id": "sausage_source_fixture"}),
+    ("open_hinged_part", {"target_id": "sausage_source_fixture", "part_id": "door"}),
     ("pick_up_object", {"object_id": "sausage", "source_id": "sausage_source_fixture"}),
     ("navigate_to_fixture", {"fixture_id": "serving_surface"}),
     ("place_on_object", {"object_id": "sausage", "support_object_id": "serving_plate"}),
@@ -191,6 +193,7 @@ HOT_DOG_SETUP_ACTION_SPECS = (
 
 PREPARE_SANDWICH_STATION_ACTION_SPECS = (
     ("navigate_to_fixture", {"fixture_id": "ingredient_source_fixture"}),
+    ("open_hinged_part", {"target_id": "ingredient_source_fixture", "part_id": "door"}),
     (
         "pick_up_object",
         {"object_id": "ingredient_bowl", "source_id": "ingredient_source_fixture"},
@@ -363,11 +366,11 @@ def make_valid_candidate(
 def make_valid_hot_dog_setup_candidate(*, include_agents=True):
     """Builds a valid HotDogSetup candidate trajectory for validator tests."""
 
-    action_agents = ("agent_0",) * 4 + ("agent_1",) * 8
+    action_agents = ("agent_0",) * 4 + ("agent_1",) * 10
     action_reasoning = (
         ("The bun starts on the counter.",) * 4
-        + ("The condiment should be moved beside the plate.",) * 4
-        + ("The sausage still needs to be added to the plate.",) * 4
+        + ("The condiment should be moved beside the plate.",) * 5
+        + ("The sausage still needs to be added to the plate.",) * 5
     )
     action_steps = [
         {
@@ -419,8 +422,8 @@ def make_valid_hot_dog_setup_candidate(*, include_agents=True):
 def make_valid_prepare_sandwich_station_candidate(*, include_agents=True):
     """Builds a valid PrepareSandwichStation candidate trajectory for tests."""
 
-    action_agents = ("agent_0",) * 4 + ("agent_1",) * 4
-    action_reasoning = ("The ingredient bowl should be staged first.",) * 4 + (
+    action_agents = ("agent_0",) * 5 + ("agent_1",) * 4
+    action_reasoning = ("The ingredient bowl should be staged first.",) * 5 + (
         "The baguette should join it near the toaster.",
     ) * 4
     action_steps = [

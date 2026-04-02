@@ -48,6 +48,7 @@ def _format_initial_agent_positions(
 def _build_fsm_prompt_rules(
     allowed_tool_specs: dict[str, dict[str, Any]],
     *,
+    task_preconditions: Sequence[dict[str, Any]] | None = None,
     extra_rules: Sequence[str] | None = None,
 ) -> list[str]:
     """Builds concise prompt rules that mirror the FSM validator."""
@@ -92,11 +93,34 @@ def _build_fsm_prompt_rules(
         "Stop as soon as the goal state is satisfied. Do not add extra task actions afterward."
     )
 
+    for condition in task_preconditions or ():
+        condition_kind = condition.get("kind")
+        if condition_kind == "fixture_part_state_required_for_pickup":
+            prompt_rules.append(
+                "Open "
+                f"{condition['fixture_id']}.{condition['part_id']} before using "
+                f"{condition['tool']} from {condition['source_id']}."
+            )
+        elif condition_kind == "object_location_required_for_action":
+            prompt_rules.append(
+                f"Only use {condition['tool']} after {condition['object_id']} is "
+                f"already at {condition['required_location']}."
+            )
+
     for rule in extra_rules or ():
         normalized_rule = " ".join(rule.strip().split())
         if normalized_rule:
             prompt_rules.append(normalized_rule)
-    return prompt_rules
+
+    deduped_rules: list[str] = []
+    seen_rules: set[str] = set()
+    for rule in prompt_rules:
+        normalized_rule = " ".join(rule.strip().split())
+        if not normalized_rule or normalized_rule in seen_rules:
+            continue
+        seen_rules.add(normalized_rule)
+        deduped_rules.append(normalized_rule)
+    return deduped_rules
 
 
 def make_task_prompt_builder(
@@ -106,6 +130,7 @@ def make_task_prompt_builder(
     initial_state: dict[str, Any],
     allowed_tool_specs: dict[str, Any],
     non_communicate_tool_names: Sequence[str],
+    task_preconditions: Sequence[dict[str, Any]] | None = None,
     extra_execution_rules: Sequence[str] | None = None,
     agent_ids: Sequence[str] = ("agent_0", "agent_1"),
 ) -> TaskPromptBuilder:
@@ -167,6 +192,7 @@ def make_task_prompt_builder(
             f"- {rule}"
             for rule in _build_fsm_prompt_rules(
                 prompt_allowed_tool_specs,
+                task_preconditions=task_preconditions,
                 extra_rules=prompt_extra_execution_rules,
             )
         )

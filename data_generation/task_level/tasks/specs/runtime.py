@@ -26,6 +26,25 @@ from data_generation.task_level.tasks.shared.types import (
 from . import TaskSpec, load_all_task_specs
 
 
+def _hinged_parts_by_fixture(initial_state: dict[str, Any]) -> dict[str, list[str]]:
+    hinged_parts: dict[str, list[str]] = {}
+    for fixture_id, fixture_state in initial_state.get("fixtures", {}).items():
+        if not isinstance(fixture_state, dict):
+            continue
+        fixture_parts = fixture_state.get("parts", {})
+        if not isinstance(fixture_parts, dict):
+            continue
+        part_ids = [
+            str(part_id)
+            for part_id, part_state in fixture_parts.items()
+            if isinstance(part_state, dict)
+            and part_state.get("part_type") == "hinged_part"
+        ]
+        if part_ids:
+            hinged_parts[str(fixture_id)] = sorted(part_ids)
+    return hinged_parts
+
+
 def _resolve_machine_path(
     machine_state: dict[str, Any],
     machine_path: list[str] | tuple[str, ...],
@@ -52,7 +71,13 @@ def _set_machine_path(
 class SpecDrivenTaskValidator(FiniteStateTaskValidator):
     """Generic FSM validator that interprets TaskSpec preconditions and goals."""
 
-    def __init__(self, task_spec: TaskSpec, task_instance: TaskInstance | None = None) -> None:
+    def __init__(
+        self,
+        task_spec: TaskSpec,
+        task_instance: TaskInstance | None = None,
+        *,
+        allowed_tool_specs_override: dict[str, dict[str, Any]] | None = None,
+    ) -> None:
         self._task_spec = task_spec
         effective_initial_state = (
             task_instance.initial_state
@@ -63,7 +88,11 @@ class SpecDrivenTaskValidator(FiniteStateTaskValidator):
             composite_task=task_spec.composite_task,
             agent_ids=task_spec.agent_ids,
             initial_state=effective_initial_state,
-            allowed_tool_specs=task_spec.allowed_tool_specs,
+            allowed_tool_specs=(
+                deepcopy(allowed_tool_specs_override)
+                if allowed_tool_specs_override is not None
+                else task_spec.allowed_tool_specs
+            ),
             checks=task_spec.validator_checks,
             max_reasoning_chars=task_spec.max_reasoning_chars,
             initial_public_state=task_spec.initial_public_state,
@@ -194,7 +223,10 @@ class SpecDrivenTaskValidator(FiniteStateTaskValidator):
 def build_task_definition_from_spec(task_spec: TaskSpec) -> TaskDefinition:
     """Build one runtime TaskDefinition from a JSON-backed task spec."""
 
-    tool_names = tuple(task_spec.allowed_tool_specs)
+    hinged_parts_by_fixture = _hinged_parts_by_fixture(task_spec.initial_state)
+    tool_names = list(task_spec.allowed_tool_specs)
+    if hinged_parts_by_fixture and "open_hinged_part" not in tool_names:
+        tool_names.append("open_hinged_part")
     overrides: dict[str, dict[str, Any]] = {}
     for tool_name, tool_spec in task_spec.allowed_tool_specs.items():
         tool_override = {
@@ -205,7 +237,19 @@ def build_task_definition_from_spec(task_spec: TaskSpec) -> TaskDefinition:
         if tool_override:
             overrides[tool_name] = tool_override
 
-    allowed_tool_specs = build_allowed_tool_specs(tool_names, overrides=overrides)
+    if hinged_parts_by_fixture and "open_hinged_part" not in task_spec.allowed_tool_specs:
+        overrides["open_hinged_part"] = {
+            "allowed_target_ids": sorted(hinged_parts_by_fixture),
+            "allowed_part_ids": sorted(
+                {
+                    part_id
+                    for part_ids in hinged_parts_by_fixture.values()
+                    for part_id in part_ids
+                }
+            ),
+        }
+
+    allowed_tool_specs = build_allowed_tool_specs(tuple(tool_names), overrides=overrides)
     response_schema = build_task_response_schema(
         agent_ids=task_spec.agent_ids,
         allowed_tool_specs=allowed_tool_specs,
@@ -219,6 +263,7 @@ def build_task_definition_from_spec(task_spec: TaskSpec) -> TaskDefinition:
         initial_state=task_spec.initial_state,
         allowed_tool_specs=allowed_tool_specs,
         non_communicate_tool_names=non_communicate_tool_names,
+        task_preconditions=task_spec.task_preconditions,
         extra_execution_rules=task_spec.extra_execution_rules,
     )
     build_trajectory_record = make_symbolic_trajectory_record_builder(
@@ -237,7 +282,11 @@ def build_task_definition_from_spec(task_spec: TaskSpec) -> TaskDefinition:
         )
 
     def _validator_factory(task_instance: TaskInstance | None) -> SpecDrivenTaskValidator:
-        return SpecDrivenTaskValidator(task_spec, task_instance)
+        return SpecDrivenTaskValidator(
+            task_spec,
+            task_instance,
+            allowed_tool_specs_override=allowed_tool_specs,
+        )
 
     return TaskDefinition(
         composite_task=task_spec.composite_task,
@@ -258,4 +307,3 @@ SPEC_TASK_REGISTRY: dict[str, TaskDefinition] = {
     task_spec.composite_task: build_task_definition_from_spec(task_spec)
     for task_spec in load_all_task_specs()
 }
-

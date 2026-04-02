@@ -31,6 +31,13 @@ runtime is now spec-native: new simple tasks should be added by creating a new
 JSON spec rather than a per-task Python module. Candidate next tasks are tracked
 in `data_generation/task_level/tasks/TASKS.md`.
 
+The current supported spec-native tasks are:
+- `PrepareCoffee`
+- `HotDogSetup`
+- `PrepareSandwichStation`
+- `PrepareSausageCheese`
+- `PrepareCheeseStation`
+
 The raw-generation CLI entrypoint is `data_generation.task_level.generation.raw.cli`.
 
 Install the required Google SDK into your active environment:
@@ -108,11 +115,11 @@ python -m data_generation.task_level.generation.raw.cli \
 ```
 
 Generate multiple supported tasks with shared runtime settings. `--num-runs`
-applies to each task, so the example below runs 20 model calls total:
+applies to each task, so the example below runs 25 model calls total:
 
 ```bash
 python -m data_generation.task_level.generation.raw.cli \
-  --tasks PrepareCoffee HotDogSetup PrepareSandwichStation PrepareSausageCheese \
+  --tasks PrepareCoffee HotDogSetup PrepareSandwichStation PrepareSausageCheese PrepareCheeseStation \
   --num-runs 5 \
   --random-start-location true \
   --paralleize-tasks \
@@ -139,6 +146,18 @@ new JSON file under `data_generation/task_level/tasks/specs/` with:
 - `grounding`
 - `example_trajectory`
 
+What you still author manually in the JSON:
+- task-local symbolic state, goals, preconditions, task effects, grounding, and a canonical valid example trajectory
+- task-local tool constraints in `allowed_tool_specs`
+- any higher-level guidance that is not implied by structured preconditions, in `extra_execution_rules`
+
+What the runtime now derives automatically:
+- task registration and `TaskDefinition` construction
+- the validator and prompt builder
+- the scene-agnostic grounding-map build path
+- `open_hinged_part` exposure for tasks whose `initial_state` includes hinged fixture parts
+- task-specific prompt rules implied by structured preconditions, such as opening a door before `pick_up_object`
+
 Then validate it with:
 
 ```bash
@@ -149,6 +168,13 @@ python -m unittest tests.test_task_level_trajectory_generation
 
 For tasks that fit the current abstractions, no per-task Python module, task
 registry edit, or grounding branch should be needed.
+
+For storage-style tasks, prefer encoding access requirements as structured
+`task_preconditions` instead of only writing them as free-form prompt text. For
+example, a closed fridge or cabinet should be represented in `initial_state`,
+and pickup from that source should use
+`fixture_part_state_required_for_pickup`. The runtime will both enforce that in
+validation and add the corresponding prompt rule automatically.
 
 Raw generation randomizes each agent's initial symbolic fixture location by
 default. Use `--random-start-location false` to keep the canonical task
@@ -343,8 +369,8 @@ Post-processing keeps those copied artifacts and also prepares:
 Sampling notes:
 - `--num-runs` is the number of runs, not always the number of saved trajectories.
 - With multiple tasks, `--num-runs` applies to each task. For example,
-  `--tasks PrepareCoffee HotDogSetup PrepareSandwichStation PrepareSausageCheese --num-runs 5`
-  launches 20 runs total.
+  `--tasks PrepareCoffee HotDogSetup PrepareSandwichStation PrepareSausageCheese PrepareCheeseStation --num-runs 5`
+  launches 25 runs total.
 - `--sampling base` saves one trajectory per successful run.
 - `--sampling verbalized` saves `--verbalized-k` flattened trajectories per successful run.
 - Verbalized trajectories include `sampling_metadata` with the parsed probability.
@@ -357,9 +383,12 @@ Sampling notes:
 Notes:
 
 - Supported tasks currently include `PrepareCoffee`, `HotDogSetup`,
-  `PrepareSandwichStation`, and `PrepareSausageCheese`.
+  `PrepareSandwichStation`, `PrepareSausageCheese`, and `PrepareCheeseStation`.
 - Task-level generation now resolves these tasks from JSON-backed `TaskSpec`
   files under `data_generation/task_level/tasks/specs/`.
+- For tasks with hinged fixture parts, the runtime automatically exposes
+  `open_hinged_part` and adds prompt rules implied by structured door-state
+  preconditions.
 - Batch mode supports both `--sampling base` and `--sampling verbalized`.
 - With `--sampling verbalized`, each successful batch row can save multiple
   flattened trajectories from one model response.

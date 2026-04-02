@@ -55,7 +55,7 @@
         "parts": {
           "door": {
             "part_type": "hinged_part",
-            "state": "open"
+            "state": "closed"
           }
         }
       },
@@ -63,7 +63,13 @@
         "fixture_type": "counter"
       },
       "sausage_source_fixture": {
-        "fixture_type": "fridge"
+        "fixture_type": "fridge",
+        "parts": {
+          "door": {
+            "part_type": "hinged_part",
+            "state": "closed"
+          }
+        }
       },
       "serving_surface": {
         "fixture_type": "dining_table"
@@ -171,6 +177,24 @@
       "object_id": "serving_plate",
       "location": "serving_surface",
       "message": "serving_plate must remain on serving_surface throughout HotDogSetup."
+    },
+    {
+      "kind": "fixture_part_state_required_for_pickup",
+      "tool": "pick_up_object",
+      "source_id": "sausage_source_fixture",
+      "fixture_id": "sausage_source_fixture",
+      "part_id": "door",
+      "required_state": "open",
+      "message": "pick_up_object from sausage_source_fixture requires the fridge door to be open."
+    },
+    {
+      "kind": "fixture_part_state_required_for_pickup",
+      "tool": "pick_up_object",
+      "source_id": "condiment_source_fixture",
+      "fixture_id": "condiment_source_fixture",
+      "part_id": "door",
+      "required_state": "open",
+      "message": "pick_up_object from condiment_source_fixture requires the cabinet door to be open."
     }
   ],
   "goal_conditions": [
@@ -388,6 +412,16 @@
       {
         "step": 7,
         "agent": "agent_1",
+        "tool": "open_hinged_part",
+        "args": {
+          "target_id": "sausage_source_fixture",
+          "part_id": "door"
+        },
+        "reasoning": "I need the fridge door open before I can take the sausage."
+      },
+      {
+        "step": 8,
+        "agent": "agent_1",
         "tool": "pick_up_object",
         "args": {
           "object_id": "sausage",
@@ -396,7 +430,7 @@
         "reasoning": "I am picking up the sausage from the fridge."
       },
       {
-        "step": 8,
+        "step": 9,
         "agent": "agent_1",
         "tool": "communicate",
         "args": {
@@ -406,7 +440,7 @@
         "reasoning": "I am alerting agent_0 that I am arriving at the serving surface."
       },
       {
-        "step": 9,
+        "step": 10,
         "agent": "agent_0",
         "tool": "give_space",
         "args": {
@@ -415,7 +449,7 @@
         "reasoning": "I am stepping back to give agent_1 room to place the sausage on the plate."
       },
       {
-        "step": 10,
+        "step": 11,
         "agent": "agent_1",
         "tool": "navigate_to_fixture",
         "args": {
@@ -424,7 +458,7 @@
         "reasoning": "I am moving to the dining table to place the sausage."
       },
       {
-        "step": 11,
+        "step": 12,
         "agent": "agent_1",
         "tool": "place_on_object",
         "args": {
@@ -434,7 +468,7 @@
         "reasoning": "I am placing the sausage onto the serving plate."
       },
       {
-        "step": 12,
+        "step": 13,
         "agent": "agent_1",
         "tool": "navigate_to_fixture",
         "args": {
@@ -443,7 +477,17 @@
         "reasoning": "I am moving to the cabinet to get the condiment."
       },
       {
-        "step": 13,
+        "step": 14,
+        "agent": "agent_1",
+        "tool": "open_hinged_part",
+        "args": {
+          "target_id": "condiment_source_fixture",
+          "part_id": "door"
+        },
+        "reasoning": "I need the cabinet door open before I can take the condiment."
+      },
+      {
+        "step": 15,
         "agent": "agent_1",
         "tool": "pick_up_object",
         "args": {
@@ -453,7 +497,7 @@
         "reasoning": "I am picking up the condiment bottle."
       },
       {
-        "step": 14,
+        "step": 16,
         "agent": "agent_1",
         "tool": "navigate_to_fixture",
         "args": {
@@ -462,7 +506,7 @@
         "reasoning": "I am moving to the dining table to complete the setup."
       },
       {
-        "step": 15,
+        "step": 17,
         "agent": "agent_1",
         "tool": "place_next_to",
         "args": {
