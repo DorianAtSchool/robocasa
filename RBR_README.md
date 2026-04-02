@@ -1,4 +1,4 @@
-Set up a local `.venv` and the in-repo `robosuite` dependency before running the examples:
+Set up a local `.venv` and the in-repo `robosuite` dependency before running the examples using [uv](https://docs.astral.sh/uv/):
 
 ```bash
 uv venv .venv --python 3.11
@@ -9,14 +9,6 @@ uv pip install -e .
 ```
 
 If you are cloning the repo for the first time, you can also use `git clone --recurse-submodules ...` to fetch `robosuite/` immediately.
-
-Run random policy rollout:
-
-```bash
-python policies/random.py
-```
-
-This writes a rollout video to `test.mp4` at the repo root.
 
 ## Vertex AI trajectory generation
 
@@ -54,7 +46,7 @@ EOF
 The generator automatically loads the repo-root `.env` before CLI parsing. Shell
 environment variables still win if you already exported a value manually.
 
-Authenticate with Application Default Credentials:
+First install [gcloud](https://docs.cloud.google.com/sdk/docs/install-sdk#linux), then authenticate with Application Default Credentials:
 
 ```bash
 gcloud init
@@ -265,6 +257,22 @@ the sweep CLI's normal stdout unless you pass `--verbose`, but it still prints
 the final `Done` and `Summary` lines. The wrapper owns `--workers` and
 `--verbose`, then forwards any remaining arguments to
 `python scripts/sweep_trajectories.py`.
+
+For multi-GPU cluster runs, request the GPUs from your scheduler and forward
+GPU allocation flags to the sweep CLI. Example: 8 workers spread evenly across
+4 GPUs with EGL rendering:
+
+```bash
+srun --gpus=4 bash scripts/generate_and_insert_images.sh {timestamp} \
+  --workers 8 \
+  --gpu-ids 0 1 2 3 \
+  --procs-per-gpu 2 2 2 2 \
+  --gl-backend egl
+```
+
+If your scheduler masks GPUs per job, use the GPU ordinals visible inside the
+job shell, which are usually `0..N-1`. You can verify that with
+`echo $CUDA_VISIBLE_DEVICES`.
 
 The raw generator writes artifacts next to the dataset summary:
 - `trajectories/`: saved trajectory JSON

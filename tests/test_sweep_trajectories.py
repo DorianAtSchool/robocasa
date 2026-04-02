@@ -235,6 +235,102 @@ class SweepTrajectoryWorkerTests(unittest.TestCase):
             ],
         )
 
+    def test_get_gpu_allocation_supports_round_robin_and_custom_counts(self) -> None:
+        self.assertEqual(
+            sweep_trajectories_script.get_gpu_allocation(5, [0, 1]),
+            [0, 1, 0, 1, 0],
+        )
+        self.assertEqual(
+            sweep_trajectories_script.get_gpu_allocation(5, [0, 1], [3, 2]),
+            [0, 0, 0, 1, 1],
+        )
+        self.assertEqual(
+            sweep_trajectories_script.get_gpu_allocation(4, [0, 1], [3, 3]),
+            [0, 0, 1, 1],
+        )
+        with self.assertRaisesRegex(ValueError, "same length as --gpu-ids"):
+            sweep_trajectories_script.get_gpu_allocation(2, [0, 1], [2])
+
+    def test_run_trajectory_entry_scopes_gpu_env_and_gl_backend(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            traj_file = temp_path / "traj_000000.json"
+            traj_file.write_text(
+                json.dumps({"composite_task": "PrepareCoffee"}),
+                encoding="utf-8",
+            )
+            entry = {
+                "task_dir_name": "prepare_coffee",
+                "traj_file": traj_file,
+                "traj_idx": 0,
+            }
+            observed_calls: list[tuple[str | None, str | None, str | None, str]] = []
+            env_keys = (
+                "CUDA_VISIBLE_DEVICES",
+                "GPUS",
+                "MUJOCO_EGL_DEVICE_ID",
+            )
+            original_env = {key: os.environ.get(key) for key in env_keys}
+
+            def fake_run_one(**kwargs):
+                observed_calls.append(
+                    (
+                        os.environ.get("CUDA_VISIBLE_DEVICES"),
+                        os.environ.get("GPUS"),
+                        os.environ.get("MUJOCO_EGL_DEVICE_ID"),
+                        str(kwargs["gl_backend"]),
+                    )
+                )
+                return {
+                    "status": "ok",
+                    "task": "PrepareCoffee",
+                    "steps_succeeded": 5,
+                    "steps_total": 6,
+                    "images_rendered": 7,
+                }
+
+            try:
+                os.environ["CUDA_VISIBLE_DEVICES"] = "prior-visible"
+                os.environ["GPUS"] = "prior-gpus"
+                os.environ["MUJOCO_EGL_DEVICE_ID"] = "prior-egl"
+                with mock.patch.object(
+                    sweep_trajectories_script,
+                    "run_one",
+                    side_effect=fake_run_one,
+                ):
+                    result = sweep_trajectories_script.run_trajectory_entry(
+                        entry,
+                        entry_index=0,
+                        total_runs=1,
+                        combos=((11, 34, 42),),
+                        output_root=temp_path / "output",
+                        robots=2,
+                        placement="grid",
+                        cell_size=0.05,
+                        robot_spawn="trajectory",
+                        skip_videos=True,
+                        gpu_id=7,
+                        gl_backend="egl",
+                    )
+            finally:
+                for key, value in original_env.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
+
+        self.assertEqual(
+            observed_calls,
+            [("7", "7", "7", "egl")],
+        )
+        self.assertEqual(os.environ.get("CUDA_VISIBLE_DEVICES"), original_env["CUDA_VISIBLE_DEVICES"])
+        self.assertEqual(os.environ.get("GPUS"), original_env["GPUS"])
+        self.assertEqual(
+            os.environ.get("MUJOCO_EGL_DEVICE_ID"),
+            original_env["MUJOCO_EGL_DEVICE_ID"],
+        )
+        self.assertEqual([run["status"] for run in result["results"]], ["ok"])
+
     def test_execute_sweep_quiet_mode_updates_progress_and_hides_success_output(
         self,
     ) -> None:
@@ -540,6 +636,71 @@ class SweepTrajectoryCliTests(unittest.TestCase):
 
         self.assertEqual(observed_verbose_setting, ["1"])
 
+    def test_main_gpu_ids_default_to_egl_and_forward_allocation_args(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_dir = temp_path / "input"
+            output_dir = temp_path / "output"
+            input_dir.mkdir()
+            observed_kwargs: dict[str, object] = {}
+
+            def fake_execute_sweep(*args, **kwargs):
+                observed_kwargs.update(kwargs)
+                return [
+                    {
+                        "status": "ok",
+                        "task_dir": "prepare_coffee",
+                        "traj_idx": 0,
+                        "layout": 11,
+                        "style": 34,
+                        "seed": 42,
+                    }
+                ]
+
+            with mock.patch.object(
+                sweep_trajectories_script,
+                "discover_trajectories",
+                return_value=[
+                    {
+                        "task_dir_name": "prepare_coffee",
+                        "traj_file": input_dir / "traj_000000.json",
+                        "traj_idx": 0,
+                    }
+                ],
+            ):
+                with mock.patch.object(
+                    sweep_trajectories_script,
+                    "execute_sweep",
+                    side_effect=fake_execute_sweep,
+                ):
+                    with mock.patch.object(
+                        sys,
+                        "argv",
+                        [
+                            "sweep_trajectories.py",
+                            "--input-dir",
+                            str(input_dir),
+                            "--output-dir",
+                            str(output_dir),
+                            "--workers",
+                            "4",
+                            "--gpu-ids",
+                            "0",
+                            "1",
+                            "--procs-per-gpu",
+                            "2",
+                            "2",
+                            "--quiet",
+                        ],
+                    ):
+                        with contextlib.redirect_stdout(io.StringIO()):
+                            with contextlib.redirect_stderr(io.StringIO()):
+                                sweep_trajectories_script.main()
+
+        self.assertEqual(observed_kwargs["gpu_ids"], [0, 1])
+        self.assertEqual(observed_kwargs["procs_per_gpu"], [2, 2])
+        self.assertEqual(observed_kwargs["gl_backend"], "egl")
+
 
 class SweepTaskLevelWrapperTests(unittest.TestCase):
     """Validate wrapper-owned argument parsing for task-level sweep runs."""
@@ -646,6 +807,48 @@ class SweepTaskLevelWrapperTests(unittest.TestCase):
                 "3",
                 "--layouts",
                 "11",
+            ],
+        )
+
+    def test_wrapper_forwards_multi_gpu_sweep_args(self) -> None:
+        completed, captured_args, input_dir, output_dir = (
+            self._run_wrapper_with_stub_python(
+                wrapper_args=[
+                    "20260401T000000Z",
+                    "--workers",
+                    "4",
+                    "--gpu-ids",
+                    "0",
+                    "1",
+                    "--procs-per-gpu",
+                    "2",
+                    "2",
+                    "--gl-backend",
+                    "egl",
+                ]
+            )
+        )
+
+        self.assertEqual(completed.returncode, 0, msg=completed.stderr)
+        self.assertEqual(
+            captured_args,
+            [
+                "scripts/sweep_trajectories.py",
+                "--input-dir",
+                str(input_dir),
+                "--output-dir",
+                str(output_dir),
+                "--workers",
+                "4",
+                "--quiet",
+                "--gpu-ids",
+                "0",
+                "1",
+                "--procs-per-gpu",
+                "2",
+                "2",
+                "--gl-backend",
+                "egl",
             ],
         )
 

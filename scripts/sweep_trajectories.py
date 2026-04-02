@@ -443,6 +443,22 @@ def _quiet_run_output_context(*, suppress_output: bool) -> Any:
                 robosuite_logger.setLevel(original_level)
 
 
+@contextlib.contextmanager
+def _temporary_environment(overrides: dict[str, str]) -> Any:
+    """Apply environment overrides for the duration of one context."""
+
+    previous_values = {key: os.environ.get(key) for key in overrides}
+    os.environ.update(overrides)
+    try:
+        yield
+    finally:
+        for key, previous_value in previous_values.items():
+            if previous_value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = previous_value
+
+
 def _emit_trajectory_log_lines(
     trajectory_result: dict[str, Any],
     *,
@@ -572,6 +588,7 @@ def run_one(
     cell_size: float,
     robot_spawn: str = "sim",
     skip_videos: bool = True,
+    gl_backend: str = "osmesa",
 ) -> dict:
     """Execute a single trajectory and return summary info."""
     from robocasa.utils.sim_tool_executor import SimToolExecutor
@@ -591,6 +608,7 @@ def run_one(
         placement=placement,
         cell_size=cell_size,
         robot_spawn=robot_spawn,
+        gl_backend=gl_backend,
     )
 
     try:
@@ -637,88 +655,104 @@ def run_trajectory_entry(
     skip_videos: bool = True,
     suppress_stdout: bool = False,
     progress_reporter: Callable[[dict[str, Any]], None] | None = None,
+    gpu_id: int | None = None,
+    gl_backend: str = "osmesa",
 ) -> dict[str, Any]:
     """Execute one discovered trajectory across every requested scene combo."""
 
-    task_name = str(entry["task_dir_name"])
-    traj_idx = int(entry["traj_idx"])
-    traj_file = Path(entry["traj_file"])
-    combo_count = len(combos)
-    results: list[dict[str, Any]] = []
-    diagnostic_lines: list[str] = []
-    log_lines: list[str] = []
-
-    for combo_offset, (layout, style, seed) in enumerate(combos):
-        run_num = entry_index * combo_count + combo_offset + 1
-        traj_output_dir, combo_label = _resolve_run_output_dir(
-            output_root,
-            task_name=task_name,
-            traj_idx=traj_idx,
-            combo_count=combo_count,
-            layout=layout,
-            style=style,
-            seed=seed,
+    gpu_environment = contextlib.nullcontext()
+    if gpu_id is not None:
+        # Constrain each worker invocation to one GPU before constructing any
+        # simulator state so concurrent entries can be spread across GPUs.
+        gpu_environment = _temporary_environment(
+            {
+                "CUDA_VISIBLE_DEVICES": str(gpu_id),
+                "GPUS": str(gpu_id),
+                "MUJOCO_EGL_DEVICE_ID": str(gpu_id),
+            }
         )
 
-        started_at = time.time()
-        quiet_stderr_buffer = None
-        try:
-            with _quiet_run_output_context(
-                suppress_output=suppress_stdout
-            ) as quiet_stderr_buffer:
-                result = run_one(
-                    traj_file=traj_file,
-                    output_dir=traj_output_dir,
-                    layout=layout,
-                    style=style,
-                    seed=seed,
-                    robots=robots,
-                    placement=placement,
-                    cell_size=cell_size,
-                    robot_spawn=robot_spawn,
-                    skip_videos=skip_videos,
-                )
-            elapsed_seconds = time.time() - started_at
-            result["elapsed_s"] = round(elapsed_seconds, 1)
-        except Exception as exc:  # pragma: no cover - exercised via callers
-            elapsed_seconds = time.time() - started_at
-            result = {
-                "status": "error",
-                "error": str(exc),
-                "traceback": traceback.format_exc(),
-                "elapsed_s": round(elapsed_seconds, 1),
-            }
-        if quiet_stderr_buffer is not None:
-            diagnostic_lines.extend(
-                _quiet_diagnostic_lines(quiet_stderr_buffer.getvalue())
-            )
+    with gpu_environment:
+        task_name = str(entry["task_dir_name"])
+        traj_idx = int(entry["traj_idx"])
+        traj_file = Path(entry["traj_file"])
+        combo_count = len(combos)
+        results: list[dict[str, Any]] = []
+        diagnostic_lines: list[str] = []
+        log_lines: list[str] = []
 
-        result["task_dir"] = task_name
-        result["traj_idx"] = traj_idx
-        result["traj_file"] = str(traj_file)
-        result["layout"] = layout
-        result["style"] = style
-        result["seed"] = seed
-        results.append(result)
-        if progress_reporter is not None:
-            progress_reporter(
-                {
-                    "status": result["status"],
-                    "layout": layout,
-                    "style": style,
-                    "seed": seed,
-                }
-            )
-        log_lines.append(
-            _format_run_log_line(
-                run_num=run_num,
-                total_runs=total_runs,
+        for combo_offset, (layout, style, seed) in enumerate(combos):
+            run_num = entry_index * combo_count + combo_offset + 1
+            traj_output_dir, combo_label = _resolve_run_output_dir(
+                output_root,
                 task_name=task_name,
                 traj_idx=traj_idx,
-                combo_label=combo_label,
-                result=result,
+                combo_count=combo_count,
+                layout=layout,
+                style=style,
+                seed=seed,
             )
-        )
+
+            started_at = time.time()
+            quiet_stderr_buffer = None
+            try:
+                with _quiet_run_output_context(
+                    suppress_output=suppress_stdout
+                ) as quiet_stderr_buffer:
+                    result = run_one(
+                        traj_file=traj_file,
+                        output_dir=traj_output_dir,
+                        layout=layout,
+                        style=style,
+                        seed=seed,
+                        robots=robots,
+                        placement=placement,
+                        cell_size=cell_size,
+                        robot_spawn=robot_spawn,
+                        skip_videos=skip_videos,
+                        gl_backend=gl_backend,
+                    )
+                elapsed_seconds = time.time() - started_at
+                result["elapsed_s"] = round(elapsed_seconds, 1)
+            except Exception as exc:  # pragma: no cover - exercised via callers
+                elapsed_seconds = time.time() - started_at
+                result = {
+                    "status": "error",
+                    "error": str(exc),
+                    "traceback": traceback.format_exc(),
+                    "elapsed_s": round(elapsed_seconds, 1),
+                }
+            if quiet_stderr_buffer is not None:
+                diagnostic_lines.extend(
+                    _quiet_diagnostic_lines(quiet_stderr_buffer.getvalue())
+                )
+
+            result["task_dir"] = task_name
+            result["traj_idx"] = traj_idx
+            result["traj_file"] = str(traj_file)
+            result["layout"] = layout
+            result["style"] = style
+            result["seed"] = seed
+            results.append(result)
+            if progress_reporter is not None:
+                progress_reporter(
+                    {
+                        "status": result["status"],
+                        "layout": layout,
+                        "style": style,
+                        "seed": seed,
+                    }
+                )
+            log_lines.append(
+                _format_run_log_line(
+                    run_num=run_num,
+                    total_runs=total_runs,
+                    task_name=task_name,
+                    traj_idx=traj_idx,
+                    combo_label=combo_label,
+                    result=result,
+                )
+            )
 
     return {
         "diagnostic_lines": diagnostic_lines,
@@ -785,6 +819,49 @@ def _build_trajectory_crash_results(
     }
 
 
+def get_gpu_allocation(
+    num_workers: int,
+    gpu_ids: list[int] | None,
+    procs_per_gpu: list[int] | None = None,
+) -> list[int] | None:
+    """Resolve one GPU assignment per concurrent worker slot."""
+
+    if gpu_ids is None:
+        if procs_per_gpu is not None:
+            raise ValueError("--procs-per-gpu requires --gpu-ids.")
+        return None
+    if not gpu_ids:
+        raise ValueError("--gpu-ids must include at least one GPU id.")
+    if num_workers <= 0:
+        return []
+
+    if procs_per_gpu is None:
+        return [gpu_ids[i % len(gpu_ids)] for i in range(num_workers)]
+
+    if len(procs_per_gpu) != len(gpu_ids):
+        raise ValueError(
+            "--procs-per-gpu must have the same length as --gpu-ids."
+        )
+
+    adjusted_counts = list(procs_per_gpu)
+    total_allocated = sum(adjusted_counts)
+    if total_allocated < num_workers:
+        raise ValueError(
+            f"Sum of --procs-per-gpu ({total_allocated}) must be at least the "
+            f"number of concurrent workers ({num_workers})."
+        )
+
+    while total_allocated > num_workers:
+        gpu_index = max(range(len(adjusted_counts)), key=adjusted_counts.__getitem__)
+        adjusted_counts[gpu_index] -= 1
+        total_allocated -= 1
+
+    gpu_allocation: list[int] = []
+    for gpu_id, worker_count in zip(gpu_ids, adjusted_counts):
+        gpu_allocation.extend([gpu_id] * worker_count)
+    return gpu_allocation
+
+
 def execute_sweep(
     entries: list[dict[str, Any]],
     *,
@@ -801,13 +878,18 @@ def execute_sweep(
     log_run_completions: bool = True,
     suppress_run_stdout: bool = False,
     progress_factory: Callable[..., Any] | None = None,
+    gpu_ids: list[int] | None = None,
+    procs_per_gpu: list[int] | None = None,
+    gl_backend: str = "osmesa",
 ) -> list[dict[str, Any]]:
     """Execute the discovered trajectories and preserve summary ordering."""
 
     total_runs = len(entries) * len(combos)
     ordered_results: list[list[dict[str, Any]] | None] = [None] * len(entries)
     combo_count = len(combos)
-    progress_worker_count = min(workers, len(entries)) if entries else 0
+    max_workers = min(workers, len(entries)) if entries else 0
+    progress_worker_count = max_workers
+    gpu_allocation = get_gpu_allocation(max_workers, gpu_ids, procs_per_gpu)
     progress_display = None
     slot_completed_runs: dict[int, int] = {}
     sweep_executor_factory = executor_factory or ProcessPoolExecutor
@@ -845,6 +927,8 @@ def execute_sweep(
                     robot_spawn=robot_spawn,
                     skip_videos=skip_videos,
                     suppress_stdout=suppress_run_stdout,
+                    gpu_id=gpu_allocation[worker_slot] if gpu_allocation else None,
+                    gl_backend=gl_backend,
                     progress_reporter=(
                         partial(
                             _record_local_progress_event,
@@ -869,7 +953,6 @@ def execute_sweep(
                     log_run_completions=log_run_completions,
                 )
         else:
-            max_workers = min(workers, len(entries))
             with contextlib.ExitStack() as exit_stack:
                 progress_queue = None
                 progress_manager = None
@@ -917,6 +1000,12 @@ def execute_sweep(
                             robot_spawn=robot_spawn,
                             skip_videos=skip_videos,
                             suppress_stdout=suppress_run_stdout,
+                            gpu_id=(
+                                gpu_allocation[worker_slot]
+                                if gpu_allocation is not None
+                                else None
+                            ),
+                            gl_backend=gl_backend,
                             progress_reporter=progress_reporter,
                         )
                         future_to_context[future] = (entry_index, worker_slot, entry)
@@ -1331,6 +1420,35 @@ def main():
         help="Maximum parallel trajectory workers (default: 1).",
     )
     parser.add_argument(
+        "--gpu-ids",
+        type=int,
+        nargs="+",
+        default=None,
+        help=(
+            "Optional GPU IDs to assign across concurrent workers. When set, "
+            "workers are distributed across these GPUs."
+        ),
+    )
+    parser.add_argument(
+        "--procs-per-gpu",
+        type=int,
+        nargs="+",
+        default=None,
+        help=(
+            "Optional worker counts per GPU. Must match --gpu-ids in length and "
+            "sum to at least the number of concurrent workers."
+        ),
+    )
+    parser.add_argument(
+        "--gl-backend",
+        choices=["osmesa", "egl"],
+        default=None,
+        help=(
+            "OpenGL backend. Defaults to 'egl' when --gpu-ids is set, "
+            "otherwise 'osmesa'."
+        ),
+    )
+    parser.add_argument(
         "--robot-spawn",
         choices=["sim", "trajectory"],
         default="trajectory",
@@ -1380,13 +1498,28 @@ def main():
 
     combos = list(itertools.product(args.layouts, args.styles, args.seeds))
     total_runs = len(entries) * len(combos)
+    concurrent_workers = min(args.workers, len(entries))
+    resolved_gl_backend = args.gl_backend or ("egl" if args.gpu_ids else "osmesa")
+    if args.gpu_ids is not None and resolved_gl_backend != "egl":
+        parser.error("--gpu-ids requires --gl-backend egl.")
+    try:
+        gpu_allocation = get_gpu_allocation(
+            concurrent_workers,
+            args.gpu_ids,
+            args.procs_per_gpu,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
 
     if not args.quiet:
         print(
             f"Found {len(entries)} trajectories x {len(combos)} scene combos = {total_runs} runs"
         )
         if args.workers > 1:
-            print(f"Using {min(args.workers, len(entries))} trajectory workers")
+            print(f"Using {concurrent_workers} trajectory workers")
+        if gpu_allocation is not None:
+            print(f"Using GL backend: {resolved_gl_backend}")
+            print(f"GPU allocation by worker slot: {gpu_allocation}")
         if len(combos) > 1:
             print(f"  layouts: {args.layouts}")
             print(f"  styles:  {args.styles}")
@@ -1430,6 +1563,9 @@ def main():
         log_run_completions=not args.quiet,
         show_progress=True,
         suppress_run_stdout=args.quiet,
+        gpu_ids=args.gpu_ids,
+        procs_per_gpu=args.procs_per_gpu,
+        gl_backend=resolved_gl_backend,
     )
 
     # Write sweep summary
@@ -1444,6 +1580,9 @@ def main():
         "total": len(results),
         "succeeded": sum(1 for r in results if r["status"] == "ok"),
         "failed": sum(1 for r in results if r["status"] == "error"),
+        "gl_backend": resolved_gl_backend,
+        "gpu_ids": args.gpu_ids,
+        "procs_per_gpu": args.procs_per_gpu,
         "results": results,
     }
     with open(output_root / "sweep_summary.json", "w") as f:
