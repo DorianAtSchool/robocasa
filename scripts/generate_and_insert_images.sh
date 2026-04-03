@@ -27,6 +27,13 @@ For multi-GPU sweeps, forward GPU args such as:
   --procs-per-gpu 2 2 2 2
   --gl-backend egl
 
+For CPU-only sweeps, omit GPU args and forward:
+  --gl-backend osmesa
+
+To reduce render cost and VRAM, forward render size args such as:
+  --render-width 256
+  --render-height 256
+
 Do not pass --input-dir, --output-dir, --workers, --quiet, or --verbose to the
 forwarded CLI args.
 EOF
