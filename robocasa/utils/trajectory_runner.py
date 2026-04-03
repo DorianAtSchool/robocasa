@@ -25,6 +25,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -100,6 +101,24 @@ TOP_VIEW_XY_MARGIN = 1.12
 TOP_VIEW_MIN_DISTANCE = 6.0
 
 
+def _configure_mujoco_gl_backend(gl_backend: str) -> str:
+    """Keep the requested MuJoCo backend aligned with robosuite runtime state."""
+
+    normalized_backend = str(gl_backend).strip().lower()
+    os.environ["MUJOCO_GL"] = normalized_backend
+    if normalized_backend != "egl":
+        # Remove stale EGL routing when the caller switches a reused process
+        # back to CPU rendering.
+        os.environ.pop("MUJOCO_EGL_DEVICE_ID", None)
+
+    binding_utils = sys.modules.get("robosuite.utils.binding_utils")
+    if binding_utils is not None:
+        # Robosuite caches the chosen backend at import time, so update the
+        # cached value before any new render context is created.
+        binding_utils._MUJOCO_GL = normalized_backend
+    return normalized_backend
+
+
 def _classify_fixture(fixture: Fixture) -> str | None:
     """Return the most specific FixtureType name for a fixture, or None."""
     # Check specific types before general ones to get the most useful label.
@@ -149,7 +168,8 @@ def _get_interactions(fixture: Fixture) -> list[str]:
     if hasattr(fixture, "_joint_infos"):
         skip_patterns = ("door", "drawer", "stack")
         non_door = [
-            j for j in fixture._joint_infos
+            j
+            for j in fixture._joint_infos
             if not any(p in j.lower() for p in skip_patterns)
         ]
         if non_door:
@@ -161,9 +181,11 @@ def _get_interactions(fixture: Fixture) -> list[str]:
 # Data classes
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class FixtureInfo:
     """Scene description of a single fixture for the LLM."""
+
     fixture_id: str
     fixture_type: str
     position: list[float]
@@ -179,6 +201,7 @@ class FixtureInfo:
 @dataclass
 class ObjectInfo:
     """Scene description of a single object."""
+
     object_id: str
     object_type: str
     location: str  # fixture_id where the object currently sits
@@ -190,6 +213,7 @@ class ObjectInfo:
 @dataclass
 class StepResult:
     """Visual observations for one trajectory step."""
+
     step_index: int
     agent_id: str
     action: str
@@ -206,13 +230,17 @@ class StepResult:
         for phase in ("before", "after"):
             images = getattr(self, phase)
             for cam_name, img in images.items():
-                path = output_dir / f"step_{self.step_index:03d}_{phase}_{cam_name}.{format}"
+                path = (
+                    output_dir
+                    / f"step_{self.step_index:03d}_{phase}_{cam_name}.{format}"
+                )
                 imageio.imwrite(str(path), img, **kwargs)
 
 
 @dataclass
 class AgentStepView:
     """One step from a single agent's perspective."""
+
     step_index: int
     action: str | None  # the action taken, or None if this agent didn't act
     args: dict | None
@@ -224,6 +252,7 @@ class AgentStepView:
 @dataclass
 class AgentTrajectory:
     """Per-agent view of a trajectory, for VLM training."""
+
     agent_id: str
     camera_names: list[str]
     initial_obs: dict[str, np.ndarray]
@@ -239,12 +268,17 @@ class AgentTrajectory:
         kwargs = {"quality": 85} if format in ("jpg", "jpeg") else {}
 
         for cam_name, img in self.initial_obs.items():
-            imageio.imwrite(str(output_dir / f"initial_{cam_name}.{format}"), img, **kwargs)
+            imageio.imwrite(
+                str(output_dir / f"initial_{cam_name}.{format}"), img, **kwargs
+            )
         for step in self.steps:
             for phase in ("before", "after"):
                 images = getattr(step, phase)
                 for cam_name, img in images.items():
-                    path = output_dir / f"step_{step.step_index:03d}_{phase}_{cam_name}.{format}"
+                    path = (
+                        output_dir
+                        / f"step_{step.step_index:03d}_{phase}_{cam_name}.{format}"
+                    )
                     imageio.imwrite(str(path), img, **kwargs)
 
         meta = {
@@ -267,6 +301,7 @@ class AgentTrajectory:
 @dataclass
 class TrajectoryResult:
     """Full result from running a trajectory."""
+
     initial_obs: dict[str, np.ndarray]
     steps: list[StepResult]
     scene: dict
@@ -279,7 +314,9 @@ class TrajectoryResult:
         output_dir.mkdir(parents=True, exist_ok=True)
         kwargs = {"quality": 85} if format in ("jpg", "jpeg") else {}
         for cam_name, img in self.initial_obs.items():
-            imageio.imwrite(str(output_dir / f"initial_{cam_name}.{format}"), img, **kwargs)
+            imageio.imwrite(
+                str(output_dir / f"initial_{cam_name}.{format}"), img, **kwargs
+            )
         for step in self.steps:
             step.save_images(output_dir, format=format)
         with open(output_dir / "scene.json", "w") as f:
@@ -305,7 +342,9 @@ class TrajectoryResult:
             shared = [c for c in all_cameras if c == "room_view"]
             return agent_cams + shared if agent_cams else all_cameras
 
-        def filter_cameras(images: dict[str, np.ndarray], cameras: list[str]) -> dict[str, np.ndarray]:
+        def filter_cameras(
+            images: dict[str, np.ndarray], cameras: list[str]
+        ) -> dict[str, np.ndarray]:
             return {k: v for k, v in images.items() if k in cameras}
 
         result = {}
@@ -322,14 +361,16 @@ class TrajectoryResult:
                     if to == agent_id:
                         message_received = (step.args or {}).get("message")
 
-                agent_steps.append(AgentStepView(
-                    step_index=step.step_index,
-                    action=step.action if is_actor else None,
-                    args=step.args if is_actor else None,
-                    message_received=message_received,
-                    before=filter_cameras(step.before, cams),
-                    after=filter_cameras(step.after, cams),
-                ))
+                agent_steps.append(
+                    AgentStepView(
+                        step_index=step.step_index,
+                        action=step.action if is_actor else None,
+                        args=step.args if is_actor else None,
+                        message_received=message_received,
+                        before=filter_cameras(step.before, cams),
+                        after=filter_cameras(step.after, cams),
+                    )
+                )
 
             result[agent_id] = AgentTrajectory(
                 agent_id=agent_id,
@@ -345,6 +386,7 @@ class TrajectoryResult:
 # ---------------------------------------------------------------------------
 # TrajectoryRunner
 # ---------------------------------------------------------------------------
+
 
 class TrajectoryRunner:
     """
@@ -372,7 +414,7 @@ class TrajectoryRunner:
         robot_radius: float = 0.18,
         full_scene_view: bool = False,
     ):
-        os.environ.setdefault("MUJOCO_GL", gl_backend)
+        gl_backend = _configure_mujoco_gl_backend(gl_backend)
 
         self._full_scene_view = full_scene_view
         self._num_robots = robots
@@ -412,9 +454,15 @@ class TrajectoryRunner:
         # Build fixture index and placement strategy
         self._fixtures: dict[str, Fixture] = dict(self.env.fixtures)
         self._placement_mode = placement
-        grid_kwargs = dict(cell_size=cell_size, align_to_wall=align_to_wall,
-                           standoff=standoff, sample_spacing=sample_spacing)
-        continuous_kwargs = dict(standoff=standoff, sample_spacing=sample_spacing, robot_radius=robot_radius)
+        grid_kwargs = dict(
+            cell_size=cell_size,
+            align_to_wall=align_to_wall,
+            standoff=standoff,
+            sample_spacing=sample_spacing,
+        )
+        continuous_kwargs = dict(
+            standoff=standoff, sample_spacing=sample_spacing, robot_radius=robot_radius
+        )
         # Always init both strategies: grid for cell-based queries and
         # continuous for standability validation (room bounds, collision, enclosed).
         self._occupancy_grid = OccupancyGrid(self._fixtures, **grid_kwargs)
@@ -423,7 +471,9 @@ class TrajectoryRunner:
         base_room_cam_config = CamUtils.LAYOUT_CAMS.get(
             self.env.layout_id, CamUtils.DEFAULT_LAYOUT_CAM
         )
-        self._room_cam_config = self._compute_room_cam_config(dict(base_room_cam_config))
+        self._room_cam_config = self._compute_room_cam_config(
+            dict(base_room_cam_config)
+        )
         self._top_cam_config = self._compute_top_cam_config(self._room_cam_config)
 
         self._scene: dict | None = None
@@ -432,8 +482,7 @@ class TrajectoryRunner:
     def _build_camera_list(self) -> list[str]:
         """Build the trimmed camera list: per-robot cameras + shared room_view."""
         all_cams = set(
-            self.env.sim.model.camera_id2name(i)
-            for i in range(self.env.sim.model.ncam)
+            self.env.sim.model.camera_id2name(i) for i in range(self.env.sim.model.ncam)
         )
         cameras = []
         for robot_idx in range(self._num_robots):
@@ -466,7 +515,11 @@ class TrajectoryRunner:
                     bbox_points = np.asarray(fixture.get_bbox_points(), dtype=float)
                 except Exception:
                     bbox_points = None
-                if bbox_points is not None and bbox_points.ndim == 2 and bbox_points.shape[1] >= 3:
+                if (
+                    bbox_points is not None
+                    and bbox_points.ndim == 2
+                    and bbox_points.shape[1] >= 3
+                ):
                     points.append(bbox_points[:, :3])
                     continue
 
@@ -536,7 +589,8 @@ class TrajectoryRunner:
         """
         if self._full_scene_view:
             return self._collect_scene_points(
-                include_objects=True, include_robots=True,
+                include_objects=True,
+                include_robots=True,
             )
         return self._collect_focus_points(ROOM_VIEW_FIXTURE_RADIUS)
 
@@ -596,7 +650,9 @@ class TrajectoryRunner:
         half_fovx_rad = np.arctan(np.tan(half_fovy_rad) * aspect)
         required_distance_x = right_extent / max(np.tan(half_fovx_rad), 1e-6)
         required_distance_y = up_extent / max(np.tan(half_fovy_rad), 1e-6)
-        required_distance = max(required_distance_x, required_distance_y) * ROOM_VIEW_XY_MARGIN
+        required_distance = (
+            max(required_distance_x, required_distance_y) * ROOM_VIEW_XY_MARGIN
+        )
 
         return dict(
             lookat=lookat.tolist(),
@@ -615,7 +671,9 @@ class TrajectoryRunner:
         """Derive an overhead camera that keeps the active kitchen room in frame."""
         scene_points = self._collect_top_view_points()
         if scene_points.size == 0:
-            scene_points = self._collect_scene_points(include_objects=True, include_robots=True)
+            scene_points = self._collect_scene_points(
+                include_objects=True, include_robots=True
+            )
         if scene_points.size == 0:
             return dict(
                 lookat=list(room_cam_config["lookat"]),
@@ -719,7 +777,10 @@ class TrajectoryRunner:
         model = sim.model
         data = sim.data
         prefixes = []
-        for prefix in (getattr(fixture, "naming_prefix", None), getattr(fixture, "name", None)):
+        for prefix in (
+            getattr(fixture, "naming_prefix", None),
+            getattr(fixture, "name", None),
+        ):
             if isinstance(prefix, str) and prefix:
                 prefixes.append(prefix)
 
@@ -757,8 +818,10 @@ class TrajectoryRunner:
                 explicit_handle_names.append(candidate)
 
         handle_positions = [
-            pos for pos in
-            (self._lookup_named_world_xy(name) for name in explicit_handle_names)
+            pos
+            for pos in (
+                self._lookup_named_world_xy(name) for name in explicit_handle_names
+            )
             if pos is not None
         ]
         if handle_positions:
@@ -766,7 +829,8 @@ class TrajectoryRunner:
 
         handle_positions = self._scan_fixture_named_world_xy(
             fixture,
-            lambda name: "handle" in name and ("main" in name or name.endswith("_handle")),
+            lambda name: "handle" in name
+            and ("main" in name or name.endswith("_handle")),
         )
         if handle_positions:
             return np.mean(np.stack(handle_positions), axis=0)
@@ -816,7 +880,10 @@ class TrajectoryRunner:
                 # positions outside walls, loose enough for the robot to stand
                 # in front of wall-adjacent fixtures.
                 margin = 0.3
-                self._kitchen_aabb = (arr.min(axis=0) - margin, arr.max(axis=0) + margin)
+                self._kitchen_aabb = (
+                    arr.min(axis=0) - margin,
+                    arr.max(axis=0) + margin,
+                )
             else:
                 self._kitchen_aabb = (np.array([-100, -100]), np.array([100, 100]))
         return self._kitchen_aabb
@@ -834,8 +901,9 @@ class TrajectoryRunner:
         if self._occupancy_grid is not None:
             return self._occupancy_grid.is_free(pos)
         if self._continuous is not None:
-            return (self._continuous.is_standable(pos)
-                    and not self._continuous.is_inside_any_fixture(pos))
+            return self._continuous.is_standable(
+                pos
+            ) and not self._continuous.is_inside_any_fixture(pos)
         return True  # no placement system available — assume valid
 
     def _get_kitchen_center(self) -> np.ndarray:
@@ -928,7 +996,10 @@ class TrajectoryRunner:
             # Also add own position to force a different result
             robot_positions.append(self._get_robot_position(robot_idx)[:2])
             result = self._continuous.find_placement(
-                fxtr, robot_positions, ref_pos, require_front=require_front,
+                fxtr,
+                robot_positions,
+                ref_pos,
+                require_front=require_front,
             )
         else:
             robot_cells = []
@@ -953,14 +1024,15 @@ class TrajectoryRunner:
         if result is not None:
             pos_xy, yaw = result
             if self._continuous is not None:
-                if (not self._continuous.is_standable(pos_xy) or
-                        self._continuous.is_inside_any_fixture(pos_xy)):
+                if not self._continuous.is_standable(
+                    pos_xy
+                ) or self._continuous.is_inside_any_fixture(pos_xy):
                     return
                 if self._occupancy_grid is not None:
                     grid_ok = (
                         self._occupancy_grid.is_free_of_fixtures(pos_xy)
-                        if require_front else
-                        self._occupancy_grid.is_free(pos_xy)
+                        if require_front
+                        else self._occupancy_grid.is_free(pos_xy)
                     )
                     if not grid_ok:
                         return
@@ -1022,7 +1094,9 @@ class TrajectoryRunner:
         )
 
         if self._placement_mode == "continuous" and self._continuous is not None:
-            result = self._move_robot_continuous(robot_idx, fxtr, ref_pos, require_front)
+            result = self._move_robot_continuous(
+                robot_idx, fxtr, ref_pos, require_front
+            )
         else:
             result = self._move_robot_grid(robot_idx, fxtr, ref_pos, require_front)
 
@@ -1033,15 +1107,16 @@ class TrajectoryRunner:
             pos_xy, yaw = result
             rejected = False
             if self._placement_mode == "continuous" and self._continuous is not None:
-                if (not self._continuous.is_standable(pos_xy) or
-                        self._continuous.is_inside_any_fixture(pos_xy)):
+                if not self._continuous.is_standable(
+                    pos_xy
+                ) or self._continuous.is_inside_any_fixture(pos_xy):
                     rejected = True
                 # Grid reachability catches enclosed pockets for continuous
                 if self._occupancy_grid is not None:
                     grid_ok = (
                         self._occupancy_grid.is_free_of_fixtures(pos_xy)
-                        if require_front else
-                        self._occupancy_grid.is_free(pos_xy)
+                        if require_front
+                        else self._occupancy_grid.is_free(pos_xy)
                     )
                     if not grid_ok:
                         rejected = True
@@ -1057,9 +1132,16 @@ class TrajectoryRunner:
             # Fallback: try the OTHER placement strategy before giving up.
             fallback_result = None
             if self._placement_mode != "continuous" and self._continuous is not None:
-                fallback_result = self._move_robot_continuous(robot_idx, fxtr, ref_pos, require_front)
-            elif self._placement_mode == "continuous" and self._occupancy_grid is not None:
-                fallback_result = self._move_robot_grid(robot_idx, fxtr, ref_pos, require_front)
+                fallback_result = self._move_robot_continuous(
+                    robot_idx, fxtr, ref_pos, require_front
+                )
+            elif (
+                self._placement_mode == "continuous"
+                and self._occupancy_grid is not None
+            ):
+                fallback_result = self._move_robot_grid(
+                    robot_idx, fxtr, ref_pos, require_front
+                )
 
             # Validate fallback — use the fallback strategy's own validation.
             # Fallback is the OTHER strategy, so apply its specific checks.
@@ -1067,15 +1149,19 @@ class TrajectoryRunner:
                 pos_xy, yaw = fallback_result
                 rejected = False
                 # Fallback from grid mode → continuous was tried
-                if self._placement_mode != "continuous" and self._continuous is not None:
-                    if (not self._continuous.is_standable(pos_xy) or
-                            self._continuous.is_inside_any_fixture(pos_xy)):
+                if (
+                    self._placement_mode != "continuous"
+                    and self._continuous is not None
+                ):
+                    if not self._continuous.is_standable(
+                        pos_xy
+                    ) or self._continuous.is_inside_any_fixture(pos_xy):
                         rejected = True
                     if self._occupancy_grid is not None:
                         grid_ok = (
                             self._occupancy_grid.is_free_of_fixtures(pos_xy)
-                            if require_front else
-                            self._occupancy_grid.is_free(pos_xy)
+                            if require_front
+                            else self._occupancy_grid.is_free(pos_xy)
                         )
                         if not grid_ok:
                             rejected = True
@@ -1093,11 +1179,13 @@ class TrajectoryRunner:
                 angle = getattr(fxtr, "rot", 0.0) or 0.0
                 directions = [angle + np.pi]
                 if not require_front:
-                    directions.extend([
-                        angle + np.pi / 2,   # left side
-                        angle - np.pi / 2,   # right side
-                        angle,               # behind (last resort)
-                    ])
+                    directions.extend(
+                        [
+                            angle + np.pi / 2,  # left side
+                            angle - np.pi / 2,  # right side
+                            angle,  # behind (last resort)
+                        ]
+                    )
                 for direction in directions:
                     for standoff in (0.6, 0.8, 0.4, 1.0, 1.2, 1.5):
                         fallback_pos = np.array(fxtr.pos[:2], dtype=float)
@@ -1107,13 +1195,17 @@ class TrajectoryRunner:
                         if self._occupancy_grid is not None:
                             grid_ok = (
                                 self._occupancy_grid.is_free_of_fixtures(fallback_pos)
-                                if require_front else
-                                self._occupancy_grid.is_free(fallback_pos)
+                                if require_front
+                                else self._occupancy_grid.is_free(fallback_pos)
                             )
-                        if (not self._continuous._collides_with_obstacles(fallback_pos, exclude_fixture=fxtr)
-                                and self._continuous.is_standable(fallback_pos)
-                                and not self._continuous.is_inside_any_fixture(fallback_pos)
-                                and grid_ok):
+                        if (
+                            not self._continuous._collides_with_obstacles(
+                                fallback_pos, exclude_fixture=fxtr
+                            )
+                            and self._continuous.is_standable(fallback_pos)
+                            and not self._continuous.is_inside_any_fixture(fallback_pos)
+                            and grid_ok
+                        ):
                             self._set_robot_pose(robot_idx, fallback_pos, direction)
                             placed = True
                             break
@@ -1158,7 +1250,10 @@ class TrajectoryRunner:
                 continue
             robot_positions.append(self._get_robot_position(other_idx)[:2])
         return self._continuous.find_placement(
-            fixture, robot_positions, ref_pos, require_front=require_front,
+            fixture,
+            robot_positions,
+            ref_pos,
+            require_front=require_front,
         )
 
     def _move_robot_grid(
@@ -1178,7 +1273,10 @@ class TrajectoryRunner:
             robot_cells.append(self._occupancy_grid._world_to_grid(other_pos))
             robot_positions.append(other_pos)
         return self._occupancy_grid.find_placement(
-            fixture, robot_cells, ref_pos, robot_positions=robot_positions,
+            fixture,
+            robot_cells,
+            ref_pos,
+            robot_positions=robot_positions,
             require_front=require_front,
         )
 
@@ -1245,7 +1343,9 @@ class TrajectoryRunner:
                 return
             for radius in np.arange(min_distance, min_distance + 3.0, 0.3):
                 for angle in np.linspace(0, 2 * np.pi, 16, endpoint=False):
-                    candidate = fxtr_pos + radius * np.array([np.cos(angle), np.sin(angle)])
+                    candidate = fxtr_pos + radius * np.array(
+                        [np.cos(angle), np.sin(angle)]
+                    )
                     if not _is_valid_candidate(candidate):
                         continue
                     best_pos = candidate
@@ -1326,7 +1426,9 @@ class TrajectoryRunner:
             if yaw is not None:
                 # ori from compute_robot_base_placement_pose is an euler [0,0,yaw]
                 # The yaw joint is relative to the robot's anchor orientation
-                anchor_ori = getattr(self.env, "init_robot_base_ori_anchors", [None] * (robot_idx + 1))[robot_idx]
+                anchor_ori = getattr(
+                    self.env, "init_robot_base_ori_anchors", [None] * (robot_idx + 1)
+                )[robot_idx]
                 if anchor_ori is not None:
                     self.env.sim.data.qpos[addr] = yaw - anchor_ori[2]
                 else:
@@ -1388,7 +1490,11 @@ class TrajectoryRunner:
             if ftype is None:
                 continue
 
-            pos = fxtr.pos.tolist() if hasattr(fxtr, "pos") and fxtr.pos is not None else [0, 0, 0]
+            pos = (
+                fxtr.pos.tolist()
+                if hasattr(fxtr, "pos") and fxtr.pos is not None
+                else [0, 0, 0]
+            )
             fixture_positions[name] = np.array(pos[:2])
 
             interactions = _get_interactions(fxtr)
@@ -1422,9 +1528,13 @@ class TrajectoryRunner:
         # Compute parent fixture: which counter/surface each fixture sits on.
         # Uses the same containment logic as env.get_fixture(ref=...).
         counter_fixtures = {
-            name: fxtr for name, fxtr in self._fixtures.items()
-            if any(fixture_is_type(fxtr, ft) for ft in _PLACEABLE_FIXTURE_TYPES
-                   if ft in FixtureType.__members__.values())
+            name: fxtr
+            for name, fxtr in self._fixtures.items()
+            if any(
+                fixture_is_type(fxtr, ft)
+                for ft in _PLACEABLE_FIXTURE_TYPES
+                if ft in FixtureType.__members__.values()
+            )
         }
         for name, info in fixtures_info.items():
             if info.fixture_type in ("counter", "dining_counter"):
@@ -1470,10 +1580,10 @@ class TrajectoryRunner:
 
         if hasattr(self.env, "objects") and self.env.objects:
             for obj_name in self.env.objects:
-                obj_pos = self.env.sim.data.body_xpos[
-                    self.env.obj_body_id[obj_name]
-                ]
-                location = object_placements.get(obj_name) or self._find_object_fixture(obj_pos)
+                obj_pos = self.env.sim.data.body_xpos[self.env.obj_body_id[obj_name]]
+                location = object_placements.get(obj_name) or self._find_object_fixture(
+                    obj_pos
+                )
 
                 cfg = obj_cfg_map.get(obj_name, {})
                 info = cfg.get("info", {})
@@ -1492,10 +1602,12 @@ class TrajectoryRunner:
             robot_pos = self.env.sim.data.body_xpos[
                 self.env.sim.model.body_name2id(robot.robot_model.root_body)
             ]
-            robots_info.append({
-                "robot_id": f"agent_{i}",
-                "position": [round(float(p), 3) for p in robot_pos],
-            })
+            robots_info.append(
+                {
+                    "robot_id": f"agent_{i}",
+                    "position": [round(float(p), 3) for p in robot_pos],
+                }
+            )
 
         # Task instruction
         task_lang = None
@@ -1504,7 +1616,10 @@ class TrajectoryRunner:
 
         # Robot spawn fixture (ground truth from the task definition)
         init_robot_base_ref_id = None
-        if hasattr(self.env, "init_robot_base_ref") and self.env.init_robot_base_ref is not None:
+        if (
+            hasattr(self.env, "init_robot_base_ref")
+            and self.env.init_robot_base_ref is not None
+        ):
             ref = self.env.init_robot_base_ref
             if isinstance(ref, str):
                 init_robot_base_ref_id = ref
@@ -1564,7 +1679,9 @@ class TrajectoryRunner:
                     height=self.render_height,
                     width=self.render_width,
                     camera_name=cam_name,
-                )[::-1]  # flip vertical (MuJoCo convention)
+                )[
+                    ::-1
+                ]  # flip vertical (MuJoCo convention)
                 images[cam_name] = frame
             except Exception:
                 continue
@@ -1628,7 +1745,9 @@ class TrajectoryRunner:
         count = min(_OBJECT_PLACEMENT_MAX_AXIS_SAMPLES, max(2, approx_count))
         return np.linspace(axis_min, axis_max, num=count, dtype=float)
 
-    def _get_object_placement_metadata(self, object_id: str) -> dict[str, np.ndarray | float]:
+    def _get_object_placement_metadata(
+        self, object_id: str
+    ) -> dict[str, np.ndarray | float]:
         """Return bbox-derived placement metadata for an object."""
         obj = self.env.objects[object_id]
         qpos = self.env.sim.data.get_joint_qpos(obj.joints[0]).copy()
@@ -1667,7 +1786,9 @@ class TrajectoryRunner:
                 region_size = np.asarray(region.get("size", (0.1, 0.1)), dtype=float)
                 region_height = region.get("height")
                 if min_size is not None:
-                    if min_size[0] > max(region_size) and min_size[1] > max(region_size):
+                    if min_size[0] > max(region_size) and min_size[1] > max(
+                        region_size
+                    ):
                         continue
                     if (
                         region_height is not None
@@ -1727,16 +1848,20 @@ class TrajectoryRunner:
 
             if preferred_local is not None:
                 projected = offset.copy()
-                projected[0] = float(np.clip(
-                    preferred_local[0],
-                    offset[0] - usable_half[0],
-                    offset[0] + usable_half[0],
-                ))
-                projected[1] = float(np.clip(
-                    preferred_local[1],
-                    offset[1] - usable_half[1],
-                    offset[1] + usable_half[1],
-                ))
+                projected[0] = float(
+                    np.clip(
+                        preferred_local[0],
+                        offset[0] - usable_half[0],
+                        offset[0] + usable_half[0],
+                    )
+                )
+                projected[1] = float(
+                    np.clip(
+                        preferred_local[1],
+                        offset[1] - usable_half[1],
+                        offset[1] + usable_half[1],
+                    )
+                )
                 local_candidates.append(projected)
 
             x_values = self._sample_axis_values(float(offset[0]), float(usable_half[0]))
@@ -1826,8 +1951,13 @@ class TrajectoryRunner:
         obj_quat = collision_context["obj_quat"]
         obj_radius = float(collision_context["obj_radius"])
 
-        for other_obj, other_pos, other_quat, other_radius in collision_context["object_obstacles"]:
-            if np.linalg.norm(other_pos[:2] - candidate_pos[:2]) > obj_radius + other_radius + 0.30:
+        for other_obj, other_pos, other_quat, other_radius in collision_context[
+            "object_obstacles"
+        ]:
+            if (
+                np.linalg.norm(other_pos[:2] - candidate_pos[:2])
+                > obj_radius + other_radius + 0.30
+            ):
                 continue
             try:
                 if OU.objs_intersect(
@@ -1842,8 +1972,13 @@ class TrajectoryRunner:
             except Exception:
                 continue
 
-        for fixture, fixture_pos, fixture_radius in collision_context["fixture_obstacles"]:
-            if np.linalg.norm(fixture_pos[:2] - candidate_pos[:2]) > obj_radius + fixture_radius + 0.30:
+        for fixture, fixture_pos, fixture_radius in collision_context[
+            "fixture_obstacles"
+        ]:
+            if (
+                np.linalg.norm(fixture_pos[:2] - candidate_pos[:2])
+                > obj_radius + fixture_radius + 0.30
+            ):
                 continue
             try:
                 if OU.objs_intersect(
@@ -1884,7 +2019,9 @@ class TrajectoryRunner:
             target_pos[2] += 0.02
             return target_pos
 
-        preferred = None if preferred_xy is None else np.asarray(preferred_xy, dtype=float)[:2]
+        preferred = (
+            None if preferred_xy is None else np.asarray(preferred_xy, dtype=float)[:2]
+        )
         candidates = self._iter_object_target_candidates(
             target_fxtr,
             object_id,
@@ -1897,7 +2034,11 @@ class TrajectoryRunner:
             ignored_object_ids=ignored_object_ids,
         )
 
-        target_xy = preferred if preferred is not None else np.asarray(target_fxtr.pos[:2], dtype=float)
+        target_xy = (
+            preferred
+            if preferred is not None
+            else np.asarray(target_fxtr.pos[:2], dtype=float)
+        )
         valid: list[tuple[float, np.ndarray]] = []
         for candidate in candidates:
             if not self._validate_object_on_fixture(candidate, target_fxtr.name):
@@ -1913,7 +2054,9 @@ class TrajectoryRunner:
         return candidates[0].copy()
 
     def _validate_object_on_fixture(
-        self, obj_pos: np.ndarray, fixture_id: str,
+        self,
+        obj_pos: np.ndarray,
+        fixture_id: str,
     ) -> bool:
         """Return True if *obj_pos* is geometrically inside *fixture_id*."""
         fxtr = self._fixtures.get(fixture_id)
@@ -2027,7 +2170,8 @@ class TrajectoryRunner:
         elif action == "turn_on":
             if hasattr(fxtr, "_joint_infos"):
                 non_door = [
-                    j for j in fxtr._joint_infos
+                    j
+                    for j in fxtr._joint_infos
                     if "door" not in j.lower() and "drawer" not in j.lower()
                 ]
                 if non_door:
@@ -2037,7 +2181,8 @@ class TrajectoryRunner:
         elif action == "turn_off":
             if hasattr(fxtr, "_joint_infos"):
                 non_door = [
-                    j for j in fxtr._joint_infos
+                    j
+                    for j in fxtr._joint_infos
                     if "door" not in j.lower() and "drawer" not in j.lower()
                 ]
                 if non_door:
@@ -2103,7 +2248,9 @@ class TrajectoryRunner:
                     )
                     ref_override = move_target_pos[:2]
                 self._move_robot_near_fixture(
-                    robot_idx, target_fixture, ref_pos_override=ref_override,
+                    robot_idx,
+                    target_fixture,
+                    ref_pos_override=ref_override,
                 )
 
             # Render before
@@ -2130,7 +2277,9 @@ class TrajectoryRunner:
             elif action == "move_away":
                 to_agent = args.get("to_agent", "")
                 obj_id = args.get("object", "")
-                to_robot = int(to_agent.replace("agent_", "")) if to_agent else (1 - robot_idx)
+                to_robot = (
+                    int(to_agent.replace("agent_", "")) if to_agent else (1 - robot_idx)
+                )
                 self.hand_off_object(robot_idx, obj_id, to_robot)
             elif action == "give_space":
                 fixture_id = args.get("fixture") or args.get("fixture_id", "")
@@ -2148,14 +2297,16 @@ class TrajectoryRunner:
             # Render after
             after = self.render()
 
-            step_results.append(StepResult(
-                step_index=i,
-                agent_id=agent_id,
-                action=action,
-                args=step.get("args") or step.get("tool_args", {}),
-                before=before,
-                after=after,
-            ))
+            step_results.append(
+                StepResult(
+                    step_index=i,
+                    agent_id=agent_id,
+                    action=action,
+                    args=step.get("args") or step.get("tool_args", {}),
+                    before=before,
+                    after=after,
+                )
+            )
 
         return TrajectoryResult(
             initial_obs=initial_obs,
