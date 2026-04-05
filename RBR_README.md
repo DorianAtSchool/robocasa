@@ -1,3 +1,6 @@
+If this is a fresh clone or first-time setup, follow [`README.md`](README.md) first.
+The steps below assume the base RoboCasa environment, macros, and assets are already set up.
+
 Set up a local `.venv` and the in-repo `robosuite` dependency before running the examples using [uv](https://docs.astral.sh/uv/):
 
 ```bash
@@ -63,11 +66,11 @@ Generate validated symbolic two-agent trajectories for `PrepareCoffee` with base
 
 ```bash
 python -m data_generation.task_level.generation.raw.cli \
-  --tasks PrepareCoffee \
+  --tasks all \
   --num-runs 2 \
   --random-start-location true \
   --sampling base \
-  --model gemini-3.1-flash-lite-preview \
+  --model gemini-3-flash-preview \
   --location global \
   --thinking-level low \
   --max-workers 4 \
@@ -80,16 +83,16 @@ trajectories plus a probability label for each one:
 
 ```bash
 python -m data_generation.task_level.generation.raw.cli \
-  --tasks PrepareCoffee \
-  --num-runs 2 \
+  --tasks all \
+  --num-runs 20 \
   --random-start-location true \
   --sampling verbalized \
-  --verbalized-k 3 \
-  --model gemini-3.1-flash-lite-preview \
+  --verbalized-k 4 \
+  --model gemini-3-flash-preview \
   --location global \
   --thinking-level low \
-  --max-workers 4 \
-  --max-retries 5 \
+  --max-workers 10 \
+  --max-retries 1 \
   --enable-validation
 ```
 
@@ -98,12 +101,12 @@ to each task, so the example below runs 10 model calls total:
 
 ```bash
 python -m data_generation.task_level.generation.raw.cli \
-  --tasks PrepareCoffee HotDogSetup \
+  --tasks all \
   --num-runs 5 \
   --random-start-location true \
   --paralleize-tasks \
-  --sampling base \
-  --model gemini-3.1-flash-lite-preview \
+  --sampling verbalized \
+  --model gemini-3-flash-preview \
   --location global \
   --thinking-level low \
   --max-workers 4 \
@@ -204,14 +207,14 @@ place, skips completed runs, and retries only the pending run indices.
 
 After the raw data is generated via LLM, run post-processing to add default multi-view
 `get_image` observation steps and deterministic `image_paths` fields in a copied
-dataset tree under `data/image/`. The output path mirrors the source tree after
-`data/raw/`, so
+dataset tree under `data/pre_image/`. The copied path mirrors the source tree
+after `data/raw/`, so
 `data/raw/{timestamp}/{task}/summary.json` becomes
-`data/image/{timestamp}/{task}/summary.json`. The source dataset stays unchanged:
+`data/pre_image/{timestamp}/{task}/summary.json`. The source dataset stays unchanged.
+The normal entrypoint is the timestamp wrapper:
 
 ```bash
-python -m data_generation.task_level.generation.image.cli \
-  --dataset data_generation/task_level/data/raw/{timestamp}/{task}/summary.json
+bash scripts/post_process_task_level_images.sh {timestamp}
 ```
 
 Default post-processing behavior:
@@ -222,13 +225,6 @@ Default post-processing behavior:
   `wrist` and `agentview_center`.
 - Store the rendered artifacts for each inserted observation step in `image_paths`,
   ordered to match the requested `views`.
-
-To post-process every task summary inside one multi-task run directory, pass the
-raw run timestamp to the helper script:
-
-```bash
-bash scripts/post_process_task_level_images.sh {timestamp}
-```
 
 The wrapper expands `{timestamp}` to
 `data_generation/task_level/data/raw/{timestamp}/*/summary.json` and runs the
@@ -263,7 +259,7 @@ GPU allocation flags to the sweep CLI. Example: 8 workers spread evenly across
 4 GPUs with EGL rendering:
 
 ```bash
-srun --gpus=4 bash scripts/generate_and_insert_images.sh {timestamp} \
+bash scripts/generate_and_insert_images.sh {timestamp} \
   --workers 8 \
   --gpu-ids 0 1 2 3 \
   --procs-per-gpu 2 2 2 2 \
