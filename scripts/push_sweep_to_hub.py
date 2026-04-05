@@ -24,6 +24,12 @@ def main():
     parser = argparse.ArgumentParser(description="Push sweep output to HuggingFace Hub")
     parser.add_argument("--sweep-dir", type=str, required=True, help="Path to sweep output directory")
     parser.add_argument("--repo-id", type=str, required=True, help="HuggingFace repo id (e.g. username/dataset-name)")
+    parser.add_argument(
+        "--row-granularity",
+        choices=["step", "trajectory"],
+        default="step",
+        help="Dataset row shape to publish (default: step)",
+    )
     args = parser.parse_args()
 
     sweep_dir = Path(args.sweep_dir)
@@ -32,16 +38,17 @@ def main():
         sys.exit(1)
 
     print(f"Converting {sweep_dir} to HuggingFace dataset...")
-    ds = sweep_output_to_dataset(sweep_dir)
+    ds = sweep_output_to_dataset(sweep_dir, row_granularity=args.row_granularity)
     print(f"\nDataset info:")
     print(f"  rows: {len(ds)}")
     print(f"  columns: {ds.column_names}")
     print(f"\nPushing to {args.repo_id}...")
     ds.push_to_hub(args.repo_id)
-    print("Uploading sweep metadata sidecars...")
-    upload_sweep_sidecars(args.repo_id, sweep_dir)
+    if args.row_granularity == "step":
+        print("Uploading sweep metadata sidecars...")
+        upload_sweep_sidecars(args.repo_id, sweep_dir)
     print("Uploading dataset card...")
-    upload_dataset_card(args.repo_id, ds)
+    upload_dataset_card(args.repo_id, ds, row_granularity=args.row_granularity)
     print(f"Done! Dataset at https://huggingface.co/datasets/{args.repo_id}")
 
 
