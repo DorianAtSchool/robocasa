@@ -142,16 +142,31 @@ class SweepTrajectoryWorkerTests(unittest.TestCase):
                                 ) as eta_column_cls:
                                     with mock.patch.object(
                                         sweep_trajectories_script,
-                                        "RichProgress",
-                                        return_value=fake_progress,
-                                    ) as rich_progress:
-                                        display = sweep_trajectories_script.SweepRichProgressDisplay(
-                                            total_runs=4,
-                                            worker_count=2,
-                                        )
+                                        "SweepAverageTrajectoryTimeColumn",
+                                        return_value=mock.sentinel.avg_column,
+                                    ) as avg_column_cls:
+                                        with mock.patch.object(
+                                            sweep_trajectories_script,
+                                            "SweepTrajectoryRateColumn",
+                                            return_value=mock.sentinel.rate_column,
+                                        ) as rate_column_cls:
+                                            with mock.patch.object(
+                                                sweep_trajectories_script,
+                                                "RichProgress",
+                                                return_value=fake_progress,
+                                            ) as rich_progress:
+                                                display = sweep_trajectories_script.SweepRichProgressDisplay(
+                                                    total_runs=4,
+                                                    worker_count=2,
+                                                )
 
         console_cls.assert_called_once_with(stderr=True)
-        eta_column_cls.assert_called_once_with()
+        eta_column_cls.assert_called_once()
+        self.assertTrue(callable(eta_column_cls.call_args.args[0]))
+        avg_column_cls.assert_called_once()
+        self.assertTrue(callable(avg_column_cls.call_args.args[0]))
+        rate_column_cls.assert_called_once()
+        self.assertTrue(callable(rate_column_cls.call_args.args[0]))
         self.assertEqual(
             rich_progress.call_args.kwargs["console"], mock.sentinel.console
         )
@@ -162,6 +177,88 @@ class SweepTrajectoryWorkerTests(unittest.TestCase):
         self.assertTrue(fake_progress.add_task.call_args_list[0].kwargs["show_eta"])
         display.close()
         fake_progress.stop.assert_called_once()
+
+    def test_rich_progress_display_estimates_eta_from_average_trajectory_time(
+        self,
+    ) -> None:
+        fake_progress = mock.Mock()
+        fake_progress.add_task.return_value = 101
+
+        with mock.patch.object(
+            sweep_trajectories_script,
+            "Text",
+            mock.Mock(),
+        ):
+            with mock.patch.object(
+                sweep_trajectories_script,
+                "Console",
+                return_value=mock.sentinel.console,
+            ):
+                with mock.patch.object(
+                    sweep_trajectories_script,
+                    "TextColumn",
+                    side_effect=[
+                        mock.sentinel.description_column,
+                        mock.sentinel.status_column,
+                    ],
+                ):
+                    with mock.patch.object(
+                        sweep_trajectories_script,
+                        "BarColumn",
+                        return_value=mock.sentinel.bar_column,
+                    ):
+                        with mock.patch.object(
+                            sweep_trajectories_script,
+                            "TaskProgressColumn",
+                            return_value=mock.sentinel.task_progress_column,
+                        ):
+                            with mock.patch.object(
+                                sweep_trajectories_script,
+                                "MofNCompleteColumn",
+                                return_value=mock.sentinel.mofn_column,
+                            ):
+                                with mock.patch.object(
+                                    sweep_trajectories_script,
+                                    "StaticQueuedTimeElapsedColumn",
+                                    return_value=mock.sentinel.elapsed_column,
+                                ):
+                                    with mock.patch.object(
+                                        sweep_trajectories_script,
+                                        "RichProgress",
+                                        return_value=fake_progress,
+                                    ):
+                                        display = sweep_trajectories_script.SweepRichProgressDisplay(
+                                            total_runs=6,
+                                            worker_count=2,
+                                        )
+
+        with mock.patch.object(
+            sweep_trajectories_script.time,
+            "monotonic",
+            side_effect=[0.0, 0.0, 10.0, 12.0, 12.0],
+        ):
+            display.assign_worker(
+                0,
+                task_name="prepare_coffee",
+                traj_idx=0,
+                total_runs=2,
+            )
+            display.assign_worker(
+                1,
+                task_name="prepare_coffee",
+                traj_idx=1,
+                total_runs=2,
+            )
+            display.finalize_worker(
+                0,
+                error_count=0,
+                missing_runs=0,
+            )
+            self.assertEqual(display._estimate_remaining_seconds(), 10.0)
+            self.assertEqual(display._average_trajectory_seconds(), 10.0)
+            self.assertAlmostEqual(display._trajectories_per_minute(), 5.0)
+
+        display.close()
 
     def test_execute_sweep_preserves_summary_order_with_workers(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -626,9 +723,9 @@ class SweepTrajectoryWorkerTests(unittest.TestCase):
                 ) -> None:
                     observed_executor_kwargs["max_workers"] = max_workers
                     observed_executor_kwargs["mp_context"] = mp_context
-                    observed_executor_kwargs["max_tasks_per_child"] = (
-                        max_tasks_per_child
-                    )
+                    observed_executor_kwargs[
+                        "max_tasks_per_child"
+                    ] = max_tasks_per_child
 
                 def __enter__(self) -> "FakeProcessPoolExecutor":
                     return self
@@ -1396,18 +1493,21 @@ class SweepTaskLevelWrapperTests(unittest.TestCase):
         return completed, captured_args, input_dir, output_dir
 
     def test_wrapper_defaults_to_quiet_python_cli(self) -> None:
-        completed, captured_args, input_dir, output_dir = (
-            self._run_wrapper_with_stub_python(
-                wrapper_args=[
-                    "20260401T000000Z",
-                    "--workers",
-                    "3",
-                    "--layouts",
-                    "11",
-                    "--styles",
-                    "34",
-                ]
-            )
+        (
+            completed,
+            captured_args,
+            input_dir,
+            output_dir,
+        ) = self._run_wrapper_with_stub_python(
+            wrapper_args=[
+                "20260401T000000Z",
+                "--workers",
+                "3",
+                "--layouts",
+                "11",
+                "--styles",
+                "34",
+            ]
         )
 
         self.assertEqual(completed.returncode, 0, msg=completed.stderr)
@@ -1430,17 +1530,20 @@ class SweepTaskLevelWrapperTests(unittest.TestCase):
         )
 
     def test_wrapper_verbose_mode_skips_quiet_python_cli_flag(self) -> None:
-        completed, captured_args, input_dir, output_dir = (
-            self._run_wrapper_with_stub_python(
-                wrapper_args=[
-                    "20260401T000000Z",
-                    "--workers",
-                    "3",
-                    "--verbose",
-                    "--layouts",
-                    "11",
-                ]
-            )
+        (
+            completed,
+            captured_args,
+            input_dir,
+            output_dir,
+        ) = self._run_wrapper_with_stub_python(
+            wrapper_args=[
+                "20260401T000000Z",
+                "--workers",
+                "3",
+                "--verbose",
+                "--layouts",
+                "11",
+            ]
         )
 
         self.assertEqual(completed.returncode, 0, msg=completed.stderr)
@@ -1460,22 +1563,25 @@ class SweepTaskLevelWrapperTests(unittest.TestCase):
         )
 
     def test_wrapper_forwards_multi_gpu_sweep_args(self) -> None:
-        completed, captured_args, input_dir, output_dir = (
-            self._run_wrapper_with_stub_python(
-                wrapper_args=[
-                    "20260401T000000Z",
-                    "--workers",
-                    "4",
-                    "--gpu-ids",
-                    "0",
-                    "1",
-                    "--procs-per-gpu",
-                    "2",
-                    "2",
-                    "--gl-backend",
-                    "egl",
-                ]
-            )
+        (
+            completed,
+            captured_args,
+            input_dir,
+            output_dir,
+        ) = self._run_wrapper_with_stub_python(
+            wrapper_args=[
+                "20260401T000000Z",
+                "--workers",
+                "4",
+                "--gpu-ids",
+                "0",
+                "1",
+                "--procs-per-gpu",
+                "2",
+                "2",
+                "--gl-backend",
+                "egl",
+            ]
         )
 
         self.assertEqual(completed.returncode, 0, msg=completed.stderr)

@@ -51,6 +51,7 @@ PROGRESS_BAR_WIDTH = 30
 TQDM_BAR_FORMAT = f"{{l_bar}}{{bar:{PROGRESS_BAR_WIDTH}}}{{r_bar}}"
 # Keep concurrent trajectory bars easy to tell apart in the terminal.
 TRAJECTORY_PROGRESS_COLORS = ("green", "yellow", "blue", "magenta", "red", "cyan")
+_RICH_PROGRESS_COLUMN_BASE = ProgressColumn if ProgressColumn is not None else object
 
 
 @dataclass(frozen=True)
@@ -245,13 +246,13 @@ def _trajectory_progress_color(index: int) -> str:
     return TRAJECTORY_PROGRESS_COLORS[index % len(TRAJECTORY_PROGRESS_COLORS)]
 
 
-class StaticQueuedTimeElapsedColumn(ProgressColumn):
+class StaticQueuedTimeElapsedColumn(_RICH_PROGRESS_COLUMN_BASE):
     """Shows a fixed zero timer for queued tasks and real elapsed time once started."""
 
     def __init__(self) -> None:
         """Initializes the shared queued-aware elapsed column."""
 
-        if TimeElapsedColumn is None:
+        if TimeElapsedColumn is None or ProgressColumn is None:
             raise RuntimeError("rich progress support is unavailable")
         super().__init__()
         self._delegate = TimeElapsedColumn()

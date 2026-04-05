@@ -80,6 +80,7 @@ import io
 import itertools
 import json
 import logging
+import math
 import multiprocessing
 import os
 import queue
@@ -114,12 +115,8 @@ TaskProgressColumn = raw_progress.TaskProgressColumn
 Text = raw_progress.Text
 TextColumn = raw_progress.TextColumn
 
-try:
-    from rich.progress import TimeRemainingColumn
-except ImportError:  # pragma: no cover
-    TimeRemainingColumn = None
-
-CLI_EPILOG = textwrap.dedent("""\
+CLI_EPILOG = textwrap.dedent(
+    """\
     Examples:
       python scripts/sweep_trajectories.py \\
         --input-dir data_generation/task_level/data/image/20260324T031125Z \\
@@ -423,20 +420,76 @@ def _get_or_create_cached_executor(
 class SweepOverallEtaColumn(ProgressColumn):
     """Shows ETA only for the overall runs row."""
 
-    def __init__(self) -> None:
-        """Initializes the shared ETA column for sweep progress."""
+    def __init__(self, eta_seconds_getter: Callable[[], float | None]) -> None:
+        """Initializes the shared trajectory-average ETA column."""
 
-        if TimeRemainingColumn is None or Text is None:
+        if Text is None:
             raise RuntimeError("rich progress support is unavailable")
         super().__init__()
-        self._delegate = TimeRemainingColumn()
+        self._eta_seconds_getter = eta_seconds_getter
 
     def render(self, task: Any) -> Any:
         """Renders ETA for the overall row and blanks for worker rows."""
 
         if not getattr(task, "fields", {}).get("show_eta", False):
             return Text("")
-        return self._delegate.render(task)
+        eta_seconds = self._eta_seconds_getter()
+        if eta_seconds is None:
+            return Text("--:--:--")
+        rounded_seconds = 0 if eta_seconds <= 0 else math.ceil(eta_seconds)
+        hours, remainder = divmod(rounded_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        return Text(f"{hours}:{minutes:02d}:{seconds:02d}")
+
+
+class SweepAverageTrajectoryTimeColumn(ProgressColumn):
+    """Shows average trajectory duration only for the overall runs row."""
+
+    def __init__(
+        self,
+        average_seconds_getter: Callable[[], float | None],
+    ) -> None:
+        """Initializes the shared average-duration column."""
+
+        if Text is None:
+            raise RuntimeError("rich progress support is unavailable")
+        super().__init__()
+        self._average_seconds_getter = average_seconds_getter
+
+    def render(self, task: Any) -> Any:
+        """Renders average trajectory time for the overall row."""
+
+        if not getattr(task, "fields", {}).get("show_eta", False):
+            return Text("")
+        average_seconds = self._average_seconds_getter()
+        if average_seconds is None:
+            return Text("avg --:--:--")
+        rounded_seconds = 0 if average_seconds <= 0 else math.ceil(average_seconds)
+        hours, remainder = divmod(rounded_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        return Text(f"avg {hours}:{minutes:02d}:{seconds:02d}")
+
+
+class SweepTrajectoryRateColumn(ProgressColumn):
+    """Shows completed trajectory throughput only for the overall runs row."""
+
+    def __init__(self, rate_getter: Callable[[], float | None]) -> None:
+        """Initializes the shared trajectory-throughput column."""
+
+        if Text is None:
+            raise RuntimeError("rich progress support is unavailable")
+        super().__init__()
+        self._rate_getter = rate_getter
+
+    def render(self, task: Any) -> Any:
+        """Renders trajectory throughput for the overall row."""
+
+        if not getattr(task, "fields", {}).get("show_eta", False):
+            return Text("")
+        rate = self._rate_getter()
+        if rate is None:
+            return Text("tpm --.-")
+        return Text(f"tpm {rate:.1f}")
 
 
 class SweepRichProgressDisplay:
@@ -449,7 +502,15 @@ class SweepRichProgressDisplay:
             raise RuntimeError("rich progress support is unavailable")
         # The scheduler still tracks worker slots internally, but the terminal
         # now renders only the overall runs bar.
-        _ = worker_count
+        self._worker_count = worker_count
+        self._total_runs = total_runs
+        self._total_trajectories: int | None = None
+        self._completed_trajectories = 0
+        self._timed_completed_trajectories = 0
+        self._completed_trajectory_seconds = 0.0
+        self._first_trajectory_started_at: float | None = None
+        self._active_trajectory_starts: dict[int, float] = {}
+        self._eta_lock = threading.Lock()
 
         self.console = Console(stderr=True)
         self._progress = RichProgress(
@@ -458,7 +519,9 @@ class SweepRichProgressDisplay:
             TaskProgressColumn(),
             MofNCompleteColumn(),
             StaticQueuedTimeElapsedColumn(),
-            SweepOverallEtaColumn(),
+            SweepOverallEtaColumn(self._estimate_remaining_seconds),
+            SweepAverageTrajectoryTimeColumn(self._average_trajectory_seconds),
+            SweepTrajectoryRateColumn(self._trajectories_per_minute),
             TextColumn("[dim]{task.fields[status]}"),
             console=self.console,
             transient=False,
@@ -488,7 +551,16 @@ class SweepRichProgressDisplay:
     ) -> None:
         """Keeps compatibility with the sweep scheduler's worker-slot hooks."""
 
-        del worker_slot, task_name, traj_idx, total_runs
+        del task_name, traj_idx
+        with self._eta_lock:
+            if total_runs > 0:
+                started_at = time.monotonic()
+                if self._total_trajectories is None:
+                    self._total_trajectories = max(self._total_runs // total_runs, 1)
+                if self._first_trajectory_started_at is None:
+                    self._first_trajectory_started_at = started_at
+                self._active_trajectory_starts[worker_slot] = started_at
+        self._progress.refresh()
 
     def record_run_completion(
         self,
@@ -510,9 +582,26 @@ class SweepRichProgressDisplay:
     ) -> None:
         """Backfills the overall bar if a worker exits without progress events."""
 
-        del worker_slot, error_count
+        del error_count
         if missing_runs > 0:
             self.overall_progress.update(missing_runs)
+        with self._eta_lock:
+            started_at = self._active_trajectory_starts.pop(worker_slot, None)
+            total_trajectories = self._total_trajectories
+            if total_trajectories is None:
+                self._completed_trajectories += 1
+            else:
+                self._completed_trajectories = min(
+                    self._completed_trajectories + 1,
+                    total_trajectories,
+                )
+            if started_at is not None:
+                self._completed_trajectory_seconds += max(
+                    time.monotonic() - started_at,
+                    0.0,
+                )
+                self._timed_completed_trajectories += 1
+        self._progress.refresh()
 
     def write_log_line(self, log_line: str) -> None:
         """Prints one log line without corrupting the active Rich display."""
@@ -523,6 +612,71 @@ class SweepRichProgressDisplay:
         """Stops the Rich progress display."""
 
         self._progress.stop()
+
+    def _estimate_remaining_seconds(self) -> float | None:
+        """Estimate completion time from the average completed trajectory."""
+
+        with self._eta_lock:
+            total_trajectories = self._total_trajectories
+            completed_trajectories = self._completed_trajectories
+            timed_completed_trajectories = self._timed_completed_trajectories
+            completed_trajectory_seconds = self._completed_trajectory_seconds
+            active_starts = list(self._active_trajectory_starts.values())
+
+        if total_trajectories is None or timed_completed_trajectories <= 0:
+            return None
+        if completed_trajectories >= total_trajectories and not active_starts:
+            return 0.0
+
+        average_trajectory_seconds = (
+            completed_trajectory_seconds / timed_completed_trajectories
+        )
+        now = time.monotonic()
+        worker_finish_times = [
+            max(average_trajectory_seconds - max(now - started_at, 0.0), 0.0)
+            for started_at in active_starts
+        ]
+        worker_finish_times.extend(
+            [0.0] * max(self._worker_count - len(worker_finish_times), 0)
+        )
+        if not worker_finish_times:
+            worker_finish_times = [0.0]
+
+        remaining_queued_trajectories = max(
+            total_trajectories - completed_trajectories - len(active_starts),
+            0,
+        )
+        for _ in range(remaining_queued_trajectories):
+            next_worker_index = min(
+                range(len(worker_finish_times)),
+                key=worker_finish_times.__getitem__,
+            )
+            worker_finish_times[next_worker_index] += average_trajectory_seconds
+        return max(worker_finish_times)
+
+    def _average_trajectory_seconds(self) -> float | None:
+        """Return the mean duration for completed trajectories."""
+
+        with self._eta_lock:
+            if self._timed_completed_trajectories <= 0:
+                return None
+            return (
+                self._completed_trajectory_seconds / self._timed_completed_trajectories
+            )
+
+    def _trajectories_per_minute(self) -> float | None:
+        """Return the completed-trajectory throughput per minute."""
+
+        with self._eta_lock:
+            completed_trajectories = self._completed_trajectories
+            first_trajectory_started_at = self._first_trajectory_started_at
+
+        if completed_trajectories <= 0 or first_trajectory_started_at is None:
+            return None
+        elapsed_seconds = max(time.monotonic() - first_trajectory_started_at, 0.0)
+        if elapsed_seconds <= 0:
+            return None
+        return completed_trajectories / (elapsed_seconds / 60.0)
 
 
 def _create_sweep_progress_display(
@@ -1761,7 +1915,8 @@ def build_dataset_card(
         ).strip()
         notes_tail = "- This layout is self-contained under `load_dataset()`, but nested sequence columns are less friendly for the HF table viewer."
     task_list = ", ".join(tasks) if tasks else "Unknown"
-    return textwrap.dedent(f"""\
+    return textwrap.dedent(
+        f"""\
         ---
         pretty_name: RoboCasa Trajectories Single
         configs:
