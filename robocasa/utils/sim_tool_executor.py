@@ -136,6 +136,10 @@ class SimToolExecutor:
         robot_spawn: str = "trajectory",
         full_scene_view: bool = True,
         robot_colors: Sequence[Sequence[float]] | None = None,
+        update_fxtr_cfg_dict: dict[str, dict[str, Any]] | None = None,
+        trajectory_object_names: list[str] | tuple[str, ...] | None = None,
+        trajectory_object_types: list[str] | tuple[str, ...] | None = None,
+        trajectory_object_specs: dict | list | None = None,
     ):
         os.environ["MUJOCO_GL"] = gl_backend
         self.runner = TrajectoryRunner(
@@ -156,6 +160,10 @@ class SimToolExecutor:
             robot_radius=robot_radius,
             full_scene_view=full_scene_view,
             robot_colors=robot_colors,
+            update_fxtr_cfg_dict=update_fxtr_cfg_dict,
+            trajectory_object_names=trajectory_object_names,
+            trajectory_object_types=trajectory_object_types,
+            trajectory_object_specs=trajectory_object_specs,
         )
         self.env = self.runner.env
         self._held_objects: dict[int, str] = {}
@@ -342,13 +350,37 @@ class SimToolExecutor:
 
         self._held_objects.clear()
 
-        # Skip fixture part states (open/close) from the trajectory's
-        # initial_state.  The sim's _setup_scene already set the correct
-        # fixture states (e.g. opening the cabinet so the mug is accessible).
-        # The trajectory's initial_state reflects the LLM planner's
-        # assumptions, which may conflict with the sim (e.g. closing a
-        # cabinet that must start open).  The trajectory's own steps will
-        # open/close fixtures as needed.
+        # Apply fixture part states from the trajectory's initial_state.
+        # The sim's _setup_scene may have opened fixtures during object
+        # placement (e.g. opening a cabinet to place a mug inside).  The
+        # trajectory expects specific initial states (e.g. cabinet closed),
+        # so we enforce them here.  The trajectory's own steps will
+        # open/close fixtures as needed during execution.
+        for fixture_id, fixture_cfg in fixtures.items():
+            fixture = self.runner._fixtures.get(fixture_id)
+            if fixture is None:
+                continue
+            for part_id, part_cfg in fixture_cfg.get("parts", {}).items():
+                desired_state = part_cfg.get("state")
+                if desired_state == "closed":
+                    if part_id == "hinged" and hasattr(fixture, "close_door"):
+                        fixture.close_door(env=self.env)
+                    else:
+                        try:
+                            joint_name = self._resolve_joint_name(fixture, part_id)
+                            self._set_named_joint(fixture, joint_name, 0.0)
+                        except ValueError:
+                            pass
+                elif desired_state == "open":
+                    if part_id == "hinged" and hasattr(fixture, "open_door"):
+                        fixture.open_door(env=self.env)
+                    else:
+                        try:
+                            joint_name = self._resolve_joint_name(fixture, part_id)
+                            self._set_named_joint(fixture, joint_name, 1.0)
+                        except ValueError:
+                            pass
+        self.env.sim.forward()
 
         for fixture_id, machine_cfg in machine_state.items():
             if "started" in machine_cfg:
@@ -370,21 +402,105 @@ class SimToolExecutor:
         scene = self.get_scene_description()
         sim_object_placements = scene.get("object_placements", {})
 
+        # First pass: place objects whose location is a fixture.
         for object_id, object_state in objects.items():
             if object_id in held_object_ids:
                 continue
             location = object_state.get("location")
-            if isinstance(location, str):
-                # Location is another object (e.g. slices inside a bowl) —
-                # the sim already placed them correctly, skip.
-                if location in objects:
-                    continue
+            if isinstance(location, str) and location not in objects:
                 # Skip if the sim already placed this object at the target
                 # fixture — re-placing would resample the position and may
                 # put the object somewhere unexpected (e.g. wrong shelf).
                 if sim_object_placements.get(object_id) == location:
                     continue
                 self.runner.move_object(object_id, location)
+
+        # --- Overlap repair pass ---
+        # Fix objects that the sim placed at near-identical positions on the
+        # same fixture (e.g. sausage + cheese both on the same fridge shelf).
+        # Only targets coincident placements (XY < 3cm), NOT objects that are
+        # merely close together on a counter (which is normal).
+        _COINCIDENT_THRESHOLD = 0.03  # 3cm — catches sim duplicate placement
+        fixture_to_objects: dict[str, list[str]] = {}
+        for object_id, object_state in objects.items():
+            if object_id in held_object_ids:
+                continue
+            location = object_state.get("location")
+            if isinstance(location, str) and location not in objects:
+                fixture_to_objects.setdefault(location, []).append(object_id)
+
+        for fixture_id, obj_ids in fixture_to_objects.items():
+            if len(obj_ids) < 2:
+                continue
+            poses = {}
+            for oid in obj_ids:
+                try:
+                    pos, _ = self._get_object_pose(oid)
+                    obj = self.env.objects[oid]
+                    radius = getattr(obj, "horizontal_radius", 0.05)
+                    poses[oid] = (pos, radius)
+                except Exception:
+                    continue
+            # Sort smallest-first so we move the smaller object.
+            sorted_ids = sorted(poses.keys(), key=lambda o: poses[o][1])
+            for i in range(len(sorted_ids)):
+                for j in range(i + 1, len(sorted_ids)):
+                    id_a, id_b = sorted_ids[i], sorted_ids[j]
+                    pos_a, rad_a = poses[id_a]
+                    pos_b, rad_b = poses[id_b]
+                    xy_dist = float(np.linalg.norm(pos_a[:2] - pos_b[:2]))
+                    if xy_dist >= _COINCIDENT_THRESHOLD:
+                        continue
+                    # Objects are at near-identical positions.  Nudge the
+                    # smaller one laterally (along the fixture's local X
+                    # axis) by enough to clear both radii.
+                    min_clearance = rad_a + rad_b + 0.005
+                    fixture = self.runner._fixtures.get(fixture_id)
+                    if fixture is not None and hasattr(fixture, "rot") and fixture.rot is not None:
+                        angle = float(fixture.rot)
+                        lateral = np.array([np.cos(angle), np.sin(angle)])
+                    else:
+                        lateral = np.array([1.0, 0.0])
+                    # Try positive lateral direction first, then negative.
+                    # Validate the nudged position is still on the fixture.
+                    placed = False
+                    for sign in (1.0, -1.0):
+                        candidate = pos_a.copy()
+                        candidate[:2] += lateral * min_clearance * sign
+                        if self.runner._validate_object_on_fixture(
+                            candidate, fixture_id
+                        ):
+                            self._set_object_pose(id_a, candidate)
+                            poses[id_a] = (candidate, rad_a)
+                            placed = True
+                            break
+                    if not placed:
+                        # Neither direction is on-fixture; nudge anyway
+                        # (less bad than coincident placement).
+                        fallback = pos_a.copy()
+                        fallback[:2] += lateral * min_clearance
+                        self._set_object_pose(id_a, fallback)
+                        poses[id_a] = (fallback, rad_a)
+
+        # --- Object-in-object placement ---
+        # Place objects whose location is another object (e.g. slices inside
+        # a bowl).  Runs AFTER the overlap repair so containers are at their
+        # final positions and items won't be accidentally dragged by sibling
+        # objects during nudging.
+        for object_id, object_state in objects.items():
+            if object_id in held_object_ids:
+                continue
+            location = object_state.get("location")
+            if isinstance(location, str) and location in objects:
+                try:
+                    container_pos, _ = self._get_object_pose(location)
+                    self._set_object_pose(object_id, container_pos)
+                except Exception as exc:
+                    if _sim_tool_debug_enabled():
+                        print(
+                            f"[load_initial_state] Could not place {object_id} "
+                            f"inside {location}: {exc}"
+                        )
 
         if self._robot_spawn == "trajectory":
             # Navigate each robot to the trajectory's stated initial location.
@@ -640,9 +756,72 @@ class SimToolExecutor:
         )
         obj_bottom_z = min(point[2] for point in obj_points_at_origin)
 
+        # Detect concave containers (bowls) vs flat supports (cutting boards).
+        xs = [p[0] for p in support_points]
+        ys = [p[1] for p in support_points]
+        zs = [p[2] for p in support_points]
+        extent_x = max(xs) - min(xs)
+        extent_y = max(ys) - min(ys)
+        extent_z = max(zs) - min(zs)
+        max_xy = max(extent_x, extent_y)
+        # Bowls have height ≥ 30% of their width; flat supports (cutting
+        # boards, plates) have height << width.
+        is_concave = max_xy > 0 and (extent_z / max_xy) >= 0.3
+
         target_pos = support_pos.copy()
-        target_pos[2] = support_top_z - obj_bottom_z + 0.01
+        if is_concave:
+            # Place inside the bowl at its center Z, not on the rim.
+            target_pos[2] = support_pos[2] - obj_bottom_z
+        else:
+            # Place on top of flat support.
+            target_pos[2] = support_top_z - obj_bottom_z + 0.01
+
+        existing_on_support = self._find_objects_on_support(
+            support_object_id, exclude={object_id}
+        )
+        if existing_on_support and not is_concave:
+            # Choose the longer axis for spreading
+            if extent_x >= extent_y:
+                axis = np.array([1.0, 0.0])
+                usable_half = extent_x * 0.35  # stay within 70% of extent
+            else:
+                axis = np.array([0.0, 1.0])
+                usable_half = extent_y * 0.35
+            # Distribute evenly: n existing + 1 new = n+1 slots
+            n_total = len(existing_on_support) + 1
+            slot_idx = len(existing_on_support)  # new object gets the next slot
+            # Spread from -usable_half to +usable_half
+            if n_total == 1:
+                offset_dist = 0.0
+            else:
+                offset_dist = -usable_half + (2 * usable_half) * slot_idx / (n_total - 1)
+            target_pos[:2] += axis * offset_dist
+
         self._set_object_pose(object_id, target_pos, obj_quat_wxyz)
+
+    def _find_objects_on_support(
+        self, support_object_id: str, exclude: set[str] | None = None,
+    ) -> list[str]:
+        """Find objects currently resting on a support object."""
+        exclude = exclude or set()
+        support_body_id = self.env.obj_body_id[support_object_id]
+        support_pos = self.env.sim.data.body_xpos[support_body_id].copy()
+        support_obj = self.env.objects[support_object_id]
+        support_radius = getattr(support_obj, "horizontal_radius", 0.10)
+        result = []
+        for other_id in self.env.objects:
+            if other_id == support_object_id or other_id in exclude:
+                continue
+            other_obj = self.env.objects[other_id]
+            other_radius = getattr(other_obj, "horizontal_radius", 0.10)
+            if other_radius > support_radius:
+                continue
+            other_pos, _ = self._get_object_pose(other_id)
+            xy_dist = float(np.linalg.norm(other_pos[:2] - support_pos[:2]))
+            z_diff = other_pos[2] - support_pos[2]
+            if xy_dist < support_radius * 1.2 and 0.0 <= z_diff < 0.15:
+                result.append(other_id)
+        return result
 
     def _set_named_joint(self, fixture, joint_name: str, value: float):
         fixture.set_joint_state(
@@ -705,6 +884,22 @@ class SimToolExecutor:
     # ------------------------------------------------------------------
     # Spatial relation helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _get_dispenser_site_name(fixture) -> str | None:
+        """Return the MuJoCo site name for a fixture's dispenser output, or None.
+
+        This is the single place to register dispenser-type fixtures so that
+        ``place_under`` can handle them uniformly.  To add a new dispenser,
+        add an ``elif`` branch here.
+        """
+        if isinstance(fixture, CoffeeMachine):
+            return f"{fixture.naming_prefix}receptacle_place_site"
+        if isinstance(fixture, Sink) and hasattr(fixture, "water_site"):
+            site_elem = fixture.water_site
+            if site_elem is not None:
+                return site_elem.get("name")
+        return None
 
     def _find_placeable_surface_near_fixture(self, reference_fixture_id: str) -> str:
         """Find the nearest placeable surface to a reference fixture.
@@ -1557,6 +1752,7 @@ class SimToolExecutor:
                 self._sync_held_object(robot_idx)
         if part_id == "hinged" and hasattr(fixture, "open_door"):
             fixture.open_door(env=self.env)
+            self.env.sim.forward()
         else:
             joint_name = self._resolve_joint_name(fixture, part_id)
             self._set_named_joint(fixture, joint_name, 1.0)
@@ -1581,6 +1777,7 @@ class SimToolExecutor:
                 self._sync_held_object(robot_idx)
         if part_id == "hinged" and hasattr(fixture, "close_door"):
             fixture.close_door(env=self.env)
+            self.env.sim.forward()
         else:
             joint_name = self._resolve_joint_name(fixture, part_id)
             self._set_named_joint(fixture, joint_name, 0.0)
@@ -1984,22 +2181,21 @@ class SimToolExecutor:
 
         self.runner._move_robot_near_fixture(robot_idx, reference_fixture_id)
 
-        if isinstance(fixture, CoffeeMachine):
-            site_name = f"{fixture.naming_prefix}receptacle_place_site"
-            site_id = self.env.sim.model.site_name2id(site_name)
-            target_pos = self.env.sim.data.site_xpos[site_id].copy()
-            contained = self._find_contained_objects(object_id)
-            self._set_object_pose(object_id, target_pos)
-            support_fixture_id = self._find_placeable_surface_near_fixture(
-                reference_fixture_id
-            )
-            self.runner._set_object_location(object_id, support_fixture_id)
-            for child_id in contained:
-                self.runner._set_object_location(child_id, support_fixture_id)
-        elif isinstance(fixture, Sink):
-            water_site_name = fixture.water_site.get("name")
-            site_id = self.env.sim.model.site_name2id(water_site_name)
-            target_pos = self.env.sim.data.site_xpos[site_id].copy()
+        # Resolve dispenser site for fixtures that have one.
+        dispenser_site_name = self._get_dispenser_site_name(fixture)
+
+        if dispenser_site_name is not None:
+            site_id = self.env.sim.model.site_name2id(dispenser_site_name)
+            site_pos = self.env.sim.data.site_xpos[site_id].copy()
+
+            # Place object so its bottom rests at the dispenser spout Z.
+            # This positions it inside the fixture (drip tray / basin)
+            # rather than floating with its center at spout height.
+            obj = self._require_object(object_id)
+            bottom_z_offset = obj.bottom_offset[-1]  # negative when below origin
+            target_pos = site_pos.copy()
+            target_pos[2] -= bottom_z_offset  # lifts bottom up to spout Z
+
             contained = self._find_contained_objects(object_id)
             self._set_object_pose(object_id, target_pos)
             support_fixture_id = self._find_placeable_surface_near_fixture(

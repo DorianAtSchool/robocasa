@@ -22,6 +22,7 @@ OBSERVATION_TOOL_NAMES = frozenset(
 GIVE_SPACE_TOOL_NAMES = frozenset({"give_space"})
 OPEN_PART_TOOL_NAMES = frozenset({"open_hinged_part", "open_sliding_part"})
 CLOSE_PART_TOOL_NAMES = frozenset({"close_hinged_part", "close_sliding_part"})
+INTERACTION_TOOL_NAMES = frozenset({"press_button"})
 PLACE_LOCATION_ARG_NAMES = (
     "support_id",
     "receptacle_id",

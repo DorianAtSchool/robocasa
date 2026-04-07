@@ -377,6 +377,10 @@ class TrajectoryRunner:
         robot_radius: float = 0.18,
         full_scene_view: bool = False,
         robot_colors: Sequence[Sequence[float]] | None = DEFAULT_MULTI_ROBOT_COLORS,
+        update_fxtr_cfg_dict: dict | None = None,
+        trajectory_object_names: list[str] | tuple[str, ...] | None = None,
+        trajectory_object_types: list[str] | tuple[str, ...] | None = None,
+        trajectory_object_specs: dict | list | None = None,
     ):
         os.environ.setdefault("MUJOCO_GL", gl_backend)
 
@@ -399,6 +403,14 @@ class TrajectoryRunner:
             env_kwargs["style_ids"] = [style]
         if seed is not None:
             env_kwargs["seed"] = seed
+        if update_fxtr_cfg_dict is not None:
+            env_kwargs["update_fxtr_cfg_dict"] = update_fxtr_cfg_dict
+        if trajectory_object_names is not None:
+            env_kwargs["trajectory_object_names"] = trajectory_object_names
+        if trajectory_object_types is not None:
+            env_kwargs["trajectory_object_types"] = trajectory_object_types
+        if trajectory_object_specs is not None:
+            env_kwargs["trajectory_object_specs"] = trajectory_object_specs
 
         self.env = make(**env_kwargs)
         # Wrap env to make enclosing walls translucent (required for room_view
@@ -1750,6 +1762,12 @@ class TrajectoryRunner:
         object_size = np.asarray(metadata["size"], dtype=float)
         min_size = object_size + 2.0 * _OBJECT_PLACEMENT_MARGIN
         xy_radius = float(metadata["xy_radius"])
+
+        # Compute the Z lift so the object's bottom rests on the surface,
+        # matching native placement_samplers.py behaviour.
+        obj = self.env.objects[object_id]
+        z_lift = -obj.bottom_offset[-1]  # positive when bottom is below origin
+
         preferred_local = None
         if preferred_xy is not None:
             preferred_local = self._world_to_fixture_local(target_fxtr, preferred_xy)
@@ -1802,7 +1820,7 @@ class TrajectoryRunner:
                     continue
                 seen.add(key)
                 world = self._fixture_local_to_world(target_fxtr, local)
-                world[2] += 0.02
+                world[2] += z_lift
                 candidates.append(world)
 
         if candidates:
@@ -1812,7 +1830,7 @@ class TrajectoryRunner:
             target_fxtr,
             np.array([0.0, 0.0, 0.0], dtype=float),
         )
-        fallback[2] += 0.02
+        fallback[2] += z_lift
         return [fallback]
 
     def _build_object_collision_context(

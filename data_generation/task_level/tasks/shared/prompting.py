@@ -10,6 +10,7 @@ from .constants import (
     ACQUIRE_TOOL_NAMES,
     CLOSE_PART_TOOL_NAMES,
     GIVE_SPACE_TOOL_NAMES,
+    INTERACTION_TOOL_NAMES,
     OPEN_PART_TOOL_NAMES,
     RELEASE_TOOL_NAMES,
 )
@@ -84,6 +85,16 @@ def _build_fsm_prompt_rules(
     if allowed_tool_names & GIVE_SPACE_TOOL_NAMES:
         prompt_rules.append(
             "Use give_space only at the fixture where that agent is already positioned, after the agents communicate that another agent is about to navigate there, so the yielding agent clears the space before the other agent arrives."
+        )
+        prompt_rules.append(
+            "After an agent executes give_space, that agent is no longer at the fixture. "
+            "Before that agent can interact there again (pick up, place, open, close, or press_button), "
+            "it must navigate_to_fixture first. Similarly, the arriving agent must give_space in turn "
+            "before the original agent can navigate back."
+        )
+    if allowed_tool_names & INTERACTION_TOOL_NAMES:
+        prompt_rules.append(
+            "Interaction tools (press_button) require the agent to be at the target fixture. Navigate to the fixture first."
         )
     # Keep later references aligned with prior FSM effects.
     prompt_rules.append(

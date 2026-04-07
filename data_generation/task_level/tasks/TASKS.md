@@ -1,66 +1,87 @@
 # Next Task Candidates
 
-This file tracks the next RoboCasa composite tasks that look like good fits for
-the task-level symbolic generation stack after `HotDogSetup`,
-`PrepareCoffee`, and `PrepareSandwichStation`.
+This file tracks RoboCasa composite tasks that are good fits for the current
+task-level symbolic generation stack.
 
-## Recommended 7
+## Active Safe Tasks
 
-### 1. PrepareSausageCheese
-Source: `robocasa/environments/kitchen/composite/preparing_sandwiches/prepare_sausage_cheese.py`
+These are already implemented as active spec-native tasks because their object
+semantics line up well enough with the current validator and grounding model:
 
-Why it is a good fit:
-- Two-agent split is natural: one agent can fetch sausage while the other fetches cheese.
-- Goal semantics are simple: both items end up on the cutting board.
-- Very close in structure to the existing sandwich tasks.
+- `HotDogSetup`
+- `PrepareCoffee`
+- `PrepareSandwichStation`
+- `PrepareSausageCheese`
+- `PrepareCheeseStation`
 
-### 2. PrepareCheeseStation
-Source: `robocasa/environments/kitchen/composite/making_salads/prepare_cheese_station.py`
+## Recommended Next Safe Tasks
 
-Why it is a good fit:
-- Cross-fixture coordination: cheese from fridge, grater from cabinet.
-- Final placement is easy to state symbolically: stage both near the bowl.
-- Good communication potential without requiring new control primitives.
+These look like the best next additions if we want to preserve the same
+semantic-to-sim guarantees as the current active set.
 
-### 3. GatherMarinadeIngredients
-Source: `robocasa/environments/kitchen/composite/preparing_marinade/gather_marinade_ingredients.py`
+### 1. AddLemonToFish
+Source: `robocasa/environments/kitchen/composite/garnishing_dishes/add_lemon_to_fish.py`
 
 Why it is a good fit:
-- Strongest coordination profile of the current shortlist.
-- One agent can handle cabinet items while the other handles garlic from the fridge.
-- Mix of `place_in_receptacle` and `place_next_to` style goals.
+- Uses concrete semantic object names: `lemon_wedge`, `fish`.
+- The goal is simple: move the lemon wedge from the fridge onto the fish plate.
+- Good fridge-to-table transfer task without sampled category slots.
 
-### 4. SetUpSpiceStation
-Source: `robocasa/environments/kitchen/composite/seasoning_food/setup_spice_station.py`
-
-Why it is a good fit:
-- Three movable items makes the task nontrivial for two agents.
-- Staging items near the stove aligns well with the existing symbolic abstractions.
-- Minimal need for new simulator controls or task-local machinery.
-
-### 5. OrganizeCondiments
-Source: `robocasa/environments/kitchen/composite/arranging_condiments/organize_condiments.py`
+### 2. GarnishCupcake
+Source: `robocasa/environments/kitchen/composite/garnishing_dishes/garnish_cupcake.py`
 
 Why it is a good fit:
-- Good two-agent division of labor over three target condiments.
-- Includes a distractor, which raises the semantic bar.
-- Cabinet placement is already represented in the task-level tool vocabulary.
+- Uses concrete semantic names: `cinnamon`, `chocolate`, `cupcake`.
+- Two-agent split is natural: one agent can stage cinnamon while the other places chocolate on the plate.
+- Very close to the existing `place_next_to` + `place_on_object` task pattern.
 
-### 6. SetupFruitBowl
-Source: `robocasa/environments/kitchen/composite/setting_the_table/setup_fruit_bowl.py`
-
-Why it is a good fit:
-- Simple cooperative split: one fruit per agent.
-- Bowl placement semantics are already familiar to the symbolic validator.
-- Good candidate for early scaling because it is easy to test.
-
-### 7. OrganizeCoffeeCondiments
-Source: `robocasa/environments/kitchen/composite/brewing/organize_coffee_condiments.py`
+### 3. PrepareBroilingStation
+Source: `robocasa/environments/kitchen/composite/broiling_fish/prepare_broiling_station.py`
 
 Why it is a good fit:
-- Thematically close to `PrepareCoffee`.
-- Good cross-fixture staging task without requiring cooking state.
-- Easy prompt story: retrieve items from cabinet and stage them near the mug.
+- Uses fixed semantic names: `tongs`, `plate`, `oven`.
+- Goal is simple staging near a known anchor fixture.
+- Good oven-side placement task without sampled object categories.
+
+### 4. PrepareDrinkStation
+Source: `robocasa/environments/kitchen/composite/serving_beverages/prepare_drink_station.py`
+
+Why it is a good fit:
+- Uses fixed semantic object names: `tray`, `cup`, `mug`, `pitcher`.
+- Strong two-agent coordination: tray loading plus pitcher staging.
+- Fits the current symbolic patterns if modeled as `place_on_object` for tray items and `place_next_to` for pitcher.
+
+### 5. SetBowlsForSoup
+Source: `robocasa/environments/kitchen/composite/setting_the_table/set_bowls_for_soup.py`
+
+Why it is a good fit:
+- Uses fixed semantic names: `bowl1`, `bowl2`, `plate1`, `plate2`.
+- Strong coordination signal with one bowl per agent.
+- Harder than the current active tasks, but the semantics are still cleaner than sampled-category tasks.
+
+### 6. SeasoningSteak
+Source: `robocasa/environments/kitchen/composite/seasoning_food/seasoning_steak.py`
+
+Why it is a good fit:
+- Uses fixed semantic names: `shaker`, `steak`.
+- Cabinet-to-table staging task with straightforward door semantics.
+- The placement is somewhat geometric, but still much more semantically stable than sampled-slot tasks.
+
+## Deferred Due To Scene-Matching Mismatch
+
+These tasks were drafted as specs, but moved out of the active registry because
+their semantic object meanings do not currently line up cleanly with the sim's
+slot-style object IDs.
+
+See:
+- `data_generation/task_level/tasks/specs/deferred_scene_matching/README.md`
+
+Deferred tasks:
+- `GatherMarinadeIngredients`
+- `SetUpSpiceStation`
+- `OrganizeCondiments`
+- `SetupFruitBowl`
+- `OrganizeCoffeeCondiments`
 
 ## Coordination-Heavy But Harder
 

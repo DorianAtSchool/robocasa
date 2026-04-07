@@ -4,6 +4,7 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
+from unittest.mock import MagicMock
 
 import numpy as np
 
@@ -290,6 +291,7 @@ class TestSimToolExecutorLoadInitialState(unittest.TestCase):
         executor._held_objects = {}
         executor.runner = SimpleNamespace(
             _fixtures={"counter_main": object(), "cab_main": object()},
+            get_scene_description=lambda: {"object_placements": {}},
             move_object=lambda object_id, location: move_calls.append(
                 (object_id, location)
             ),
@@ -301,6 +303,11 @@ class TestSimToolExecutorLoadInitialState(unittest.TestCase):
         executor.close_hinged_part = lambda target_id, part_id: None
         executor.open_sliding_part = lambda target_id, part_id: None
         executor.close_sliding_part = lambda target_id, part_id: None
+        executor.env = SimpleNamespace(
+            sim=SimpleNamespace(),
+            objects={},
+            obj_body_id={},
+        )
         executor._set_fixture_machine_state = (
             lambda fixture_id, started: machine_calls.append((fixture_id, started))
         )
@@ -338,6 +345,65 @@ class TestSimToolExecutorLoadInitialState(unittest.TestCase):
         self.assertEqual(synced, [0])
         self.assertEqual(location_updates, [("mug_main", "counter_main")])
         self.assertTrue(summary["loaded"])
+
+    def test_load_initial_state_applies_fixture_part_states(self):
+        opened = []
+        closed = []
+
+        executor = SimToolExecutor.__new__(SimToolExecutor)
+        executor._held_objects = {}
+        executor.runner = SimpleNamespace(
+            _fixtures={"fridge_main": object(), "cab_main": object()},
+            get_scene_description=lambda: {"object_placements": {}},
+            move_object=lambda object_id, location, preferred_xy=None: None,
+            _set_object_location=lambda object_id, fixture_id: None,
+        )
+        executor.env = SimpleNamespace(
+            sim=SimpleNamespace(forward=lambda: None),
+            objects={},
+            obj_body_id={},
+        )
+        executor._parse_agent_idx = lambda agent_id: 0
+        executor._set_fixture_machine_state = lambda fixture_id, started: None
+        executor._sync_held_object = lambda robot_idx: None
+        executor._require_object = lambda object_id: object_id
+        executor._set_fixture_part_state = lambda fixture_id, part_id, state: (
+            opened.append((fixture_id, part_id, state))
+            if state == "open"
+            else closed.append((fixture_id, part_id, state))
+        )
+
+        executor.load_initial_state(
+            {
+                "agents": {},
+                "objects": {},
+                "fixtures": {
+                    "fridge_main": {"parts": {"hinged": {"state": "closed"}}},
+                    "cab_main": {"parts": {"hinged": {"state": "open"}}},
+                },
+                "machine_state": {},
+            }
+        )
+
+        self.assertEqual(opened, [("cab_main", "hinged", "open")])
+        self.assertEqual(closed, [("fridge_main", "hinged", "closed")])
+
+
+class TestSimToolExecutorFixtureStateSync(unittest.TestCase):
+    def test_open_hinged_part_forwards_sim_state(self):
+        fixture = SimpleNamespace(open_door=MagicMock())
+        executor = SimToolExecutor.__new__(SimToolExecutor)
+        executor.runner = SimpleNamespace(_fixtures={"fridge_main": fixture})
+        executor.env = SimpleNamespace(sim=SimpleNamespace(forward=MagicMock()))
+        executor._robot_near_fixture = lambda robot_idx, fixture_id: True
+        executor._move_robot_near_fixture_with_retries = MagicMock()
+        executor._sync_held_object = MagicMock()
+
+        result = executor.open_hinged_part("fridge_main", "hinged", robot_idx=0)
+
+        fixture.open_door.assert_called_once_with(env=executor.env)
+        executor.env.sim.forward.assert_called_once_with()
+        self.assertTrue(result.success)
 
 
 if __name__ == "__main__":
