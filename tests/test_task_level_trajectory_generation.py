@@ -38,8 +38,6 @@ from data_generation.task_level.tasks.base import (
 )
 from data_generation.task_level.tasks import (
     HeldObjectSemanticValidationError,
-    HOT_DOG_SETUP_TASK,
-    HotDogSetupValidator,
     InsufficientValidUniqueTrajectoriesDuplicateError,
     InsufficientValidUniqueTrajectoriesInvalidError,
     InsufficientValidUniqueTrajectoriesMixedError,
@@ -47,31 +45,16 @@ from data_generation.task_level.tasks import (
     NavigationSemanticValidationError,
     ObservationSequenceSemanticValidationError,
     DuplicateTrajectoryValidationError,
-    PREPARE_COFFEE_TASK,
-    PREPARE_SANDWICH_STATION_TASK,
-    PrepareSandwichStationValidator,
     ResponseFormatValidationError,
     TaskSemanticValidationError,
     TaskPreconditionSemanticValidationError,
     TrajectoryStructureValidationError,
     TrajectoryValidationError,
     ToolArgumentSemanticValidationError,
+    get_task_definition,
     supported_task_names,
 )
-from data_generation.task_level.tasks.hot_dog_setup import (
-    HOT_DOG_SETUP_INITIAL_STATE,
-)
-from data_generation.task_level.tasks.prepare_coffee import (
-    PREPARE_COFFEE_ALLOWED_TOOL_SPECS,
-    PREPARE_COFFEE_NON_COMMUNICATE_TOOL_NAMES,
-    PREPARE_COFFEE_INITIAL_STATE,
-    PrepareCoffeeValidator,
-    build_prepare_coffee_prompt,
-)
-from data_generation.task_level.tasks.prepare_sandwich_station import (
-    PREPARE_SANDWICH_STATION_INITIAL_STATE,
-    build_prepare_sandwich_station_prompt,
-)
+from data_generation.task_level.tasks.specs import load_task_spec
 from data_generation.task_level.subatomic_tool_calls import discover_subatomic_tools
 from data_generation.task_level.runtime.batch_generation import (
     BatchRunContext,
@@ -130,6 +113,45 @@ from data_generation.task_level.generation.raw.runtime_support import (
     extract_json_candidate,
 )
 
+HOT_DOG_SETUP_SPEC = load_task_spec("HotDogSetup")
+PREPARE_COFFEE_SPEC = load_task_spec("PrepareCoffee")
+PREPARE_SANDWICH_STATION_SPEC = load_task_spec("PrepareSandwichStation")
+
+HOT_DOG_SETUP_TASK = get_task_definition("HotDogSetup")
+PREPARE_COFFEE_TASK = get_task_definition("PrepareCoffee")
+PREPARE_SANDWICH_STATION_TASK = get_task_definition("PrepareSandwichStation")
+
+HOT_DOG_SETUP_INITIAL_STATE = HOT_DOG_SETUP_SPEC.initial_state
+PREPARE_COFFEE_INITIAL_STATE = PREPARE_COFFEE_SPEC.initial_state
+PREPARE_SANDWICH_STATION_INITIAL_STATE = PREPARE_SANDWICH_STATION_SPEC.initial_state
+
+PREPARE_COFFEE_ALLOWED_TOOL_SPECS = PREPARE_COFFEE_SPEC.allowed_tool_specs
+PREPARE_COFFEE_NON_COMMUNICATE_TOOL_NAMES = tuple(
+    tool_name
+    for tool_name in PREPARE_COFFEE_ALLOWED_TOOL_SPECS
+    if tool_name != "communicate"
+)
+
+
+def PrepareCoffeeValidator(task_instance=None):
+    return PREPARE_COFFEE_TASK.validator_factory(task_instance)
+
+
+def HotDogSetupValidator(task_instance=None):
+    return HOT_DOG_SETUP_TASK.validator_factory(task_instance)
+
+
+def PrepareSandwichStationValidator(task_instance=None):
+    return PREPARE_SANDWICH_STATION_TASK.validator_factory(task_instance)
+
+
+def build_prepare_coffee_prompt(*args, **kwargs):
+    return PREPARE_COFFEE_TASK.build_prompt(*args, **kwargs)
+
+
+def build_prepare_sandwich_station_prompt(*args, **kwargs):
+    return PREPARE_SANDWICH_STATION_TASK.build_prompt(*args, **kwargs)
+
 PREPARE_COFFEE_ACTION_SPECS = (
     ("navigate_to_fixture", {"fixture_id": "mug_source_fixture"}),
     ("open_hinged_part", {"target_id": "mug_source_fixture", "part_id": "door"}),
@@ -152,6 +174,7 @@ HOT_DOG_SETUP_ACTION_SPECS = (
     ("navigate_to_fixture", {"fixture_id": "serving_surface"}),
     ("place_on_object", {"object_id": "bun", "support_object_id": "serving_plate"}),
     ("navigate_to_fixture", {"fixture_id": "condiment_source_fixture"}),
+    ("open_hinged_part", {"target_id": "condiment_source_fixture", "part_id": "door"}),
     (
         "pick_up_object",
         {"object_id": "condiment", "source_id": "condiment_source_fixture"},
@@ -162,6 +185,7 @@ HOT_DOG_SETUP_ACTION_SPECS = (
         {"object_id": "condiment", "reference_object_id": "serving_plate"},
     ),
     ("navigate_to_fixture", {"fixture_id": "sausage_source_fixture"}),
+    ("open_hinged_part", {"target_id": "sausage_source_fixture", "part_id": "door"}),
     ("pick_up_object", {"object_id": "sausage", "source_id": "sausage_source_fixture"}),
     ("navigate_to_fixture", {"fixture_id": "serving_surface"}),
     ("place_on_object", {"object_id": "sausage", "support_object_id": "serving_plate"}),
@@ -169,6 +193,7 @@ HOT_DOG_SETUP_ACTION_SPECS = (
 
 PREPARE_SANDWICH_STATION_ACTION_SPECS = (
     ("navigate_to_fixture", {"fixture_id": "ingredient_source_fixture"}),
+    ("open_hinged_part", {"target_id": "ingredient_source_fixture", "part_id": "door"}),
     (
         "pick_up_object",
         {"object_id": "ingredient_bowl", "source_id": "ingredient_source_fixture"},
@@ -341,11 +366,11 @@ def make_valid_candidate(
 def make_valid_hot_dog_setup_candidate(*, include_agents=True):
     """Builds a valid HotDogSetup candidate trajectory for validator tests."""
 
-    action_agents = ("agent_0",) * 4 + ("agent_1",) * 8
+    action_agents = ("agent_0",) * 4 + ("agent_1",) * 10
     action_reasoning = (
         ("The bun starts on the counter.",) * 4
-        + ("The condiment should be moved beside the plate.",) * 4
-        + ("The sausage still needs to be added to the plate.",) * 4
+        + ("The condiment should be moved beside the plate.",) * 5
+        + ("The sausage still needs to be added to the plate.",) * 5
     )
     action_steps = [
         {
@@ -397,8 +422,8 @@ def make_valid_hot_dog_setup_candidate(*, include_agents=True):
 def make_valid_prepare_sandwich_station_candidate(*, include_agents=True):
     """Builds a valid PrepareSandwichStation candidate trajectory for tests."""
 
-    action_agents = ("agent_0",) * 4 + ("agent_1",) * 4
-    action_reasoning = ("The ingredient bowl should be staged first.",) * 4 + (
+    action_agents = ("agent_0",) * 5 + ("agent_1",) * 4
+    action_reasoning = ("The ingredient bowl should be staged first.",) * 5 + (
         "The baguette should join it near the toaster.",
     ) * 4
     action_steps = [
@@ -7248,6 +7273,7 @@ class GenerationTests(unittest.TestCase):
             "sdk": "google-genai",
             "model": "gemini-3-flash-preview",
             "model_config": {
+                "initialization": {"random_start_location": True},
                 "reasoning": {"thinking_level": None},
                 "sampling": {"temperature": 0.6, "strategy": "base"},
             },
@@ -7321,6 +7347,7 @@ class GenerationTests(unittest.TestCase):
             "sdk": "google-genai",
             "model": "gemini-3-flash-preview",
             "model_config": {
+                "initialization": {"random_start_location": True},
                 "reasoning": {"thinking_level": None},
                 "sampling": {"temperature": 0.6, "strategy": "base"},
             },

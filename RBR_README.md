@@ -20,6 +20,19 @@ and is isolated from the core RoboCasa task definitions:
 - `data_generation.task_level.generation.raw`: raw trajectory generation
 - `data_generation.task_level.generation.image`: post-processing that inserts canonical image observation steps
 
+The currently supported task-level tasks are defined through JSON-backed
+`TaskSpec` configs under `data_generation/task_level/tasks/specs/`. The task
+runtime is now spec-native: new simple tasks should be added by creating a new
+JSON spec rather than a per-task Python module. Candidate next tasks are tracked
+in `data_generation/task_level/tasks/TASKS.md`.
+
+The current supported spec-native tasks are:
+- `PrepareCoffee`
+- `HotDogSetup`
+- `PrepareSandwichStation`
+- `PrepareSausageCheese`
+- `PrepareCheeseStation`
+
 The raw-generation CLI entrypoint is `data_generation.task_level.generation.raw.cli`.
 
 Install the required Google SDK into your active environment:
@@ -96,8 +109,8 @@ python -m data_generation.task_level.generation.raw.cli \
   --enable-validation
 ```
 
-Generate both supported tasks with shared runtime settings. `--num-runs` applies
-to each task, so the example below runs 10 model calls total:
+Generate multiple supported tasks with shared runtime settings. `--num-runs`
+applies to each task, so the example below runs 25 model calls total:
 
 ```bash
 python -m data_generation.task_level.generation.raw.cli \
@@ -116,6 +129,47 @@ python -m data_generation.task_level.generation.raw.cli \
 
 Use `--paralleize-tasks` to run the selected tasks concurrently. `--max-workers`
 still controls the per-task run workers inside each task.
+
+To add a new simple task that fits the current symbolic primitives, create one
+new JSON file under `data_generation/task_level/tasks/specs/` with:
+- `initial_state`
+- `allowed_tool_specs`
+- `task_goal`
+- `task_preconditions`
+- `goal_conditions`
+- `task_effects`
+- `grounding`
+- `example_trajectory`
+
+What you still author manually in the JSON:
+- task-local symbolic state, goals, preconditions, task effects, grounding, and a canonical valid example trajectory
+- task-local tool constraints in `allowed_tool_specs`
+- any higher-level guidance that is not implied by structured preconditions, in `extra_execution_rules`
+
+What the runtime now derives automatically:
+- task registration and `TaskDefinition` construction
+- the validator and prompt builder
+- the scene-agnostic grounding-map build path
+- `open_hinged_part` exposure for tasks whose `initial_state` includes hinged fixture parts
+- task-specific prompt rules implied by structured preconditions, such as opening a door before `pick_up_object`
+
+Then validate it with:
+
+```bash
+python -m unittest tests.test_task_specs
+python -m unittest tests.test_task_level_grounding
+python -m unittest tests.test_task_level_trajectory_generation
+```
+
+For tasks that fit the current abstractions, no per-task Python module, task
+registry edit, or grounding branch should be needed.
+
+For storage-style tasks, prefer encoding access requirements as structured
+`task_preconditions` instead of only writing them as free-form prompt text. For
+example, a closed fridge or cabinet should be represented in `initial_state`,
+and pickup from that source should use
+`fixture_part_state_required_for_pickup`. The runtime will both enforce that in
+validation and add the corresponding prompt rule automatically.
 
 Raw generation randomizes each agent's initial symbolic fixture location by
 default. Use `--random-start-location false` to keep the canonical task
@@ -254,6 +308,85 @@ the final `Done` and `Summary` lines. The wrapper owns `--workers` and
 `--verbose`, then forwards any remaining arguments to
 `python scripts/sweep_trajectories.py`.
 
+By default, each trajectory is executed in one simulator scene configuration.
+You can also sweep each trajectory across multiple layout, style, and seed
+combinations by forwarding `--layouts`, `--styles`, and `--seeds` to
+`scripts/sweep_trajectories.py`. The total simulator executions become:
+
+```text
+num_trajectories x len(layouts) x len(styles) x len(seeds)
+```
+
+For example, this runs every trajectory for 2 layouts x 2 styles x 3 seeds:
+
+```bash
+bash scripts/generate_and_insert_images.sh {timestamp} \
+  --layouts 1 2 \
+  --styles 0 1 \
+  --seeds 0 1 2
+```
+
+You can pass the same arguments directly to `scripts/sweep_trajectories.py`:
+
+```bash
+python scripts/sweep_trajectories.py \
+  --input-dir data_generation/task_level/data/pre_image/{timestamp} \
+  --output-dir data_generation/task_level/data/image/{timestamp} \
+  --layouts 1 2 \
+  --styles 0 1 \
+  --seeds 0 1 2
+```
+
+When more than one scene combo is requested, each trajectory gets one output
+subdirectory per combo, for example:
+
+```text
+data_generation/task_level/data/image/{timestamp}/{task}/traj_000000/
+├── L1_S0_sd0/
+├── L1_S0_sd1/
+├── L1_S0_sd2/
+├── L1_S1_sd0/
+└── ...
+```
+
+This scene-combo sweep only changes simulator execution and rendered outputs. It
+does not change the symbolic raw trajectory itself.
+
+If you export or push the sweep output as a Hugging Face dataset, you can choose
+the dataset row shape with `--row-granularity step|trajectory`. This does not
+change the on-disk sweep artifacts under `data/image/{timestamp}`; it only
+changes how the dataset is built for export or publishing. The default is
+`step`, which writes one dataset row per tool step. `trajectory` writes one row
+per full episode.
+
+Examples:
+
+```bash
+# Default row shape: one row per tool step.
+python scripts/sweep_trajectories.py \
+  --input-dir data_generation/task_level/data/image/{timestamp} \
+  --output-dir tmp/sweep_output \
+  --push-to-hub yourname/robocasa-trajectories-step
+
+# One row per trajectory / episode instead of one row per step.
+python scripts/sweep_trajectories.py \
+  --input-dir data_generation/task_level/data/image/{timestamp} \
+  --output-dir tmp/sweep_output \
+  --push-to-hub yourname/robocasa-trajectories-trajectory \
+  --row-granularity trajectory
+
+# Publish an existing sweep directory with the same row-shape control.
+python scripts/push_sweep_to_hub.py \
+  --sweep-dir tmp/sweep_output \
+  --repo-id yourname/robocasa-trajectories-trajectory \
+  --row-granularity trajectory
+```
+
+Row granularity tradeoffs:
+- `step`: flatter table on Hugging Face, with episode-level JSON referenced by
+  sidecar `*_path` columns.
+- `trajectory`: self-contained rows with inline episode JSON and per-step
+  sequence columns, but less convenient in the Hugging Face table viewer.
 For multi-GPU cluster runs, request the GPUs from your scheduler and forward
 GPU allocation flags to the sweep CLI. Example: 8 workers spread evenly across
 4 GPUs with EGL rendering:
@@ -283,7 +416,8 @@ Post-processing keeps those copied artifacts and also prepares:
 Sampling notes:
 - `--num-runs` is the number of runs, not always the number of saved trajectories.
 - With multiple tasks, `--num-runs` applies to each task. For example,
-  `--tasks PrepareCoffee HotDogSetup --num-runs 5` launches 10 runs total.
+  `--tasks PrepareCoffee HotDogSetup PrepareSandwichStation PrepareSausageCheese PrepareCheeseStation --num-runs 5`
+  launches 25 runs total.
 - `--sampling base` saves one trajectory per successful run.
 - `--sampling verbalized` saves `--verbalized-k` flattened trajectories per successful run.
 - Verbalized trajectories include `sampling_metadata` with the parsed probability.
@@ -295,7 +429,13 @@ Sampling notes:
 
 Notes:
 
-- Supported tasks currently include `PrepareCoffee` and `HotDogSetup`.
+- Supported tasks currently include `PrepareCoffee`, `HotDogSetup`,
+  `PrepareSandwichStation`, `PrepareSausageCheese`, and `PrepareCheeseStation`.
+- Task-level generation now resolves these tasks from JSON-backed `TaskSpec`
+  files under `data_generation/task_level/tasks/specs/`.
+- For tasks with hinged fixture parts, the runtime automatically exposes
+  `open_hinged_part` and adds prompt rules implied by structured door-state
+  preconditions.
 - Batch mode supports both `--sampling base` and `--sampling verbalized`.
 - With `--sampling verbalized`, each successful batch row can save multiple
   flattened trajectories from one model response.

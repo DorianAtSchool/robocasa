@@ -1,0 +1,500 @@
+{
+  "spec_version": 1,
+  "composite_task": "GatherMarinadeIngredients",
+  "source_python_module": "robocasa.environments.kitchen.composite.preparing_marinade.gather_marinade_ingredients",
+  "agent_ids": [
+    "agent_0",
+    "agent_1"
+  ],
+  "max_reasoning_chars": 200,
+  "validator_checks": [
+    "initial_communication",
+    "allowed_tools",
+    "navigation_preconditions",
+    "manipulation_preconditions",
+    "effects",
+    "final_success"
+  ],
+  "preflight_token_estimate": {
+    "prompt_tokens": 3400,
+    "output_tokens": 4100,
+    "reasoning_tokens": 0
+  },
+  "initial_state": {
+    "agents": {
+      "agent_0": {
+        "location": "cabinet",
+        "held_object": null
+      },
+      "agent_1": {
+        "location": "cabinet",
+        "held_object": null
+      }
+    },
+    "objects": {
+      "mixing_bowl": {
+        "object_type": "bowl",
+        "location": "counter"
+      },
+      "garlic": {
+        "object_type": "garlic",
+        "location": "fridge"
+      },
+      "oil_or_vinegar_bottle": {
+        "object_type": "oil_and_vinegar_bottle",
+        "location": "cabinet"
+      },
+      "shaker": {
+        "object_type": "shaker",
+        "location": "cabinet"
+      }
+    },
+    "fixtures": {
+      "cabinet": {
+        "fixture_type": "cabinet",
+        "parts": {
+          "door": {
+            "part_type": "hinged_part",
+            "state": "closed"
+          }
+        }
+      },
+      "fridge": {
+        "fixture_type": "fridge",
+        "parts": {
+          "door": {
+            "part_type": "hinged_part",
+            "state": "closed"
+          }
+        }
+      },
+      "counter": {
+        "fixture_type": "counter"
+      }
+    },
+    "machine_state": {
+      "gather_marinade_ingredients": {
+        "oil_bottle_staged": false,
+        "shaker_staged": false
+      }
+    }
+  },
+  "allowed_tool_specs": {
+    "communicate": {
+      "description": "Send a short coordination message to the other agent in the scene. args.to must be that agent's exact ID.",
+      "tool_args": [
+        "to",
+        "message"
+      ]
+    },
+    "navigate_to_fixture": {
+      "description": "Move the robot base to the working pose of a fixture.",
+      "tool_args": [
+        "fixture_id"
+      ],
+      "allowed_fixture_ids": [
+        "cabinet",
+        "fridge",
+        "counter"
+      ]
+    },
+    "pick_up_object": {
+      "description": "Grasp and lift an object from a symbolic source region.",
+      "tool_args": [
+        "object_id",
+        "source_id"
+      ],
+      "allowed_object_ids": [
+        "garlic",
+        "oil_or_vinegar_bottle",
+        "shaker"
+      ],
+      "allowed_source_ids": [
+        "cabinet",
+        "fridge",
+        "counter"
+      ]
+    },
+    "place_on_object": {
+      "description": "Place an object on top of another movable support object.",
+      "tool_args": [
+        "object_id",
+        "support_object_id"
+      ],
+      "allowed_object_ids": [
+        "garlic"
+      ],
+      "allowed_support_object_ids": [
+        "mixing_bowl"
+      ]
+    },
+    "place_next_to": {
+      "description": "Place an object adjacent to a reference object or nearby fixture on the same support surface.",
+      "tool_args": [
+        "object_id",
+        "reference_object_id"
+      ],
+      "allowed_object_ids": [
+        "oil_or_vinegar_bottle",
+        "shaker"
+      ],
+      "allowed_reference_object_ids": [
+        "mixing_bowl"
+      ]
+    },
+    "give_space": {
+      "description": "Yield working room at a fixture so the other agent can complete an action there.",
+      "tool_args": [
+        "fixture_id"
+      ],
+      "allowed_fixture_ids": [
+        "cabinet",
+        "fridge",
+        "counter"
+      ]
+    }
+  },
+  "task_goal": "retrieve garlic from fridge and place it in mixing_bowl, then retrieve oil_or_vinegar_bottle and shaker from cabinet and place both next to mixing_bowl on counter.",
+  "extra_execution_rules": [
+    "Place garlic onto mixing_bowl so its final symbolic location is the bowl.",
+    "Use place_next_to with reference_object_id mixing_bowl for both oil_or_vinegar_bottle and shaker.",
+    "Do not move mixing_bowl during the task."
+  ],
+  "initial_public_state": {
+    "mixing_bowl_location": "counter",
+    "garlic_location": "fridge",
+    "oil_or_vinegar_bottle_location": "cabinet",
+    "shaker_location": "cabinet",
+    "oil_bottle_staged": false,
+    "shaker_staged": false
+  },
+  "task_preconditions": [
+    {
+      "kind": "object_must_remain_at_location",
+      "object_id": "mixing_bowl",
+      "location": "counter",
+      "message": "mixing_bowl must remain on counter throughout GatherMarinadeIngredients."
+    },
+    {
+      "kind": "fixture_part_state_required_for_pickup",
+      "tool": "pick_up_object",
+      "source_id": "fridge",
+      "fixture_id": "fridge",
+      "part_id": "door",
+      "required_state": "open",
+      "message": "pick_up_object from fridge requires the fridge door to be open."
+    },
+    {
+      "kind": "fixture_part_state_required_for_pickup",
+      "tool": "pick_up_object",
+      "source_id": "cabinet",
+      "fixture_id": "cabinet",
+      "part_id": "door",
+      "required_state": "open",
+      "message": "pick_up_object from cabinet requires the cabinet door to be open."
+    }
+  ],
+  "goal_conditions": [
+    {
+      "kind": "object_at_location",
+      "object_id": "garlic",
+      "location": "mixing_bowl"
+    },
+    {
+      "kind": "object_at_location",
+      "object_id": "mixing_bowl",
+      "location": "counter"
+    },
+    {
+      "kind": "machine_flag_true",
+      "machine_path": [
+        "gather_marinade_ingredients",
+        "oil_bottle_staged"
+      ]
+    },
+    {
+      "kind": "machine_flag_true",
+      "machine_path": [
+        "gather_marinade_ingredients",
+        "shaker_staged"
+      ]
+    }
+  ],
+  "task_effects": [
+    {
+      "kind": "set_machine_flag_on_action",
+      "tool": "place_next_to",
+      "args": {
+        "object_id": "oil_or_vinegar_bottle",
+        "reference_object_id": "mixing_bowl"
+      },
+      "machine_path": [
+        "gather_marinade_ingredients",
+        "oil_bottle_staged"
+      ],
+      "value": true
+    },
+    {
+      "kind": "set_machine_flag_on_action",
+      "tool": "place_next_to",
+      "args": {
+        "object_id": "shaker",
+        "reference_object_id": "mixing_bowl"
+      },
+      "machine_path": [
+        "gather_marinade_ingredients",
+        "shaker_staged"
+      ],
+      "value": true
+    }
+  ],
+  "grounding": {
+    "legacy_symbol_aliases": {
+      "mixing_bowl_1": "mixing_bowl",
+      "garlic_1": "garlic",
+      "oil_or_vinegar_bottle_1": "oil_or_vinegar_bottle",
+      "shaker_1": "shaker",
+      "cabinet_1": "cabinet",
+      "fridge_1": "fridge",
+      "counter_1": "counter"
+    },
+    "symbols": {
+      "mixing_bowl": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "role": "mixing_bowl",
+        "preferred_fixture_types": [
+          "counter",
+          "counter_non_corner",
+          "counter_non_dining",
+          "dining_counter",
+          "island"
+        ]
+      },
+      "garlic": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "role": "garlic",
+        "preferred_fixture_types": [
+          "fridge"
+        ]
+      },
+      "oil_or_vinegar_bottle": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "role": "oil_or_vinegar_bottle",
+        "preferred_fixture_types": [
+          "cabinet",
+          "cabinet_single_door",
+          "cabinet_double_door",
+          "cabinet_with_door"
+        ]
+      },
+      "shaker": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "role": "shaker",
+        "preferred_fixture_types": [
+          "cabinet",
+          "cabinet_single_door",
+          "cabinet_double_door",
+          "cabinet_with_door"
+        ]
+      },
+      "cabinet": {
+        "entity_type": "fixture",
+        "resolver": "source_fixture_for_object",
+        "role": "cabinet",
+        "object_symbol": "oil_or_vinegar_bottle",
+        "preferred_fixture_types": [
+          "cabinet",
+          "cabinet_single_door",
+          "cabinet_double_door",
+          "cabinet_with_door"
+        ]
+      },
+      "fridge": {
+        "entity_type": "fixture",
+        "resolver": "source_fixture_for_object",
+        "role": "fridge",
+        "object_symbol": "garlic",
+        "preferred_fixture_types": [
+          "fridge"
+        ]
+      },
+      "counter": {
+        "entity_type": "fixture",
+        "resolver": "support_fixture_for_object",
+        "role": "counter",
+        "object_symbol": "mixing_bowl",
+        "preferred_fixture_types": [
+          "counter",
+          "counter_non_corner",
+          "counter_non_dining",
+          "dining_counter",
+          "island"
+        ]
+      }
+    }
+  },
+  "example_trajectory": {
+    "agents": [
+      {
+        "agent": "agent_0"
+      },
+      {
+        "agent": "agent_1"
+      }
+    ],
+    "steps": [
+      {
+        "step": 0,
+        "agent": "agent_0",
+        "tool": "communicate",
+        "args": {
+          "to": "agent_1",
+          "message": "I will get the garlic from the fridge and place it in the mixing bowl."
+        },
+        "reasoning": "We should split the fridge and cabinet work before the first pickup."
+      },
+      {
+        "step": 1,
+        "agent": "agent_1",
+        "tool": "communicate",
+        "args": {
+          "to": "agent_0",
+          "message": "I will open the cabinet, take the bottle and shaker, and stage them by the bowl."
+        },
+        "reasoning": "I should confirm the complementary cabinet plan."
+      },
+      {
+        "step": 2,
+        "agent": "agent_0",
+        "tool": "navigate_to_fixture",
+        "args": {
+          "fixture_id": "fridge"
+        },
+        "reasoning": "I need to move from the cabinet area to the fridge for the garlic."
+      },
+      {
+        "step": 3,
+        "agent": "agent_0",
+        "tool": "open_hinged_part",
+        "args": {
+          "target_id": "fridge",
+          "part_id": "door"
+        },
+        "reasoning": "I need the fridge door open before I can take the garlic."
+      },
+      {
+        "step": 4,
+        "agent": "agent_0",
+        "tool": "pick_up_object",
+        "args": {
+          "object_id": "garlic",
+          "source_id": "fridge"
+        },
+        "reasoning": "I am already at the fridge, so I can retrieve the garlic now."
+      },
+      {
+        "step": 5,
+        "agent": "agent_1",
+        "tool": "open_hinged_part",
+        "args": {
+          "target_id": "cabinet",
+          "part_id": "door"
+        },
+        "reasoning": "I need the cabinet door open before taking the bottle and shaker."
+      },
+      {
+        "step": 6,
+        "agent": "agent_1",
+        "tool": "pick_up_object",
+        "args": {
+          "object_id": "oil_or_vinegar_bottle",
+          "source_id": "cabinet"
+        },
+        "reasoning": "I am already at the cabinet and can retrieve the bottle first."
+      },
+      {
+        "step": 7,
+        "agent": "agent_0",
+        "tool": "navigate_to_fixture",
+        "args": {
+          "fixture_id": "counter"
+        },
+        "reasoning": "I need to move to the counter to place the garlic into the bowl."
+      },
+      {
+        "step": 8,
+        "agent": "agent_0",
+        "tool": "place_on_object",
+        "args": {
+          "object_id": "garlic",
+          "support_object_id": "mixing_bowl"
+        },
+        "reasoning": "Putting the garlic into the bowl satisfies the ingredient transfer part of the task."
+      },
+      {
+        "step": 9,
+        "agent": "agent_1",
+        "tool": "navigate_to_fixture",
+        "args": {
+          "fixture_id": "counter"
+        },
+        "reasoning": "I need to move to the bowl area to stage the bottle next to it."
+      },
+      {
+        "step": 10,
+        "agent": "agent_1",
+        "tool": "place_next_to",
+        "args": {
+          "object_id": "oil_or_vinegar_bottle",
+          "reference_object_id": "mixing_bowl"
+        },
+        "reasoning": "Placing the bottle next to the bowl stages it correctly on the counter."
+      },
+      {
+        "step": 11,
+        "agent": "agent_1",
+        "tool": "navigate_to_fixture",
+        "args": {
+          "fixture_id": "cabinet"
+        },
+        "reasoning": "I still need to return to the cabinet to retrieve the shaker."
+      },
+      {
+        "step": 12,
+        "agent": "agent_1",
+        "tool": "pick_up_object",
+        "args": {
+          "object_id": "shaker",
+          "source_id": "cabinet"
+        },
+        "reasoning": "The cabinet is already open, so I can take the shaker now."
+      },
+      {
+        "step": 13,
+        "agent": "agent_1",
+        "tool": "navigate_to_fixture",
+        "args": {
+          "fixture_id": "counter"
+        },
+        "reasoning": "I need to go back to the bowl area to stage the shaker."
+      },
+      {
+        "step": 14,
+        "agent": "agent_1",
+        "tool": "place_next_to",
+        "args": {
+          "object_id": "shaker",
+          "reference_object_id": "mixing_bowl"
+        },
+        "reasoning": "Placing the shaker next to the bowl completes the marinade station."
+      }
+    ]
+  },
+  "notes": [
+    "This task keeps the source RoboCasa semantics but uses fixed canonical object types for the spec-native symbolic layer."
+  ]
+}

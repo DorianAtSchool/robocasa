@@ -11,6 +11,7 @@ from .constants import (
     ACQUIRE_TOOL_NAMES,
     CLOSE_PART_TOOL_NAMES,
     GIVE_SPACE_TOOL_NAMES,
+    INTERACTION_TOOL_NAMES,
     NAVIGATION_TOOL_NAMES,
     OBSERVATION_TOOL_NAMES,
     OPEN_PART_TOOL_NAMES,
@@ -500,6 +501,15 @@ class FiniteStateTaskValidator:
             )
             return
 
+        if tool_name in INTERACTION_TOOL_NAMES:
+            if required_fixture is not None:
+                self._require_agent_location(
+                    step=step,
+                    current_location=agent_state.location,
+                    expected_location=required_fixture,
+                )
+            return
+
         if tool_name not in NAVIGATION_TOOL_NAMES and required_fixture is not None:
             self._require_agent_location(
                 step=step,
@@ -619,6 +629,7 @@ class FiniteStateTaskValidator:
             return
 
         if tool_name in GIVE_SPACE_TOOL_NAMES:
+            agent_state.location = None
             return
 
         if tool_name in OPEN_PART_TOOL_NAMES:

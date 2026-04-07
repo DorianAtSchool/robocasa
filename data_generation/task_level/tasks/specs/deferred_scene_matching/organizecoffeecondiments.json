@@ -1,0 +1,426 @@
+{
+  "spec_version": 1,
+  "composite_task": "OrganizeCoffeeCondiments",
+  "source_python_module": "robocasa.environments.kitchen.composite.brewing.organize_coffee_condiments",
+  "agent_ids": [
+    "agent_0",
+    "agent_1"
+  ],
+  "max_reasoning_chars": 200,
+  "validator_checks": [
+    "initial_communication",
+    "allowed_tools",
+    "navigation_preconditions",
+    "manipulation_preconditions",
+    "effects",
+    "final_success"
+  ],
+  "preflight_token_estimate": {
+    "prompt_tokens": 3400,
+    "output_tokens": 4100,
+    "reasoning_tokens": 0
+  },
+  "initial_state": {
+    "agents": {
+      "agent_0": {
+        "location": "cab",
+        "held_object": null
+      },
+      "agent_1": {
+        "location": "cab",
+        "held_object": null
+      }
+    },
+    "objects": {
+      "obj1": {
+        "object_type": "syrup_bottle",
+        "location": "cab"
+      },
+      "obj2": {
+        "object_type": "honey_bottle",
+        "location": "cab"
+      },
+      "mug": {
+        "object_type": "mug",
+        "location": "coffee_machine_counter"
+      },
+      "distr_cab": {
+        "object_type": "cinnamon",
+        "location": "cab"
+      }
+    },
+    "fixtures": {
+      "cab": {
+        "fixture_type": "cabinet",
+        "parts": {
+          "door": {
+            "part_type": "hinged_part",
+            "state": "closed"
+          }
+        }
+      },
+      "coffee_machine": {
+        "fixture_type": "coffee_machine"
+      },
+      "coffee_machine_counter": {
+        "fixture_type": "counter"
+      }
+    },
+    "machine_state": {
+      "organize_coffee_condiments": {
+        "obj1_staged": false,
+        "obj2_staged": false
+      }
+    }
+  },
+  "allowed_tool_specs": {
+    "communicate": {
+      "description": "Send a short coordination message to the other agent in the scene. args.to must be that agent's exact ID.",
+      "tool_args": [
+        "to",
+        "message"
+      ]
+    },
+    "navigate_to_fixture": {
+      "description": "Move the robot base to the working pose of a fixture.",
+      "tool_args": [
+        "fixture_id"
+      ],
+      "allowed_fixture_ids": [
+        "cab",
+        "coffee_machine",
+        "coffee_machine_counter"
+      ]
+    },
+    "pick_up_object": {
+      "description": "Grasp and lift an object from a symbolic source region.",
+      "tool_args": [
+        "object_id",
+        "source_id"
+      ],
+      "allowed_object_ids": [
+        "obj1",
+        "obj2"
+      ],
+      "allowed_source_ids": [
+        "cab",
+        "coffee_machine_counter"
+      ]
+    },
+    "place_next_to": {
+      "description": "Place an object adjacent to a reference object or nearby fixture on the same support surface.",
+      "tool_args": [
+        "object_id",
+        "reference_object_id"
+      ],
+      "allowed_object_ids": [
+        "obj1",
+        "obj2"
+      ],
+      "allowed_reference_object_ids": [
+        "mug"
+      ]
+    },
+    "give_space": {
+      "description": "Yield working room at a fixture so the other agent can complete an action there.",
+      "tool_args": [
+        "fixture_id"
+      ],
+      "allowed_fixture_ids": [
+        "cab",
+        "coffee_machine",
+        "coffee_machine_counter"
+      ]
+    }
+  },
+  "task_goal": "retrieve obj1 and obj2 from cab, then place both next to mug on coffee_machine_counter.",
+  "extra_execution_rules": [
+    "Use place_next_to with reference_object_id mug for both condiments.",
+    "Do not move mug or distr_cab during the task.",
+    "Split the two cabinet pickups across the agents so both condiments are staged efficiently."
+  ],
+  "initial_public_state": {
+    "obj1_location": "cab",
+    "obj2_location": "cab",
+    "mug_location": "coffee_machine_counter",
+    "distr_cab_location": "cab",
+    "obj1_staged": false,
+    "obj2_staged": false
+  },
+  "task_preconditions": [
+    {
+      "kind": "object_must_remain_at_location",
+      "object_id": "mug",
+      "location": "coffee_machine_counter",
+      "message": "mug must remain on coffee_machine_counter throughout OrganizeCoffeeCondiments."
+    },
+    {
+      "kind": "object_must_remain_at_location",
+      "object_id": "distr_cab",
+      "location": "cab",
+      "message": "distr_cab must remain in cab during OrganizeCoffeeCondiments."
+    },
+    {
+      "kind": "fixture_part_state_required_for_pickup",
+      "tool": "pick_up_object",
+      "source_id": "cab",
+      "fixture_id": "cab",
+      "part_id": "door",
+      "required_state": "open",
+      "message": "pick_up_object from cab requires the cabinet door to be open."
+    }
+  ],
+  "goal_conditions": [
+    {
+      "kind": "object_at_location",
+      "object_id": "obj1",
+      "location": "coffee_machine_counter"
+    },
+    {
+      "kind": "object_at_location",
+      "object_id": "obj2",
+      "location": "coffee_machine_counter"
+    },
+    {
+      "kind": "object_at_location",
+      "object_id": "mug",
+      "location": "coffee_machine_counter"
+    },
+    {
+      "kind": "machine_flag_true",
+      "machine_path": [
+        "organize_coffee_condiments",
+        "obj1_staged"
+      ]
+    },
+    {
+      "kind": "machine_flag_true",
+      "machine_path": [
+        "organize_coffee_condiments",
+        "obj2_staged"
+      ]
+    }
+  ],
+  "task_effects": [
+    {
+      "kind": "set_machine_flag_on_action",
+      "tool": "place_next_to",
+      "args": {
+        "object_id": "obj1",
+        "reference_object_id": "mug"
+      },
+      "machine_path": [
+        "organize_coffee_condiments",
+        "obj1_staged"
+      ],
+      "value": true
+    },
+    {
+      "kind": "set_machine_flag_on_action",
+      "tool": "place_next_to",
+      "args": {
+        "object_id": "obj2",
+        "reference_object_id": "mug"
+      },
+      "machine_path": [
+        "organize_coffee_condiments",
+        "obj2_staged"
+      ],
+      "value": true
+    }
+  ],
+  "grounding": {
+    "legacy_symbol_aliases": {
+      "obj1_1": "obj1",
+      "obj2_1": "obj2",
+      "mug_1": "mug",
+      "distr_cab_1": "distr_cab",
+      "cabinet_1": "cab",
+      "coffee_machine_1": "coffee_machine",
+      "counter_1": "coffee_machine_counter"
+    },
+    "symbols": {
+      "obj1": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "role": "obj1",
+        "preferred_fixture_types": [
+          "cabinet",
+          "cabinet_single_door",
+          "cabinet_double_door",
+          "cabinet_with_door"
+        ]
+      },
+      "obj2": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "role": "obj2",
+        "preferred_fixture_types": [
+          "cabinet",
+          "cabinet_single_door",
+          "cabinet_double_door",
+          "cabinet_with_door"
+        ]
+      },
+      "mug": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "role": "mug",
+        "preferred_fixture_types": [
+          "counter",
+          "counter_non_corner",
+          "counter_non_dining",
+          "dining_counter",
+          "island"
+        ]
+      },
+      "distr_cab": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "role": "distr_cab",
+        "preferred_fixture_types": [
+          "cabinet",
+          "cabinet_single_door",
+          "cabinet_double_door",
+          "cabinet_with_door"
+        ]
+      },
+      "cab": {
+        "entity_type": "fixture",
+        "resolver": "source_fixture_for_object",
+        "role": "cab",
+        "object_symbol": "obj1",
+        "preferred_fixture_types": [
+          "cabinet",
+          "cabinet_single_door",
+          "cabinet_double_door",
+          "cabinet_with_door"
+        ]
+      },
+      "coffee_machine": {
+        "entity_type": "fixture",
+        "resolver": "unique_fixture_type",
+        "role": "coffee_machine",
+        "preferred_fixture_types": [
+          "coffee_machine"
+        ]
+      },
+      "coffee_machine_counter": {
+        "entity_type": "fixture",
+        "resolver": "support_fixture_for_object",
+        "role": "coffee_machine_counter",
+        "object_symbol": "mug",
+        "preferred_fixture_types": [
+          "counter",
+          "counter_non_corner",
+          "counter_non_dining",
+          "dining_counter",
+          "island"
+        ]
+      }
+    }
+  },
+  "example_trajectory": {
+    "agents": [
+      {
+        "agent": "agent_0"
+      },
+      {
+        "agent": "agent_1"
+      }
+    ],
+    "steps": [
+      {
+        "step": 0,
+        "agent": "agent_0",
+        "tool": "communicate",
+        "args": {
+          "to": "agent_1",
+          "message": "I will retrieve obj1 from the cabinet and stage it by the mug."
+        },
+        "reasoning": "We should split the two condiments before the first pickup."
+      },
+      {
+        "step": 1,
+        "agent": "agent_1",
+        "tool": "communicate",
+        "args": {
+          "to": "agent_0",
+          "message": "I will retrieve obj2 and place it next to the mug as well."
+        },
+        "reasoning": "I should confirm the complementary staging plan."
+      },
+      {
+        "step": 2,
+        "agent": "agent_0",
+        "tool": "open_hinged_part",
+        "args": {
+          "target_id": "cab",
+          "part_id": "door"
+        },
+        "reasoning": "The cabinet door must be open before either condiment can be retrieved."
+      },
+      {
+        "step": 3,
+        "agent": "agent_0",
+        "tool": "pick_up_object",
+        "args": {
+          "object_id": "obj1",
+          "source_id": "cab"
+        },
+        "reasoning": "I am already at the cabinet, so I can retrieve obj1 now."
+      },
+      {
+        "step": 4,
+        "agent": "agent_1",
+        "tool": "pick_up_object",
+        "args": {
+          "object_id": "obj2",
+          "source_id": "cab"
+        },
+        "reasoning": "The cabinet is open and I can retrieve obj2 in parallel."
+      },
+      {
+        "step": 5,
+        "agent": "agent_0",
+        "tool": "navigate_to_fixture",
+        "args": {
+          "fixture_id": "coffee_machine_counter"
+        },
+        "reasoning": "I need to move to the mug area to stage obj1."
+      },
+      {
+        "step": 6,
+        "agent": "agent_0",
+        "tool": "place_next_to",
+        "args": {
+          "object_id": "obj1",
+          "reference_object_id": "mug"
+        },
+        "reasoning": "Placing obj1 next to the mug stages the first condiment correctly."
+      },
+      {
+        "step": 7,
+        "agent": "agent_1",
+        "tool": "navigate_to_fixture",
+        "args": {
+          "fixture_id": "coffee_machine_counter"
+        },
+        "reasoning": "I need to move to the mug area to stage obj2."
+      },
+      {
+        "step": 8,
+        "agent": "agent_1",
+        "tool": "place_next_to",
+        "args": {
+          "object_id": "obj2",
+          "reference_object_id": "mug"
+        },
+        "reasoning": "Placing obj2 next to the mug completes the coffee condiments setup."
+      }
+    ]
+  },
+  "notes": [
+    "This spec collapses the source task's counter roles into coffee_machine_counter so the symbolic goal remains a simple next-to-mug staging task."
+  ]
+}

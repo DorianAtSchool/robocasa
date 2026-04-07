@@ -1,0 +1,388 @@
+{
+  "spec_version": 1,
+  "composite_task": "SetUpSpiceStation",
+  "source_python_module": "robocasa.environments.kitchen.composite.seasoning_food.setup_spice_station",
+  "agent_ids": [
+    "agent_0",
+    "agent_1"
+  ],
+  "max_reasoning_chars": 200,
+  "validator_checks": [
+    "initial_communication",
+    "allowed_tools",
+    "navigation_preconditions",
+    "manipulation_preconditions",
+    "effects",
+    "final_success"
+  ],
+  "preflight_token_estimate": {
+    "prompt_tokens": 3350,
+    "output_tokens": 4100,
+    "reasoning_tokens": 0
+  },
+  "initial_state": {
+    "agents": {
+      "agent_0": {
+        "location": "cabinet",
+        "held_object": null
+      },
+      "agent_1": {
+        "location": "cabinet",
+        "held_object": null
+      }
+    },
+    "objects": {
+      "spice": {
+        "object_type": "turmeric",
+        "location": "cabinet"
+      },
+      "bottle": {
+        "object_type": "ketchup",
+        "location": "cabinet"
+      },
+      "shaker": {
+        "object_type": "shaker",
+        "location": "cabinet"
+      }
+    },
+    "fixtures": {
+      "cabinet": {
+        "fixture_type": "cabinet",
+        "parts": {
+          "door": {
+            "part_type": "hinged_part",
+            "state": "closed"
+          }
+        }
+      },
+      "stove": {
+        "fixture_type": "stove"
+      },
+      "counter_stove": {
+        "fixture_type": "counter"
+      }
+    },
+    "machine_state": {}
+  },
+  "allowed_tool_specs": {
+    "communicate": {
+      "description": "Send a short coordination message to the other agent in the scene. args.to must be that agent's exact ID.",
+      "tool_args": [
+        "to",
+        "message"
+      ]
+    },
+    "navigate_to_fixture": {
+      "description": "Move the robot base to the working pose of a fixture.",
+      "tool_args": [
+        "fixture_id"
+      ],
+      "allowed_fixture_ids": [
+        "cabinet",
+        "stove",
+        "counter_stove"
+      ]
+    },
+    "pick_up_object": {
+      "description": "Grasp and lift an object from a symbolic source region.",
+      "tool_args": [
+        "object_id",
+        "source_id"
+      ],
+      "allowed_object_ids": [
+        "spice",
+        "bottle",
+        "shaker"
+      ],
+      "allowed_source_ids": [
+        "cabinet",
+        "counter_stove"
+      ]
+    },
+    "place_on_surface": {
+      "description": "Place an object onto a fixture support surface.",
+      "tool_args": [
+        "object_id",
+        "support_id"
+      ],
+      "allowed_object_ids": [
+        "spice",
+        "bottle",
+        "shaker"
+      ],
+      "allowed_support_ids": [
+        "counter_stove"
+      ]
+    },
+    "give_space": {
+      "description": "Yield working room at a fixture so the other agent can complete an action there.",
+      "tool_args": [
+        "fixture_id"
+      ],
+      "allowed_fixture_ids": [
+        "cabinet",
+        "stove",
+        "counter_stove"
+      ]
+    }
+  },
+  "task_goal": "retrieve spice, bottle, and shaker from cabinet, then place all three onto counter_stove so they are staged next to the stove.",
+  "extra_execution_rules": [
+    "Place all three items on counter_stove, not back into the cabinet.",
+    "Split the three pickups across the two agents rather than duplicating work.",
+    "The goal is to stage the items next to the stove, so use counter_stove as the final support surface."
+  ],
+  "initial_public_state": {
+    "spice_location": "cabinet",
+    "bottle_location": "cabinet",
+    "shaker_location": "cabinet"
+  },
+  "task_preconditions": [
+    {
+      "kind": "fixture_part_state_required_for_pickup",
+      "tool": "pick_up_object",
+      "source_id": "cabinet",
+      "fixture_id": "cabinet",
+      "part_id": "door",
+      "required_state": "open",
+      "message": "pick_up_object from cabinet requires the cabinet door to be open."
+    }
+  ],
+  "goal_conditions": [
+    {
+      "kind": "object_at_location",
+      "object_id": "spice",
+      "location": "counter_stove"
+    },
+    {
+      "kind": "object_at_location",
+      "object_id": "bottle",
+      "location": "counter_stove"
+    },
+    {
+      "kind": "object_at_location",
+      "object_id": "shaker",
+      "location": "counter_stove"
+    }
+  ],
+  "task_effects": [],
+  "grounding": {
+    "legacy_symbol_aliases": {
+      "spice_1": "spice",
+      "bottle_1": "bottle",
+      "shaker_1": "shaker",
+      "cabinet_1": "cabinet",
+      "stove_1": "stove",
+      "counter_1": "counter_stove"
+    },
+    "symbols": {
+      "spice": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "role": "spice",
+        "preferred_fixture_types": [
+          "cabinet",
+          "cabinet_single_door",
+          "cabinet_double_door",
+          "cabinet_with_door"
+        ]
+      },
+      "bottle": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "role": "bottle",
+        "preferred_fixture_types": [
+          "cabinet",
+          "cabinet_single_door",
+          "cabinet_double_door",
+          "cabinet_with_door"
+        ]
+      },
+      "shaker": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "role": "shaker",
+        "preferred_fixture_types": [
+          "cabinet",
+          "cabinet_single_door",
+          "cabinet_double_door",
+          "cabinet_with_door"
+        ]
+      },
+      "cabinet": {
+        "entity_type": "fixture",
+        "resolver": "source_fixture_for_object",
+        "role": "cabinet",
+        "object_symbol": "spice",
+        "preferred_fixture_types": [
+          "cabinet",
+          "cabinet_single_door",
+          "cabinet_double_door",
+          "cabinet_with_door"
+        ]
+      },
+      "stove": {
+        "entity_type": "fixture",
+        "resolver": "unique_fixture_type",
+        "role": "stove",
+        "preferred_fixture_types": [
+          "stove"
+        ]
+      },
+      "counter_stove": {
+        "entity_type": "fixture",
+        "resolver": "nearest_placeable_surface_to_fixture",
+        "role": "counter_stove",
+        "anchor_fixture_symbol": "stove",
+        "preferred_fixture_types": [
+          "counter",
+          "counter_non_corner",
+          "counter_non_dining",
+          "dining_counter",
+          "island"
+        ]
+      }
+    }
+  },
+  "example_trajectory": {
+    "agents": [
+      {
+        "agent": "agent_0"
+      },
+      {
+        "agent": "agent_1"
+      }
+    ],
+    "steps": [
+      {
+        "step": 0,
+        "agent": "agent_0",
+        "tool": "communicate",
+        "args": {
+          "to": "agent_1",
+          "message": "I will bring the spice and bottle to the stove-side counter."
+        },
+        "reasoning": "We should divide the three cabinet items before we start."
+      },
+      {
+        "step": 1,
+        "agent": "agent_1",
+        "tool": "communicate",
+        "args": {
+          "to": "agent_0",
+          "message": "I will take the shaker and also help stage items by the stove."
+        },
+        "reasoning": "I should confirm the complementary role."
+      },
+      {
+        "step": 2,
+        "agent": "agent_0",
+        "tool": "open_hinged_part",
+        "args": {
+          "target_id": "cabinet",
+          "part_id": "door"
+        },
+        "reasoning": "The cabinet door must be open before either of us can retrieve spices."
+      },
+      {
+        "step": 3,
+        "agent": "agent_0",
+        "tool": "pick_up_object",
+        "args": {
+          "object_id": "spice",
+          "source_id": "cabinet"
+        },
+        "reasoning": "I am already at the cabinet, so I can take the spice first."
+      },
+      {
+        "step": 4,
+        "agent": "agent_1",
+        "tool": "pick_up_object",
+        "args": {
+          "object_id": "shaker",
+          "source_id": "cabinet"
+        },
+        "reasoning": "The cabinet is open and I can retrieve the shaker in parallel."
+      },
+      {
+        "step": 5,
+        "agent": "agent_0",
+        "tool": "navigate_to_fixture",
+        "args": {
+          "fixture_id": "counter_stove"
+        },
+        "reasoning": "I need to move to the stove-side counter to stage the spice."
+      },
+      {
+        "step": 6,
+        "agent": "agent_0",
+        "tool": "place_on_surface",
+        "args": {
+          "object_id": "spice",
+          "support_id": "counter_stove"
+        },
+        "reasoning": "Placing the spice on the stove-side counter starts the station."
+      },
+      {
+        "step": 7,
+        "agent": "agent_1",
+        "tool": "navigate_to_fixture",
+        "args": {
+          "fixture_id": "counter_stove"
+        },
+        "reasoning": "I need to move to the same counter to place the shaker there."
+      },
+      {
+        "step": 8,
+        "agent": "agent_1",
+        "tool": "place_on_surface",
+        "args": {
+          "object_id": "shaker",
+          "support_id": "counter_stove"
+        },
+        "reasoning": "Placing the shaker on the stove-side counter stages it correctly."
+      },
+      {
+        "step": 9,
+        "agent": "agent_0",
+        "tool": "navigate_to_fixture",
+        "args": {
+          "fixture_id": "cabinet"
+        },
+        "reasoning": "I still need to retrieve the bottle from the cabinet."
+      },
+      {
+        "step": 10,
+        "agent": "agent_0",
+        "tool": "pick_up_object",
+        "args": {
+          "object_id": "bottle",
+          "source_id": "cabinet"
+        },
+        "reasoning": "The cabinet is still open, so I can take the bottle now."
+      },
+      {
+        "step": 11,
+        "agent": "agent_0",
+        "tool": "navigate_to_fixture",
+        "args": {
+          "fixture_id": "counter_stove"
+        },
+        "reasoning": "I need to return to the stove-side counter to complete the station."
+      },
+      {
+        "step": 12,
+        "agent": "agent_0",
+        "tool": "place_on_surface",
+        "args": {
+          "object_id": "bottle",
+          "support_id": "counter_stove"
+        },
+        "reasoning": "Placing the bottle on the stove-side counter completes the spice station."
+      }
+    ]
+  },
+  "notes": [
+    "This task uses a stove anchor plus nearest-placeable-surface grounding to keep the goal within the existing symbolic primitive set."
+  ]
+}

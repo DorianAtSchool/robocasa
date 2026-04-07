@@ -320,7 +320,6 @@ class TrajectoryAdapter:
         for symbol, env_key in self._object_aliases.items():
             if env_key not in self._object_display_names:
                 self._object_display_names[env_key] = symbol
-
         # Fixtures: use symbolic name from trajectory as display name,
         # fall back to fixture_type from scene
         for symbol, env_key in self._fixture_aliases.items():

@@ -1,0 +1,134 @@
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
+import unittest
+
+MODULE_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "robocasa"
+    / "utils"
+    / "trajectory_pruning.py"
+)
+SPEC = importlib.util.spec_from_file_location("trajectory_pruning", MODULE_PATH)
+trajectory_pruning = importlib.util.module_from_spec(SPEC)
+assert SPEC is not None and SPEC.loader is not None
+SPEC.loader.exec_module(trajectory_pruning)
+
+build_trajectory_pruning_config = trajectory_pruning.build_trajectory_pruning_config
+filter_object_cfgs_for_trajectory = (
+    trajectory_pruning.filter_object_cfgs_for_trajectory
+)
+resolve_trajectory_object_cfg_matches = (
+    trajectory_pruning.resolve_trajectory_object_cfg_matches
+)
+should_keep_object_cfg_for_trajectory = (
+    trajectory_pruning.should_keep_object_cfg_for_trajectory
+)
+
+
+class TestTrajectoryPruning(unittest.TestCase):
+    def test_build_config_disables_unreferenced_surface_fixtures(self):
+        trajectory = {
+            "initial_state": {
+                "fixtures": {
+                    "cabinet": {"fixture_type": "cabinet"},
+                    "counter": {"fixture_type": "counter"},
+                    "fridge": {"fixture_type": "fridge"},
+                },
+                "objects": {
+                    "cheese": {"object_type": "cheese", "location": "fridge"},
+                    "grater": {
+                        "object_type": "cheese_grater",
+                        "location": "cabinet",
+                    },
+                    "lettuce": {"object_type": "lettuce", "location": "salad_bowl"},
+                    "salad_bowl": {"object_type": "bowl", "location": "counter"},
+                },
+            },
+            "grounding_map": {
+                "symbols": {
+                    "cabinet": {
+                        "entity_type": "fixture",
+                        "fixture_type": "cabinet",
+                        "preferred_fixture_types": ["cabinet"],
+                    },
+                    "counter": {
+                        "entity_type": "fixture",
+                        "fixture_type": "counter",
+                        "preferred_fixture_types": ["counter"],
+                    },
+                    "fridge": {
+                        "entity_type": "fixture",
+                        "fixture_type": "fridge",
+                        "preferred_fixture_types": ["fridge"],
+                    },
+                }
+            },
+        }
+
+        pruning = build_trajectory_pruning_config(trajectory, layout=4)
+
+        self.assertIn("toaster", pruning["update_fxtr_cfg_dict"])
+        self.assertIn("coffee_machine", pruning["update_fxtr_cfg_dict"])
+        self.assertNotIn("fridge", pruning["update_fxtr_cfg_dict"])
+        self.assertIn("salad_bowl", pruning["trajectory_object_names"])
+        self.assertIn("bowl", pruning["trajectory_object_types"])
+        self.assertEqual(
+            pruning["trajectory_object_specs"]["salad_bowl"]["object_type"],
+            "bowl",
+        )
+
+    def test_filter_object_cfgs_keeps_named_objects_and_removes_distractors(self):
+        object_cfgs = [
+            {"name": "hotdog_bun", "obj_groups": "hotdog_bun"},
+            {"name": "plate", "obj_groups": "plate"},
+            {"name": "sausage", "obj_groups": "sausage"},
+            {"name": "distr1", "obj_groups": "cheese"},
+            {"name": "distr2"},
+        ]
+
+        filtered = filter_object_cfgs_for_trajectory(
+            object_cfgs,
+            required_object_specs={
+                "bun": {"object_type": "hotdog_bun"},
+                "serving_plate": {"object_type": "plate"},
+                "sausage": {"object_type": "sausage"},
+            },
+        )
+
+        self.assertEqual(
+            [cfg["name"] for cfg in filtered],
+            ["hotdog_bun", "plate", "sausage"],
+        )
+
+    def test_matcher_binds_generated_container_only_when_symbol_remains(self):
+        matches = resolve_trajectory_object_cfg_matches(
+            [
+                {"name": "lettuce_container", "obj_groups": "bowl"},
+            ],
+            required_object_specs={
+                "salad_bowl": {"object_type": "bowl"},
+            },
+        )
+        self.assertEqual(matches, {"salad_bowl": "lettuce_container"})
+
+    def test_generated_container_and_auxiliary_keep_logic(self):
+        self.assertTrue(
+            should_keep_object_cfg_for_trajectory(
+                {"name": "lettuce_container", "obj_groups": "bowl"},
+                required_object_names={"salad_bowl"},
+                required_object_types={"bowl"},
+            )
+        )
+        self.assertFalse(
+            should_keep_object_cfg_for_trajectory(
+                {"name": "knife_auxiliary", "obj_groups": "knife"},
+                required_object_names={"salad_bowl"},
+                required_object_types={"bowl"},
+            )
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

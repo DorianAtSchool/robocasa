@@ -1,0 +1,379 @@
+{
+  "spec_version": 1,
+  "composite_task": "PrepareSausageCheese",
+  "source_python_module": "robocasa.environments.kitchen.composite.preparing_sandwiches.prepare_sausage_cheese",
+  "agent_ids": [
+    "agent_0",
+    "agent_1"
+  ],
+  "max_reasoning_chars": 200,
+  "validator_checks": [
+    "initial_communication",
+    "allowed_tools",
+    "navigation_preconditions",
+    "manipulation_preconditions",
+    "effects",
+    "final_success"
+  ],
+  "preflight_token_estimate": {
+    "prompt_tokens": 3250,
+    "output_tokens": 3900,
+    "reasoning_tokens": 0
+  },
+  "initial_state": {
+    "agents": {
+      "agent_0": {
+        "location": "fridge",
+        "held_object": null
+      },
+      "agent_1": {
+        "location": "fridge",
+        "held_object": null
+      }
+    },
+    "objects": {
+      "sausage": {
+        "object_type": "sausage",
+        "location": "fridge"
+      },
+      "cheese": {
+        "object_type": "cheese",
+        "location": "fridge"
+      },
+      "cutting_board": {
+        "object_type": "cutting_board",
+        "location": "counter"
+      },
+      "baguette": {
+        "object_type": "baguette",
+        "location": "counter"
+      },
+      "knife": {
+        "object_type": "knife",
+        "location": "counter"
+      }
+    },
+    "fixtures": {
+      "fridge": {
+        "fixture_type": "fridge",
+        "parts": {
+          "door": {
+            "part_type": "hinged_part",
+            "state": "closed"
+          }
+        }
+      },
+      "counter": {
+        "fixture_type": "counter"
+      }
+    },
+    "machine_state": {}
+  },
+  "allowed_tool_specs": {
+    "communicate": {
+      "description": "Send a short coordination message to the other agent in the scene. args.to must be that agent's exact ID.",
+      "tool_args": [
+        "to",
+        "message"
+      ]
+    },
+    "navigate_to_fixture": {
+      "description": "Move the robot base to the working pose of a fixture.",
+      "tool_args": [
+        "fixture_id"
+      ],
+      "allowed_fixture_ids": [
+        "fridge",
+        "counter"
+      ]
+    },
+    "pick_up_object": {
+      "description": "Grasp and lift an object from a symbolic source region.",
+      "tool_args": [
+        "object_id",
+        "source_id"
+      ],
+      "allowed_object_ids": [
+        "sausage",
+        "cheese"
+      ],
+      "allowed_source_ids": [
+        "fridge"
+      ]
+    },
+    "place_on_object": {
+      "description": "Place an object on top of another movable support object.",
+      "tool_args": [
+        "object_id",
+        "support_object_id"
+      ],
+      "allowed_object_ids": [
+        "sausage",
+        "cheese"
+      ],
+      "allowed_support_object_ids": [
+        "cutting_board"
+      ]
+    },
+    "give_space": {
+      "description": "Yield working room at a fixture so the other agent can complete an action there.",
+      "tool_args": [
+        "fixture_id"
+      ],
+      "allowed_fixture_ids": [
+        "fridge",
+        "counter"
+      ]
+    }
+  },
+  "task_goal": "retrieve sausage and cheese from fridge, then place both onto cutting_board on counter while leaving baguette and knife on counter for later slicing.",
+  "extra_execution_rules": [
+    "Place sausage and cheese on cutting_board, not directly on counter.",
+    "Do not move baguette or knife during the task.",
+    "Both agents should coordinate before taking ingredients from the fridge."
+  ],
+  "initial_public_state": {
+    "sausage_location": "fridge",
+    "cheese_location": "fridge",
+    "cutting_board_location": "counter",
+    "baguette_location": "counter",
+    "knife_location": "counter"
+  },
+  "task_preconditions": [
+    {
+      "kind": "object_must_remain_at_location",
+      "object_id": "baguette",
+      "location": "counter",
+      "message": "baguette must remain on counter throughout PrepareSausageCheese."
+    },
+    {
+      "kind": "object_must_remain_at_location",
+      "object_id": "knife",
+      "location": "counter",
+      "message": "knife must remain on counter throughout PrepareSausageCheese."
+    },
+    {
+      "kind": "object_must_remain_at_location",
+      "object_id": "cutting_board",
+      "location": "counter",
+      "message": "cutting_board must remain on counter throughout PrepareSausageCheese."
+    },
+    {
+      "kind": "fixture_part_state_required_for_pickup",
+      "tool": "pick_up_object",
+      "source_id": "fridge",
+      "fixture_id": "fridge",
+      "part_id": "door",
+      "required_state": "open",
+      "message": "pick_up_object from fridge requires the fridge door to be open."
+    }
+  ],
+  "goal_conditions": [
+    {
+      "kind": "object_at_location",
+      "object_id": "sausage",
+      "location": "cutting_board"
+    },
+    {
+      "kind": "object_at_location",
+      "object_id": "cheese",
+      "location": "cutting_board"
+    },
+    {
+      "kind": "object_at_location",
+      "object_id": "cutting_board",
+      "location": "counter"
+    }
+  ],
+  "task_effects": [],
+  "grounding": {
+    "legacy_symbol_aliases": {
+      "sausage_1": "sausage",
+      "cheese_1": "cheese",
+      "baguette_1": "baguette",
+      "knife_1": "knife",
+      "cutting_board_1": "cutting_board",
+      "fridge_1": "fridge",
+      "counter_1": "counter"
+    },
+    "symbols": {
+      "sausage": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "role": "sausage",
+        "preferred_fixture_types": [
+          "fridge"
+        ]
+      },
+      "cheese": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "role": "cheese",
+        "preferred_fixture_types": [
+          "fridge"
+        ]
+      },
+      "cutting_board": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "role": "cutting_board",
+        "preferred_fixture_types": [
+          "counter",
+          "counter_non_corner",
+          "counter_non_dining",
+          "dining_counter",
+          "island"
+        ]
+      },
+      "baguette": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "role": "baguette",
+        "preferred_fixture_types": [
+          "counter",
+          "counter_non_corner",
+          "counter_non_dining",
+          "dining_counter",
+          "island"
+        ]
+      },
+      "knife": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "role": "knife",
+        "preferred_fixture_types": [
+          "counter",
+          "counter_non_corner",
+          "counter_non_dining",
+          "dining_counter",
+          "island"
+        ]
+      },
+      "fridge": {
+        "entity_type": "fixture",
+        "resolver": "source_fixture_for_object",
+        "role": "fridge",
+        "object_symbol": "sausage",
+        "preferred_fixture_types": [
+          "fridge"
+        ]
+      },
+      "counter": {
+        "entity_type": "fixture",
+        "resolver": "support_fixture_for_object",
+        "role": "counter",
+        "object_symbol": "cutting_board",
+        "preferred_fixture_types": [
+          "counter",
+          "counter_non_corner",
+          "counter_non_dining",
+          "dining_counter",
+          "island"
+        ]
+      }
+    }
+  },
+  "example_trajectory": {
+    "agents": [
+      {
+        "agent": "agent_0"
+      },
+      {
+        "agent": "agent_1"
+      }
+    ],
+    "steps": [
+      {
+        "step": 0,
+        "agent": "agent_0",
+        "tool": "communicate",
+        "args": {
+          "to": "agent_1",
+          "message": "I will take the sausage from the fridge and place it on the cutting board."
+        },
+        "reasoning": "We should split the two ingredients before the first pickup."
+      },
+      {
+        "step": 1,
+        "agent": "agent_1",
+        "tool": "communicate",
+        "args": {
+          "to": "agent_0",
+          "message": "I will take the cheese and place it on the cutting board as well."
+        },
+        "reasoning": "I should confirm the complementary role so we do not duplicate work."
+      },
+      {
+        "step": 2,
+        "agent": "agent_0",
+        "tool": "open_hinged_part",
+        "args": {
+          "target_id": "fridge",
+          "part_id": "door"
+        },
+        "reasoning": "I need the fridge door open before I can take the sausage."
+      },
+      {
+        "step": 3,
+        "agent": "agent_0",
+        "tool": "pick_up_object",
+        "args": {
+          "object_id": "sausage",
+          "source_id": "fridge"
+        },
+        "reasoning": "I am already at the fridge, so I can retrieve the sausage now."
+      },
+      {
+        "step": 4,
+        "agent": "agent_1",
+        "tool": "pick_up_object",
+        "args": {
+          "object_id": "cheese",
+          "source_id": "fridge"
+        },
+        "reasoning": "I am also at the fridge and can retrieve the cheese in parallel."
+      },
+      {
+        "step": 5,
+        "agent": "agent_0",
+        "tool": "navigate_to_fixture",
+        "args": {
+          "fixture_id": "counter"
+        },
+        "reasoning": "I need to move to the counter to reach the cutting board."
+      },
+      {
+        "step": 6,
+        "agent": "agent_1",
+        "tool": "navigate_to_fixture",
+        "args": {
+          "fixture_id": "counter"
+        },
+        "reasoning": "I need to move to the counter to place the cheese on the cutting board."
+      },
+      {
+        "step": 7,
+        "agent": "agent_0",
+        "tool": "place_on_object",
+        "args": {
+          "object_id": "sausage",
+          "support_object_id": "cutting_board"
+        },
+        "reasoning": "Placing the sausage on the cutting board satisfies half of the task goal."
+      },
+      {
+        "step": 8,
+        "agent": "agent_1",
+        "tool": "place_on_object",
+        "args": {
+          "object_id": "cheese",
+          "support_object_id": "cutting_board"
+        },
+        "reasoning": "Placing the cheese on the cutting board completes the ingredient setup."
+      }
+    ]
+  },
+  "notes": [
+    "This task is a pure transfer-and-stage task and should remain spec-only without custom Python."
+  ]
+}

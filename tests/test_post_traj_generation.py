@@ -12,9 +12,9 @@ from data_generation.task_level.generation.image import (
     resolve_output_dataset_path,
 )
 from data_generation.task_level.tasks import (
-    PrepareCoffeeValidator,
     TaskSemanticValidationError,
     TrajectoryStructureValidationError,
+    get_task_definition,
 )
 
 
@@ -197,7 +197,7 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
 
     def test_post_process_trajectory_keeps_rewritten_steps_schema_valid(self):
         trajectory = post_process_trajectory(make_sample_trajectory())
-        validator = PrepareCoffeeValidator()
+        validator = get_task_definition("PrepareCoffee").validator_factory(None)
 
         try:
             validator.validate(
@@ -241,8 +241,8 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            resolve_output_dataset_path(dataset_path),
-            Path("/tmp/data/pre_image/prepare_coffee/20260316T022801Z/summary.json"),
+            resolve_output_dataset_path(dataset_path).resolve(),
+            Path("/tmp/data/pre_image/prepare_coffee/20260316T022801Z/summary.json").resolve(),
         )
 
     def test_resolve_output_dataset_path_preserves_multitask_layout(self):
@@ -251,8 +251,8 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            resolve_output_dataset_path(dataset_path),
-            Path("/tmp/data/pre_image/20260316T022801Z/prepare_coffee/summary.json"),
+            resolve_output_dataset_path(dataset_path).resolve(),
+            Path("/tmp/data/pre_image/20260316T022801Z/prepare_coffee/summary.json").resolve(),
         )
 
     def test_post_process_dataset_writes_summary_copy_without_mutating_source(self):

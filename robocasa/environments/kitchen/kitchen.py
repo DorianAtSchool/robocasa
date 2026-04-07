@@ -36,6 +36,10 @@ from robocasa.utils.texture_swap import (
     replace_floor_texture,
     replace_wall_texture,
 )
+from robocasa.utils.trajectory_pruning import (
+    normalize_required_object_specs,
+    resolve_trajectory_object_cfg_matches,
+)
 from robocasa.utils.config_utils import refactor_composite_controller_config
 from robocasa.utils.errors import PlacementError
 from robocasa.models.objects.kitchen_objects import OBJ_GROUPS, OBJ_CATEGORIES
@@ -407,6 +411,9 @@ class Kitchen(ManipulationEnv, metaclass=KitchenEnvMeta):
         robot_spawn_deviation_rot=0.0,
         clutter_mode=0,
         update_fxtr_cfg_dict=None,
+        trajectory_object_names=None,
+        trajectory_object_types=None,
+        trajectory_object_specs=None,
         use_cotraining_cameras=False,
         use_novel_instructions=False,
     ):
@@ -447,6 +454,18 @@ class Kitchen(ManipulationEnv, metaclass=KitchenEnvMeta):
         self.enable_fixtures = enable_fixtures
         self.update_fxtr_cfg_dict = update_fxtr_cfg_dict
         self.clutter_mode = clutter_mode
+        self.trajectory_object_names = {
+            str(name) for name in (trajectory_object_names or []) if name
+        }
+        self.trajectory_object_types = {
+            str(obj_type) for obj_type in (trajectory_object_types or []) if obj_type
+        }
+        self.trajectory_object_specs = normalize_required_object_specs(
+            trajectory_object_specs,
+            required_object_names=self.trajectory_object_names,
+            required_object_types=self.trajectory_object_types,
+        )
+        self.symbolic_object_refs = {}
         assert generative_textures in [None, False, "100p"]
         self.generative_textures = generative_textures
 
@@ -871,22 +890,35 @@ class Kitchen(ManipulationEnv, metaclass=KitchenEnvMeta):
         """
         # add objects
         self.objects = {}
-        if "object_cfgs" in self._ep_meta:
-            self.object_cfgs = self._ep_meta["object_cfgs"]
+        self.symbolic_object_refs = {}
+        raw_object_cfgs = self._ep_meta.get("object_cfgs")
+        from_ep_meta = raw_object_cfgs is not None
+        if raw_object_cfgs is None:
+            raw_object_cfgs = self._get_obj_cfgs()
+
+        normalized_object_cfgs = []
+        for obj_num, cfg in enumerate(raw_object_cfgs):
+            cfg_copy = deepcopy(cfg)
+            if "name" not in cfg_copy:
+                cfg_copy["name"] = "obj_{}".format(obj_num + 1)
+            normalized_object_cfgs.append(cfg_copy)
+
+        normalized_object_cfgs = self._filter_object_cfgs_for_trajectory(
+            normalized_object_cfgs
+        )
+
+        if from_ep_meta:
+            self.object_cfgs = normalized_object_cfgs
             for obj_num, cfg in enumerate(self.object_cfgs):
-                if "name" not in cfg:
-                    cfg["name"] = "obj_{}".format(obj_num + 1)
                 model, info = EnvUtils.create_obj(self, cfg)
                 cfg["info"] = info
                 self.objects[model.name] = model
                 self.model.merge_objects([model])
         else:
-            self.object_cfgs = self._get_obj_cfgs()
+            self.object_cfgs = normalized_object_cfgs
             all_obj_cfgs = []
             for obj_num, cfg in enumerate(self.object_cfgs):
                 cfg["type"] = "object"
-                if "name" not in cfg:
-                    cfg["name"] = "obj_{}".format(obj_num + 1)
                 model, info = EnvUtils.create_obj(self, cfg)
                 cfg["info"] = info
                 self.objects[model.name] = model
@@ -917,21 +949,23 @@ class Kitchen(ManipulationEnv, metaclass=KitchenEnvMeta):
                         for k, v in try_to_place_in_kwargs.items():
                             container_cfg[k] = v
 
-                    # add in the new object to the model
-                    all_obj_cfgs.append(container_cfg)
-                    model, info = EnvUtils.create_obj(self, container_cfg)
-                    container_cfg["info"] = info
-                    self.objects[model.name] = model
-                    self.model.merge_objects([model])
+                    if self._should_keep_object_cfg_for_trajectory(container_cfg):
+                        self._bind_generated_object_cfg_to_trajectory(container_cfg)
+                        # add in the new object to the model
+                        all_obj_cfgs.append(container_cfg)
+                        model, info = EnvUtils.create_obj(self, container_cfg)
+                        container_cfg["info"] = info
+                        self.objects[model.name] = model
+                        self.model.merge_objects([model])
 
-                    # modify object config to lie inside of container
-                    cfg["placement"] = dict(
-                        size=(0.01, 0.01),
-                        ensure_object_boundary_in_range=False,
-                        sample_args=dict(
-                            reference=container_cfg["name"],
-                        ),
-                    )
+                        # modify object config to lie inside of container
+                        cfg["placement"] = dict(
+                            size=(0.01, 0.01),
+                            ensure_object_boundary_in_range=False,
+                            sample_args=dict(
+                                reference=container_cfg["name"],
+                            ),
+                        )
                 elif (
                     object_ref
                     and "in_container" in info["groups_containing_sampled_obj"]
@@ -985,6 +1019,10 @@ class Kitchen(ManipulationEnv, metaclass=KitchenEnvMeta):
                             ensure_valid_placement=False,
                         )
 
+                    if not self._should_keep_object_cfg_for_trajectory(aux_obj_cfg):
+                        continue
+
+                    self._bind_generated_object_cfg_to_trajectory(aux_obj_cfg)
                     all_obj_cfgs.append(aux_obj_cfg)
                     model, info = EnvUtils.create_obj(self, aux_obj_cfg)
                     aux_obj_cfg["info"] = info
@@ -996,6 +1034,65 @@ class Kitchen(ManipulationEnv, metaclass=KitchenEnvMeta):
 
             # # remove objects that didn't get created
             # self.object_cfgs = [cfg for cfg in self.object_cfgs if "model" in cfg]
+
+    def _filter_object_cfgs_for_trajectory(self, object_cfgs):
+        """Drop task objects that the symbolic trajectory never references."""
+
+        if not self.trajectory_object_specs:
+            return object_cfgs
+
+        matches = resolve_trajectory_object_cfg_matches(
+            object_cfgs,
+            required_object_specs=self.trajectory_object_specs,
+        )
+        self.symbolic_object_refs.update(matches)
+        keep_names = set(matches.values())
+        return [
+            deepcopy(cfg)
+            for cfg in object_cfgs
+            if str(cfg.get("name", "")).strip() in keep_names
+        ]
+
+    def _should_keep_object_cfg_for_trajectory(self, object_cfg):
+        """Return whether one created / synthesized object should be kept."""
+
+        if not self.trajectory_object_specs:
+            return True
+
+        remaining_specs = {
+            symbol: spec
+            for symbol, spec in self.trajectory_object_specs.items()
+            if symbol not in self.symbolic_object_refs
+        }
+        if not remaining_specs:
+            return False
+
+        return bool(
+            resolve_trajectory_object_cfg_matches(
+                [object_cfg],
+                required_object_specs=remaining_specs,
+            )
+        )
+
+    def _bind_generated_object_cfg_to_trajectory(self, object_cfg):
+        """Bind one generated object to the remaining symbolic trajectory object."""
+
+        if not self.trajectory_object_specs:
+            return
+
+        remaining_specs = {
+            symbol: spec
+            for symbol, spec in self.trajectory_object_specs.items()
+            if symbol not in self.symbolic_object_refs
+        }
+        if not remaining_specs:
+            return
+
+        matches = resolve_trajectory_object_cfg_matches(
+            [object_cfg],
+            required_object_specs=remaining_specs,
+        )
+        self.symbolic_object_refs.update(matches)
 
     def _get_aux_obj_instance(self, base_mjcf_path):
         """

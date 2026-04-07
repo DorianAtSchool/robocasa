@@ -101,6 +101,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from data_generation.task_level.generation.raw import progress as raw_progress
+from robocasa.utils.trajectory_pruning import build_trajectory_pruning_config
 
 BarColumn = raw_progress.BarColumn
 Console = raw_progress.Console
@@ -1040,6 +1041,7 @@ def run_one(
         trajectory = json.load(f)
 
     task_name = trajectory.get("composite_task", "Kitchen")
+    pruning_config = build_trajectory_pruning_config(trajectory, layout=layout)
 
     executor = _get_or_create_cached_executor(
         task_name=task_name,
@@ -1050,6 +1052,10 @@ def run_one(
         placement=placement,
         cell_size=cell_size,
         robot_spawn=robot_spawn,
+        update_fxtr_cfg_dict=pruning_config["update_fxtr_cfg_dict"],
+        trajectory_object_names=pruning_config["trajectory_object_names"],
+        trajectory_object_types=pruning_config["trajectory_object_types"],
+        trajectory_object_specs=pruning_config["trajectory_object_specs"],
         gl_backend=gl_backend,
         render_width=render_width,
         render_height=render_height,

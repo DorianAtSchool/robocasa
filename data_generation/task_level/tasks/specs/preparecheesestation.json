@@ -1,0 +1,454 @@
+{
+  "spec_version": 1,
+  "composite_task": "PrepareCheeseStation",
+  "source_python_module": "robocasa.environments.kitchen.composite.making_salads.prepare_cheese_station",
+  "agent_ids": [
+    "agent_0",
+    "agent_1"
+  ],
+  "max_reasoning_chars": 200,
+  "validator_checks": [
+    "initial_communication",
+    "allowed_tools",
+    "navigation_preconditions",
+    "manipulation_preconditions",
+    "effects",
+    "final_success"
+  ],
+  "preflight_token_estimate": {
+    "prompt_tokens": 3350,
+    "output_tokens": 4000,
+    "reasoning_tokens": 0
+  },
+  "initial_state": {
+    "agents": {
+      "agent_0": {
+        "location": "fridge",
+        "held_object": null
+      },
+      "agent_1": {
+        "location": "fridge",
+        "held_object": null
+      }
+    },
+    "objects": {
+      "cheese": {
+        "object_type": "cheese",
+        "location": "fridge"
+      },
+      "grater": {
+        "object_type": "cheese_grater",
+        "location": "cabinet"
+      },
+      "salad_bowl": {
+        "object_type": "bowl",
+        "location": "counter"
+      },
+      "lettuce": {
+        "object_type": "lettuce",
+        "location": "salad_bowl"
+      }
+    },
+    "fixtures": {
+      "fridge": {
+        "fixture_type": "fridge",
+        "parts": {
+          "door": {
+            "part_type": "hinged_part",
+            "state": "closed"
+          }
+        }
+      },
+      "cabinet": {
+        "fixture_type": "cabinet",
+        "parts": {
+          "door": {
+            "part_type": "hinged_part",
+            "state": "closed"
+          }
+        }
+      },
+      "counter": {
+        "fixture_type": "counter"
+      }
+    },
+    "machine_state": {
+      "prepare_cheese_station": {
+        "cheese_staged": false,
+        "grater_staged": false
+      }
+    }
+  },
+  "allowed_tool_specs": {
+    "communicate": {
+      "description": "Send a short coordination message to the other agent in the scene. args.to must be that agent's exact ID.",
+      "tool_args": [
+        "to",
+        "message"
+      ]
+    },
+    "navigate_to_fixture": {
+      "description": "Move the robot base to the working pose of a fixture.",
+      "tool_args": [
+        "fixture_id"
+      ],
+      "allowed_fixture_ids": [
+        "fridge",
+        "cabinet",
+        "counter"
+      ]
+    },
+    "pick_up_object": {
+      "description": "Grasp and lift an object from a symbolic source region.",
+      "tool_args": [
+        "object_id",
+        "source_id"
+      ],
+      "allowed_object_ids": [
+        "cheese",
+        "grater"
+      ],
+      "allowed_source_ids": [
+        "fridge",
+        "cabinet"
+      ]
+    },
+    "place_next_to": {
+      "description": "Place an object adjacent to a reference object or nearby fixture on the same support surface.",
+      "tool_args": [
+        "object_id",
+        "reference_object_id"
+      ],
+      "allowed_object_ids": [
+        "cheese",
+        "grater"
+      ],
+      "allowed_reference_object_ids": [
+        "salad_bowl"
+      ]
+    },
+    "give_space": {
+      "description": "Yield working room at a fixture so the other agent can complete an action there.",
+      "tool_args": [
+        "fixture_id"
+      ],
+      "allowed_fixture_ids": [
+        "fridge",
+        "cabinet",
+        "counter"
+      ]
+    }
+  },
+  "task_goal": "retrieve cheese from fridge and grater from cabinet, then place both next to salad_bowl on counter to prepare the cheese station.",
+  "extra_execution_rules": [
+    "Use place_next_to with reference_object_id salad_bowl so both cheese and grater end up staged on counter near the bowl.",
+    "Do not move salad_bowl or lettuce during the task.",
+    "Both agents should split the fridge and cabinet retrieval work rather than duplicating the same source."
+  ],
+  "initial_public_state": {
+    "cheese_location": "fridge",
+    "grater_location": "cabinet",
+    "salad_bowl_location": "counter",
+    "lettuce_location": "salad_bowl",
+    "cheese_staged": false,
+    "grater_staged": false
+  },
+  "task_preconditions": [
+    {
+      "kind": "object_must_remain_at_location",
+      "object_id": "salad_bowl",
+      "location": "counter",
+      "message": "salad_bowl must remain on counter throughout PrepareCheeseStation."
+    },
+    {
+      "kind": "object_must_remain_at_location",
+      "object_id": "lettuce",
+      "location": "salad_bowl",
+      "message": "lettuce must remain in salad_bowl during PrepareCheeseStation."
+    },
+    {
+      "kind": "fixture_part_state_required_for_pickup",
+      "tool": "pick_up_object",
+      "source_id": "fridge",
+      "fixture_id": "fridge",
+      "part_id": "door",
+      "required_state": "open",
+      "message": "pick_up_object from fridge requires the fridge door to be open."
+    },
+    {
+      "kind": "fixture_part_state_required_for_pickup",
+      "tool": "pick_up_object",
+      "source_id": "cabinet",
+      "fixture_id": "cabinet",
+      "part_id": "door",
+      "required_state": "open",
+      "message": "pick_up_object from cabinet requires the cabinet door to be open."
+    }
+  ],
+  "goal_conditions": [
+    {
+      "kind": "object_at_location",
+      "object_id": "cheese",
+      "location": "counter"
+    },
+    {
+      "kind": "object_at_location",
+      "object_id": "grater",
+      "location": "counter"
+    },
+    {
+      "kind": "machine_flag_true",
+      "machine_path": [
+        "prepare_cheese_station",
+        "cheese_staged"
+      ]
+    },
+    {
+      "kind": "machine_flag_true",
+      "machine_path": [
+        "prepare_cheese_station",
+        "grater_staged"
+      ]
+    }
+  ],
+  "task_effects": [
+    {
+      "kind": "set_machine_flag_on_action",
+      "tool": "place_next_to",
+      "args": {
+        "object_id": "cheese",
+        "reference_object_id": "salad_bowl"
+      },
+      "machine_path": [
+        "prepare_cheese_station",
+        "cheese_staged"
+      ],
+      "value": true
+    },
+    {
+      "kind": "set_machine_flag_on_action",
+      "tool": "place_next_to",
+      "args": {
+        "object_id": "grater",
+        "reference_object_id": "salad_bowl"
+      },
+      "machine_path": [
+        "prepare_cheese_station",
+        "grater_staged"
+      ],
+      "value": true
+    }
+  ],
+  "grounding": {
+    "legacy_symbol_aliases": {
+      "cheese_1": "cheese",
+      "grater_1": "grater",
+      "lettuce_1": "lettuce",
+      "bowl_1": "salad_bowl",
+      "fridge_1": "fridge",
+      "cabinet_1": "cabinet",
+      "counter_1": "counter"
+    },
+    "symbols": {
+      "cheese": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "role": "cheese",
+        "preferred_fixture_types": [
+          "fridge"
+        ]
+      },
+      "grater": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "role": "grater",
+        "preferred_fixture_types": [
+          "cabinet",
+          "cabinet_single_door",
+          "cabinet_double_door",
+          "cabinet_with_door"
+        ]
+      },
+      "salad_bowl": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "role": "salad_bowl",
+        "preferred_fixture_types": [
+          "counter",
+          "counter_non_corner",
+          "counter_non_dining",
+          "dining_counter",
+          "island"
+        ]
+      },
+      "lettuce": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "role": "lettuce",
+        "preferred_fixture_types": [
+          "counter",
+          "counter_non_corner",
+          "counter_non_dining",
+          "dining_counter",
+          "island"
+        ]
+      },
+      "fridge": {
+        "entity_type": "fixture",
+        "resolver": "source_fixture_for_object",
+        "role": "fridge",
+        "object_symbol": "cheese",
+        "preferred_fixture_types": [
+          "fridge"
+        ]
+      },
+      "cabinet": {
+        "entity_type": "fixture",
+        "resolver": "source_fixture_for_object",
+        "role": "cabinet",
+        "object_symbol": "grater",
+        "preferred_fixture_types": [
+          "cabinet",
+          "cabinet_single_door",
+          "cabinet_double_door",
+          "cabinet_with_door"
+        ]
+      },
+      "counter": {
+        "entity_type": "fixture",
+        "resolver": "support_fixture_for_object",
+        "role": "counter",
+        "object_symbol": "salad_bowl",
+        "preferred_fixture_types": [
+          "counter",
+          "counter_non_corner",
+          "counter_non_dining",
+          "dining_counter",
+          "island"
+        ]
+      }
+    }
+  },
+  "example_trajectory": {
+    "agents": [
+      {
+        "agent": "agent_0"
+      },
+      {
+        "agent": "agent_1"
+      }
+    ],
+    "steps": [
+      {
+        "step": 0,
+        "agent": "agent_0",
+        "tool": "communicate",
+        "args": {
+          "to": "agent_1",
+          "message": "I will get the cheese from the fridge and stage it by the salad bowl."
+        },
+        "reasoning": "We should split the fridge and cabinet work before the first pickup."
+      },
+      {
+        "step": 1,
+        "agent": "agent_1",
+        "tool": "communicate",
+        "args": {
+          "to": "agent_0",
+          "message": "I will retrieve the grater from the cabinet and bring it to the counter."
+        },
+        "reasoning": "I should confirm the complementary retrieval plan."
+      },
+      {
+        "step": 2,
+        "agent": "agent_0",
+        "tool": "open_hinged_part",
+        "args": {
+          "target_id": "fridge",
+          "part_id": "door"
+        },
+        "reasoning": "I need the fridge door open before I can take the cheese."
+      },
+      {
+        "step": 3,
+        "agent": "agent_0",
+        "tool": "pick_up_object",
+        "args": {
+          "object_id": "cheese",
+          "source_id": "fridge"
+        },
+        "reasoning": "I am already at the fridge, so I can retrieve the cheese now."
+      },
+      {
+        "step": 4,
+        "agent": "agent_1",
+        "tool": "navigate_to_fixture",
+        "args": {
+          "fixture_id": "cabinet"
+        },
+        "reasoning": "I need to move to the cabinet to get the grater."
+      },
+      {
+        "step": 5,
+        "agent": "agent_1",
+        "tool": "open_hinged_part",
+        "args": {
+          "target_id": "cabinet",
+          "part_id": "door"
+        },
+        "reasoning": "I need the cabinet door open before I can take the grater."
+      },
+      {
+        "step": 6,
+        "agent": "agent_1",
+        "tool": "pick_up_object",
+        "args": {
+          "object_id": "grater",
+          "source_id": "cabinet"
+        },
+        "reasoning": "I am picking up the grater from the cabinet."
+      },
+      {
+        "step": 7,
+        "agent": "agent_0",
+        "tool": "navigate_to_fixture",
+        "args": {
+          "fixture_id": "counter"
+        },
+        "reasoning": "I need to move to the counter to stage the cheese next to the bowl."
+      },
+      {
+        "step": 8,
+        "agent": "agent_0",
+        "tool": "place_next_to",
+        "args": {
+          "object_id": "cheese",
+          "reference_object_id": "salad_bowl"
+        },
+        "reasoning": "I am placing the cheese next to the salad bowl on the counter."
+      },
+      {
+        "step": 9,
+        "agent": "agent_1",
+        "tool": "navigate_to_fixture",
+        "args": {
+          "fixture_id": "counter"
+        },
+        "reasoning": "I need to move to the counter to stage the grater near the bowl."
+      },
+      {
+        "step": 10,
+        "agent": "agent_1",
+        "tool": "place_next_to",
+        "args": {
+          "object_id": "grater",
+          "reference_object_id": "salad_bowl"
+        },
+        "reasoning": "I am placing the grater next to the salad bowl to complete the station."
+      }
+    ]
+  },
+  "notes": [
+    "This task verifies mixed fridge-and-cabinet storage preconditions under the spec-native door model."
+  ]
+}
