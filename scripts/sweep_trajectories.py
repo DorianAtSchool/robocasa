@@ -66,6 +66,7 @@ Usage:
 
 from __future__ import annotations
 
+import atexit
 import argparse
 import contextlib
 from concurrent.futures import (
@@ -79,13 +80,16 @@ import io
 import itertools
 import json
 import logging
+import math
 import multiprocessing
 import os
 import queue
 import re
+import signal
 import shutil
 import sys
 import textwrap
+import threading
 import time
 import traceback
 from pathlib import Path
@@ -112,12 +116,8 @@ TaskProgressColumn = raw_progress.TaskProgressColumn
 Text = raw_progress.Text
 TextColumn = raw_progress.TextColumn
 
-try:
-    from rich.progress import TimeRemainingColumn
-except ImportError:  # pragma: no cover
-    TimeRemainingColumn = None
-
-CLI_EPILOG = textwrap.dedent("""\
+CLI_EPILOG = textwrap.dedent(
+    """\
     Examples:
       python scripts/sweep_trajectories.py \\
         --input-dir data_generation/task_level/data/image/20260324T031125Z \\
@@ -151,25 +151,346 @@ QUIET_DIAGNOSTIC_PATTERN = re.compile(
     r"\b(warn(?:ing)?|error|exception|traceback|critical|fatal)\b",
     re.IGNORECASE,
 )
+_WORKER_EXECUTOR_CACHE: dict[
+    tuple[int, int],
+    tuple[tuple[Any, ...], Any],
+] = {}
+
+
+def _worker_cache_slot() -> tuple[int, int]:
+    """Return the process-local worker slot used for executor reuse."""
+    return (os.getpid(), threading.get_ident())
+
+
+def clear_executor_cache() -> None:
+    """Close and clear all cached executors in the current process."""
+    for _, executor in list(_WORKER_EXECUTOR_CACHE.values()):
+        try:
+            executor.close()
+        except Exception:
+            pass
+    _WORKER_EXECUTOR_CACHE.clear()
+
+
+atexit.register(clear_executor_cache)
+
+
+def _executor_processes(executor: Any) -> list[Any]:
+    """Return the worker processes owned by one executor when exposed."""
+
+    processes = getattr(executor, "_processes", None)
+    if processes is None:
+        return []
+    if isinstance(processes, dict):
+        return [process for process in processes.values() if process is not None]
+    values = getattr(processes, "values", None)
+    if callable(values):
+        return [process for process in values() if process is not None]
+    return []
+
+
+def _terminate_executor_processes(processes: list[Any]) -> None:
+    """Terminate then kill worker processes for a cancelled sweep executor."""
+
+    for process in processes:
+        is_alive = getattr(process, "is_alive", None)
+        if callable(is_alive):
+            try:
+                if not is_alive():
+                    continue
+            except Exception:
+                pass
+        terminate = getattr(process, "terminate", None)
+        if callable(terminate):
+            try:
+                terminate()
+            except Exception:
+                pass
+
+    for process in processes:
+        join = getattr(process, "join", None)
+        if callable(join):
+            try:
+                join(timeout=0.2)
+            except Exception:
+                pass
+        is_alive = getattr(process, "is_alive", None)
+        if callable(is_alive):
+            try:
+                if not is_alive():
+                    continue
+            except Exception:
+                pass
+        kill = getattr(process, "kill", None)
+        if callable(kill):
+            try:
+                kill()
+            except Exception:
+                pass
+
+
+def _shutdown_sweep_executor(
+    executor: Any | None,
+    *,
+    cancel_running: bool,
+) -> None:
+    """Shut down one sweep executor and terminate workers on cancellation."""
+
+    if executor is None:
+        return
+
+    executor_processes = _executor_processes(executor) if cancel_running else []
+    if cancel_running:
+        terminate_workers = getattr(executor, "terminate_workers", None)
+        if callable(terminate_workers):
+            try:
+                terminate_workers()
+                return
+            except Exception:
+                pass
+
+    shutdown = getattr(executor, "shutdown", None)
+    if callable(shutdown):
+        try:
+            if cancel_running:
+                shutdown(wait=False, cancel_futures=True)
+            else:
+                shutdown(wait=True)
+        except TypeError:
+            try:
+                shutdown(wait=not cancel_running)
+            except TypeError:
+                try:
+                    shutdown()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    if cancel_running:
+        _terminate_executor_processes(executor_processes)
+
+
+class SweepCancellationController:
+    """Track the active sweep executor so signals can stop it promptly."""
+
+    def __init__(self) -> None:
+        self._active_executor: Any | None = None
+
+    def attach_executor(self, executor: Any) -> None:
+        """Register the currently active sweep executor."""
+
+        self._active_executor = executor
+
+    def detach_executor(self, executor: Any) -> None:
+        """Clear the active sweep executor when it exits."""
+
+        if self._active_executor is executor:
+            self._active_executor = None
+
+    def request_cancel(self) -> None:
+        """Stop the active sweep executor immediately on termination."""
+
+        _shutdown_sweep_executor(self._active_executor, cancel_running=True)
+
+
+@contextlib.contextmanager
+def _install_sweep_signal_handlers(
+    cancellation_controller: SweepCancellationController | None,
+) -> Any:
+    """Translate SIGINT and SIGTERM into KeyboardInterrupt during one sweep."""
+
+    if cancellation_controller is None:
+        yield
+        return
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    handled_signals = [signal.SIGINT]
+    if hasattr(signal, "SIGTERM"):
+        handled_signals.append(signal.SIGTERM)
+
+    previous_handlers = {signum: signal.getsignal(signum) for signum in handled_signals}
+
+    def _handle_signal(signum: int, _frame: Any) -> None:
+        """Cancel the active sweep executor before unwinding the main thread."""
+
+        cancellation_controller.request_cancel()
+        raise KeyboardInterrupt(f"received signal {signum}")
+
+    try:
+        for signum in handled_signals:
+            signal.signal(signum, _handle_signal)
+        yield
+    finally:
+        for signum, previous_handler in previous_handlers.items():
+            signal.signal(signum, previous_handler)
+
+
+def _executor_cache_key(
+    *,
+    task_name: str,
+    robots: int,
+    layout: int,
+    style: int,
+    seed: int,
+    placement: str,
+    cell_size: float,
+    robot_spawn: str,
+    gl_backend: str,
+    render_width: int = 512,
+    render_height: int = 512,
+) -> tuple[Any, ...]:
+    """Build the simulator reuse key for one worker-local executor."""
+    return (
+        task_name,
+        robots,
+        layout,
+        style,
+        seed,
+        placement,
+        cell_size,
+        robot_spawn,
+        gl_backend,
+        render_width,
+        render_height,
+    )
+
+
+def _get_or_create_cached_executor(
+    *,
+    task_name: str,
+    robots: int,
+    layout: int,
+    style: int,
+    seed: int,
+    placement: str,
+    cell_size: float,
+    robot_spawn: str,
+    gl_backend: str,
+    render_width: int = 512,
+    render_height: int = 512,
+    executor_factory: Callable[..., Any] | None = None,
+) -> Any:
+    """Reuse one live executor per worker thread when the env config matches."""
+    cache_slot = _worker_cache_slot()
+    cache_key = _executor_cache_key(
+        task_name=task_name,
+        robots=robots,
+        layout=layout,
+        style=style,
+        seed=seed,
+        placement=placement,
+        cell_size=cell_size,
+        robot_spawn=robot_spawn,
+        gl_backend=gl_backend,
+        render_width=render_width,
+        render_height=render_height,
+    )
+    cached_entry = _WORKER_EXECUTOR_CACHE.get(cache_slot)
+    if cached_entry is not None:
+        cached_key, cached_executor = cached_entry
+        if cached_key == cache_key:
+            return cached_executor
+        cached_executor.close()
+        del _WORKER_EXECUTOR_CACHE[cache_slot]
+
+    if executor_factory is None:
+        from robocasa.utils.sim_tool_executor import SimToolExecutor
+
+        executor_factory = SimToolExecutor
+
+    executor = executor_factory(
+        task_name=task_name,
+        robots=robots,
+        layout=layout,
+        style=style,
+        seed=seed,
+        placement=placement,
+        cell_size=cell_size,
+        robot_spawn=robot_spawn,
+        gl_backend=gl_backend,
+        render_width=render_width,
+        render_height=render_height,
+    )
+    _WORKER_EXECUTOR_CACHE[cache_slot] = (cache_key, executor)
+    return executor
 
 
 class SweepOverallEtaColumn(ProgressColumn):
     """Shows ETA only for the overall runs row."""
 
-    def __init__(self) -> None:
-        """Initializes the shared ETA column for sweep progress."""
+    def __init__(self, eta_seconds_getter: Callable[[], float | None]) -> None:
+        """Initializes the shared trajectory-average ETA column."""
 
-        if TimeRemainingColumn is None or Text is None:
+        if Text is None:
             raise RuntimeError("rich progress support is unavailable")
         super().__init__()
-        self._delegate = TimeRemainingColumn()
+        self._eta_seconds_getter = eta_seconds_getter
 
     def render(self, task: Any) -> Any:
         """Renders ETA for the overall row and blanks for worker rows."""
 
         if not getattr(task, "fields", {}).get("show_eta", False):
             return Text("")
-        return self._delegate.render(task)
+        eta_seconds = self._eta_seconds_getter()
+        if eta_seconds is None:
+            return Text("--:--:--")
+        rounded_seconds = 0 if eta_seconds <= 0 else math.ceil(eta_seconds)
+        hours, remainder = divmod(rounded_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        return Text(f"{hours}:{minutes:02d}:{seconds:02d}")
+
+
+class SweepAverageTrajectoryTimeColumn(ProgressColumn):
+    """Shows average trajectory duration only for the overall runs row."""
+
+    def __init__(
+        self,
+        average_seconds_getter: Callable[[], float | None],
+    ) -> None:
+        """Initializes the shared average-duration column."""
+
+        if Text is None:
+            raise RuntimeError("rich progress support is unavailable")
+        super().__init__()
+        self._average_seconds_getter = average_seconds_getter
+
+    def render(self, task: Any) -> Any:
+        """Renders average trajectory time for the overall row."""
+
+        if not getattr(task, "fields", {}).get("show_eta", False):
+            return Text("")
+        average_seconds = self._average_seconds_getter()
+        if average_seconds is None:
+            return Text("avg --:--:--")
+        rounded_seconds = 0 if average_seconds <= 0 else math.ceil(average_seconds)
+        hours, remainder = divmod(rounded_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        return Text(f"avg {hours}:{minutes:02d}:{seconds:02d}")
+
+
+class SweepTrajectoryRateColumn(ProgressColumn):
+    """Shows completed trajectory throughput only for the overall runs row."""
+
+    def __init__(self, rate_getter: Callable[[], float | None]) -> None:
+        """Initializes the shared trajectory-throughput column."""
+
+        if Text is None:
+            raise RuntimeError("rich progress support is unavailable")
+        super().__init__()
+        self._rate_getter = rate_getter
+
+    def render(self, task: Any) -> Any:
+        """Renders trajectory throughput for the overall row."""
+
+        if not getattr(task, "fields", {}).get("show_eta", False):
+            return Text("")
+        rate = self._rate_getter()
+        if rate is None:
+            return Text("tpm --.-")
+        return Text(f"tpm {rate:.1f}")
 
 
 class SweepRichProgressDisplay:
@@ -182,7 +503,15 @@ class SweepRichProgressDisplay:
             raise RuntimeError("rich progress support is unavailable")
         # The scheduler still tracks worker slots internally, but the terminal
         # now renders only the overall runs bar.
-        _ = worker_count
+        self._worker_count = worker_count
+        self._total_runs = total_runs
+        self._total_trajectories: int | None = None
+        self._completed_trajectories = 0
+        self._timed_completed_trajectories = 0
+        self._completed_trajectory_seconds = 0.0
+        self._first_trajectory_started_at: float | None = None
+        self._active_trajectory_starts: dict[int, float] = {}
+        self._eta_lock = threading.Lock()
 
         self.console = Console(stderr=True)
         self._progress = RichProgress(
@@ -191,7 +520,9 @@ class SweepRichProgressDisplay:
             TaskProgressColumn(),
             MofNCompleteColumn(),
             StaticQueuedTimeElapsedColumn(),
-            SweepOverallEtaColumn(),
+            SweepOverallEtaColumn(self._estimate_remaining_seconds),
+            SweepAverageTrajectoryTimeColumn(self._average_trajectory_seconds),
+            SweepTrajectoryRateColumn(self._trajectories_per_minute),
             TextColumn("[dim]{task.fields[status]}"),
             console=self.console,
             transient=False,
@@ -221,7 +552,16 @@ class SweepRichProgressDisplay:
     ) -> None:
         """Keeps compatibility with the sweep scheduler's worker-slot hooks."""
 
-        del worker_slot, task_name, traj_idx, total_runs
+        del task_name, traj_idx
+        with self._eta_lock:
+            if total_runs > 0:
+                started_at = time.monotonic()
+                if self._total_trajectories is None:
+                    self._total_trajectories = max(self._total_runs // total_runs, 1)
+                if self._first_trajectory_started_at is None:
+                    self._first_trajectory_started_at = started_at
+                self._active_trajectory_starts[worker_slot] = started_at
+        self._progress.refresh()
 
     def record_run_completion(
         self,
@@ -243,9 +583,26 @@ class SweepRichProgressDisplay:
     ) -> None:
         """Backfills the overall bar if a worker exits without progress events."""
 
-        del worker_slot, error_count
+        del error_count
         if missing_runs > 0:
             self.overall_progress.update(missing_runs)
+        with self._eta_lock:
+            started_at = self._active_trajectory_starts.pop(worker_slot, None)
+            total_trajectories = self._total_trajectories
+            if total_trajectories is None:
+                self._completed_trajectories += 1
+            else:
+                self._completed_trajectories = min(
+                    self._completed_trajectories + 1,
+                    total_trajectories,
+                )
+            if started_at is not None:
+                self._completed_trajectory_seconds += max(
+                    time.monotonic() - started_at,
+                    0.0,
+                )
+                self._timed_completed_trajectories += 1
+        self._progress.refresh()
 
     def write_log_line(self, log_line: str) -> None:
         """Prints one log line without corrupting the active Rich display."""
@@ -256,6 +613,71 @@ class SweepRichProgressDisplay:
         """Stops the Rich progress display."""
 
         self._progress.stop()
+
+    def _estimate_remaining_seconds(self) -> float | None:
+        """Estimate completion time from the average completed trajectory."""
+
+        with self._eta_lock:
+            total_trajectories = self._total_trajectories
+            completed_trajectories = self._completed_trajectories
+            timed_completed_trajectories = self._timed_completed_trajectories
+            completed_trajectory_seconds = self._completed_trajectory_seconds
+            active_starts = list(self._active_trajectory_starts.values())
+
+        if total_trajectories is None or timed_completed_trajectories <= 0:
+            return None
+        if completed_trajectories >= total_trajectories and not active_starts:
+            return 0.0
+
+        average_trajectory_seconds = (
+            completed_trajectory_seconds / timed_completed_trajectories
+        )
+        now = time.monotonic()
+        worker_finish_times = [
+            max(average_trajectory_seconds - max(now - started_at, 0.0), 0.0)
+            for started_at in active_starts
+        ]
+        worker_finish_times.extend(
+            [0.0] * max(self._worker_count - len(worker_finish_times), 0)
+        )
+        if not worker_finish_times:
+            worker_finish_times = [0.0]
+
+        remaining_queued_trajectories = max(
+            total_trajectories - completed_trajectories - len(active_starts),
+            0,
+        )
+        for _ in range(remaining_queued_trajectories):
+            next_worker_index = min(
+                range(len(worker_finish_times)),
+                key=worker_finish_times.__getitem__,
+            )
+            worker_finish_times[next_worker_index] += average_trajectory_seconds
+        return max(worker_finish_times)
+
+    def _average_trajectory_seconds(self) -> float | None:
+        """Return the mean duration for completed trajectories."""
+
+        with self._eta_lock:
+            if self._timed_completed_trajectories <= 0:
+                return None
+            return (
+                self._completed_trajectory_seconds / self._timed_completed_trajectories
+            )
+
+    def _trajectories_per_minute(self) -> float | None:
+        """Return the completed-trajectory throughput per minute."""
+
+        with self._eta_lock:
+            completed_trajectories = self._completed_trajectories
+            first_trajectory_started_at = self._first_trajectory_started_at
+
+        if completed_trajectories <= 0 or first_trajectory_started_at is None:
+            return None
+        elapsed_seconds = max(time.monotonic() - first_trajectory_started_at, 0.0)
+        if elapsed_seconds <= 0:
+            return None
+        return completed_trajectories / (elapsed_seconds / 60.0)
 
 
 def _create_sweep_progress_display(
@@ -342,12 +764,15 @@ def _drain_progress_events(
 def _create_progress_event_queue(
     *,
     executor_factory: Callable[..., Any],
+    mp_context: Any | None = None,
 ) -> tuple[Any, Any | None]:
     """Builds the queue used to stream run completions back to the main process."""
 
     if executor_factory is ThreadPoolExecutor:
         return queue.Queue(), None
-    progress_manager = multiprocessing.Manager()
+    progress_manager = (
+        mp_context.Manager() if mp_context is not None else multiprocessing.Manager()
+    )
     return progress_manager.Queue(), progress_manager
 
 
@@ -454,6 +879,26 @@ def _quiet_run_output_context(*, suppress_output: bool) -> Any:
         finally:
             if robosuite_logger is not None and original_level is not None:
                 robosuite_logger.setLevel(original_level)
+
+
+@contextlib.contextmanager
+def _temporary_environment(overrides: dict[str, str | None]) -> Any:
+    """Apply environment overrides for the duration of one context."""
+
+    previous_values = {key: os.environ.get(key) for key in overrides}
+    for key, value in overrides.items():
+        if value is None:
+            os.environ.pop(key, None)
+            continue
+        os.environ[key] = value
+    try:
+        yield
+    finally:
+        for key, previous_value in previous_values.items():
+            if previous_value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = previous_value
 
 
 def _emit_trajectory_log_lines(
@@ -585,9 +1030,11 @@ def run_one(
     cell_size: float,
     robot_spawn: str = "sim",
     skip_videos: bool = True,
+    gl_backend: str = "osmesa",
+    render_width: int = 512,
+    render_height: int = 512,
 ) -> dict:
     """Execute a single trajectory and return summary info."""
-    from robocasa.utils.sim_tool_executor import SimToolExecutor
     from robocasa.utils.trajectory_adapter import execute_trajectory
 
     with open(traj_file) as f:
@@ -596,7 +1043,7 @@ def run_one(
     task_name = trajectory.get("composite_task", "Kitchen")
     pruning_config = build_trajectory_pruning_config(trajectory, layout=layout)
 
-    executor = SimToolExecutor(
+    executor = _get_or_create_cached_executor(
         task_name=task_name,
         robots=robots,
         layout=layout,
@@ -609,36 +1056,37 @@ def run_one(
         trajectory_object_names=pruning_config["trajectory_object_names"],
         trajectory_object_types=pruning_config["trajectory_object_types"],
         trajectory_object_specs=pruning_config["trajectory_object_specs"],
+        gl_backend=gl_backend,
+        render_width=render_width,
+        render_height=render_height,
+    )
+    executor.restore_baseline_state()
+
+    # Copy original trajectory JSON to output dir
+    output_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(traj_file, output_dir / "original_trajectory.json")
+
+    metadata = execute_trajectory(
+        executor=executor,
+        trajectory=trajectory,
+        output_dir=str(output_dir),
+        skip_videos=skip_videos,
     )
 
-    try:
-        # Copy original trajectory JSON to output dir
-        output_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(traj_file, output_dir / "original_trajectory.json")
+    # Count successes (skip get_image steps which always succeed)
+    steps = metadata.get("steps", [])
+    action_steps = [s for s in steps if s.get("tool") != "get_image"]
+    n_success = sum(1 for s in action_steps if s.get("success"))
+    n_total = len(action_steps)
+    n_images = sum(1 for s in steps if s.get("tool") == "get_image")
 
-        metadata = execute_trajectory(
-            executor=executor,
-            trajectory=trajectory,
-            output_dir=str(output_dir),
-            skip_videos=skip_videos,
-        )
-
-        # Count successes (skip get_image steps which always succeed)
-        steps = metadata.get("steps", [])
-        action_steps = [s for s in steps if s.get("tool") != "get_image"]
-        n_success = sum(1 for s in action_steps if s.get("success"))
-        n_total = len(action_steps)
-        n_images = sum(1 for s in steps if s.get("tool") == "get_image")
-
-        return {
-            "status": "ok",
-            "task": task_name,
-            "steps_succeeded": n_success,
-            "steps_total": n_total,
-            "images_rendered": n_images,
-        }
-    finally:
-        executor.close()
+    return {
+        "status": "ok",
+        "task": task_name,
+        "steps_succeeded": n_success,
+        "steps_total": n_total,
+        "images_rendered": n_images,
+    }
 
 
 def run_trajectory_entry(
@@ -655,88 +1103,114 @@ def run_trajectory_entry(
     skip_videos: bool = True,
     suppress_stdout: bool = False,
     progress_reporter: Callable[[dict[str, Any]], None] | None = None,
+    gpu_id: int | None = None,
+    gl_backend: str = "osmesa",
+    render_width: int = 512,
+    render_height: int = 512,
 ) -> dict[str, Any]:
     """Execute one discovered trajectory across every requested scene combo."""
 
-    task_name = str(entry["task_dir_name"])
-    traj_idx = int(entry["traj_idx"])
-    traj_file = Path(entry["traj_file"])
-    combo_count = len(combos)
-    results: list[dict[str, Any]] = []
-    diagnostic_lines: list[str] = []
-    log_lines: list[str] = []
-
-    for combo_offset, (layout, style, seed) in enumerate(combos):
-        run_num = entry_index * combo_count + combo_offset + 1
-        traj_output_dir, combo_label = _resolve_run_output_dir(
-            output_root,
-            task_name=task_name,
-            traj_idx=traj_idx,
-            combo_count=combo_count,
-            layout=layout,
-            style=style,
-            seed=seed,
-        )
-
-        started_at = time.time()
-        quiet_stderr_buffer = None
-        try:
-            with _quiet_run_output_context(
-                suppress_output=suppress_stdout
-            ) as quiet_stderr_buffer:
-                result = run_one(
-                    traj_file=traj_file,
-                    output_dir=traj_output_dir,
-                    layout=layout,
-                    style=style,
-                    seed=seed,
-                    robots=robots,
-                    placement=placement,
-                    cell_size=cell_size,
-                    robot_spawn=robot_spawn,
-                    skip_videos=skip_videos,
-                )
-            elapsed_seconds = time.time() - started_at
-            result["elapsed_s"] = round(elapsed_seconds, 1)
-        except Exception as exc:  # pragma: no cover - exercised via callers
-            elapsed_seconds = time.time() - started_at
-            result = {
-                "status": "error",
-                "error": str(exc),
-                "traceback": traceback.format_exc(),
-                "elapsed_s": round(elapsed_seconds, 1),
+    runtime_environment_overrides: dict[str, str | None] = {
+        "MUJOCO_GL": gl_backend,
+    }
+    if gpu_id is not None:
+        # Constrain each worker invocation to one GPU before constructing any
+        # simulator state so concurrent entries can be spread across GPUs.
+        runtime_environment_overrides.update(
+            {
+                "CUDA_VISIBLE_DEVICES": str(gpu_id),
+                "GPUS": str(gpu_id),
+                "MUJOCO_EGL_DEVICE_ID": str(gpu_id),
             }
-        if quiet_stderr_buffer is not None:
-            diagnostic_lines.extend(
-                _quiet_diagnostic_lines(quiet_stderr_buffer.getvalue())
-            )
+        )
+    elif gl_backend != "egl":
+        # Clear stale EGL routing when the caller explicitly requested a
+        # non-EGL backend in a process that may have run GPU work earlier.
+        runtime_environment_overrides["MUJOCO_EGL_DEVICE_ID"] = None
 
-        result["task_dir"] = task_name
-        result["traj_idx"] = traj_idx
-        result["traj_file"] = str(traj_file)
-        result["layout"] = layout
-        result["style"] = style
-        result["seed"] = seed
-        results.append(result)
-        if progress_reporter is not None:
-            progress_reporter(
-                {
-                    "status": result["status"],
-                    "layout": layout,
-                    "style": style,
-                    "seed": seed,
-                }
-            )
-        log_lines.append(
-            _format_run_log_line(
-                run_num=run_num,
-                total_runs=total_runs,
+    with _temporary_environment(runtime_environment_overrides):
+        task_name = str(entry["task_dir_name"])
+        traj_idx = int(entry["traj_idx"])
+        traj_file = Path(entry["traj_file"])
+        combo_count = len(combos)
+        results: list[dict[str, Any]] = []
+        diagnostic_lines: list[str] = []
+        log_lines: list[str] = []
+
+        for combo_offset, (layout, style, seed) in enumerate(combos):
+            run_num = entry_index * combo_count + combo_offset + 1
+            traj_output_dir, combo_label = _resolve_run_output_dir(
+                output_root,
                 task_name=task_name,
                 traj_idx=traj_idx,
-                combo_label=combo_label,
-                result=result,
+                combo_count=combo_count,
+                layout=layout,
+                style=style,
+                seed=seed,
             )
-        )
+
+            started_at = time.time()
+            quiet_stderr_buffer = None
+            try:
+                with _quiet_run_output_context(
+                    suppress_output=suppress_stdout
+                ) as quiet_stderr_buffer:
+                    result = run_one(
+                        traj_file=traj_file,
+                        output_dir=traj_output_dir,
+                        layout=layout,
+                        style=style,
+                        seed=seed,
+                        robots=robots,
+                        placement=placement,
+                        cell_size=cell_size,
+                        robot_spawn=robot_spawn,
+                        skip_videos=skip_videos,
+                        gl_backend=gl_backend,
+                        render_width=render_width,
+                        render_height=render_height,
+                    )
+                elapsed_seconds = time.time() - started_at
+                result["elapsed_s"] = round(elapsed_seconds, 1)
+            except Exception as exc:  # pragma: no cover - exercised via callers
+                elapsed_seconds = time.time() - started_at
+                result = {
+                    "status": "error",
+                    "error": str(exc),
+                    "traceback": traceback.format_exc(),
+                    "elapsed_s": round(elapsed_seconds, 1),
+                }
+            if quiet_stderr_buffer is not None:
+                diagnostic_lines.extend(
+                    _quiet_diagnostic_lines(quiet_stderr_buffer.getvalue())
+                )
+
+            result["task_dir"] = task_name
+            result["traj_idx"] = traj_idx
+            result["traj_file"] = str(traj_file)
+            result["layout"] = layout
+            result["style"] = style
+            result["seed"] = seed
+            results.append(result)
+            if progress_reporter is not None:
+                progress_reporter(
+                    {
+                        "status": result["status"],
+                        "layout": layout,
+                        "style": style,
+                        "seed": seed,
+                    }
+                )
+            log_lines.append(
+                _format_run_log_line(
+                    run_num=run_num,
+                    total_runs=total_runs,
+                    task_name=task_name,
+                    traj_idx=traj_idx,
+                    combo_label=combo_label,
+                    result=result,
+                )
+            )
 
     return {
         "diagnostic_lines": diagnostic_lines,
@@ -803,6 +1277,47 @@ def _build_trajectory_crash_results(
     }
 
 
+def get_gpu_allocation(
+    num_workers: int,
+    gpu_ids: list[int] | None,
+    procs_per_gpu: list[int] | None = None,
+) -> list[int] | None:
+    """Resolve one GPU assignment per concurrent worker slot."""
+
+    if gpu_ids is None:
+        if procs_per_gpu is not None:
+            raise ValueError("--procs-per-gpu requires --gpu-ids.")
+        return None
+    if not gpu_ids:
+        raise ValueError("--gpu-ids must include at least one GPU id.")
+    if num_workers <= 0:
+        return []
+
+    if procs_per_gpu is None:
+        return [gpu_ids[i % len(gpu_ids)] for i in range(num_workers)]
+
+    if len(procs_per_gpu) != len(gpu_ids):
+        raise ValueError("--procs-per-gpu must have the same length as --gpu-ids.")
+
+    adjusted_counts = list(procs_per_gpu)
+    total_allocated = sum(adjusted_counts)
+    if total_allocated < num_workers:
+        raise ValueError(
+            f"Sum of --procs-per-gpu ({total_allocated}) must be at least the "
+            f"number of concurrent workers ({num_workers})."
+        )
+
+    while total_allocated > num_workers:
+        gpu_index = max(range(len(adjusted_counts)), key=adjusted_counts.__getitem__)
+        adjusted_counts[gpu_index] -= 1
+        total_allocated -= 1
+
+    gpu_allocation: list[int] = []
+    for gpu_id, worker_count in zip(gpu_ids, adjusted_counts):
+        gpu_allocation.extend([gpu_id] * worker_count)
+    return gpu_allocation
+
+
 def execute_sweep(
     entries: list[dict[str, Any]],
     *,
@@ -819,16 +1334,31 @@ def execute_sweep(
     log_run_completions: bool = True,
     suppress_run_stdout: bool = False,
     progress_factory: Callable[..., Any] | None = None,
+    gpu_ids: list[int] | None = None,
+    procs_per_gpu: list[int] | None = None,
+    max_tasks_per_child: int | None = None,
+    gl_backend: str = "osmesa",
+    render_width: int = 512,
+    render_height: int = 512,
+    cancellation_controller: SweepCancellationController | None = None,
 ) -> list[dict[str, Any]]:
     """Execute the discovered trajectories and preserve summary ordering."""
 
     total_runs = len(entries) * len(combos)
     ordered_results: list[list[dict[str, Any]] | None] = [None] * len(entries)
     combo_count = len(combos)
-    progress_worker_count = min(workers, len(entries)) if entries else 0
+    max_workers = min(workers, len(entries)) if entries else 0
+    progress_worker_count = max_workers
+    gpu_allocation = get_gpu_allocation(max_workers, gpu_ids, procs_per_gpu)
     progress_display = None
     slot_completed_runs: dict[int, int] = {}
     sweep_executor_factory = executor_factory or ProcessPoolExecutor
+    process_pool_context = None
+    active_executor = None
+    if sweep_executor_factory is ProcessPoolExecutor:
+        # Reused MuJoCo / rendering workers are more stable under a spawned
+        # multiprocessing context than the Linux default forked context.
+        process_pool_context = multiprocessing.get_context("spawn")
 
     try:
         if show_progress and total_runs > 0:
@@ -863,6 +1393,10 @@ def execute_sweep(
                     robot_spawn=robot_spawn,
                     skip_videos=skip_videos,
                     suppress_stdout=suppress_run_stdout,
+                    gpu_id=gpu_allocation[worker_slot] if gpu_allocation else None,
+                    gl_backend=gl_backend,
+                    render_width=render_width,
+                    render_height=render_height,
                     progress_reporter=(
                         partial(
                             _record_local_progress_event,
@@ -887,122 +1421,158 @@ def execute_sweep(
                     log_run_completions=log_run_completions,
                 )
         else:
-            max_workers = min(workers, len(entries))
             with contextlib.ExitStack() as exit_stack:
                 progress_queue = None
                 progress_manager = None
                 if progress_display is not None:
                     progress_queue, progress_manager = _create_progress_event_queue(
-                        executor_factory=sweep_executor_factory
+                        executor_factory=sweep_executor_factory,
+                        mp_context=process_pool_context,
                     )
                     if progress_manager is not None:
                         exit_stack.enter_context(progress_manager)
-                with sweep_executor_factory(max_workers=max_workers) as executor:
-                    pending_entries = iter(enumerate(entries))
-                    future_to_context: dict[Any, tuple[int, int, dict[str, Any]]] = {}
+                executor_kwargs = {"max_workers": max_workers}
+                if process_pool_context is not None:
+                    executor_kwargs["mp_context"] = process_pool_context
+                    # Recycling worker processes can reclaim simulator memory
+                    # between trajectory entries when the caller prefers lower
+                    # peak RAM over maximum reuse speed.
+                    if max_tasks_per_child is not None:
+                        executor_kwargs["max_tasks_per_child"] = max_tasks_per_child
+                with sweep_executor_factory(**executor_kwargs) as executor:
+                    active_executor = executor
+                    if cancellation_controller is not None:
+                        cancellation_controller.attach_executor(executor)
+                    try:
+                        pending_entries = iter(enumerate(entries))
+                        future_to_context: dict[
+                            Any, tuple[int, int, dict[str, Any]]
+                        ] = {}
 
-                    def submit_entry(worker_slot: int) -> bool:
-                        """Schedules the next entry on the requested worker slot."""
+                        def submit_entry(worker_slot: int) -> bool:
+                            """Schedules the next entry on the requested worker slot."""
 
-                        try:
-                            entry_index, entry = next(pending_entries)
-                        except StopIteration:
-                            return False
-                        _assign_progress_worker(
-                            progress_display,
-                            slot_completed_runs,
-                            worker_slot=worker_slot,
-                            entry=entry,
-                            combo_count=combo_count,
-                        )
-                        progress_reporter = None
-                        if progress_queue is not None:
-                            progress_reporter = partial(
-                                _enqueue_progress_event,
-                                progress_queue,
-                                worker_slot,
-                            )
-                        future = executor.submit(
-                            run_trajectory_entry,
-                            entry,
-                            entry_index=entry_index,
-                            total_runs=total_runs,
-                            combos=combos,
-                            output_root=output_root,
-                            robots=robots,
-                            placement=placement,
-                            cell_size=cell_size,
-                            robot_spawn=robot_spawn,
-                            skip_videos=skip_videos,
-                            suppress_stdout=suppress_run_stdout,
-                            progress_reporter=progress_reporter,
-                        )
-                        future_to_context[future] = (entry_index, worker_slot, entry)
-                        return True
-
-                    for worker_slot in range(max_workers):
-                        if not submit_entry(worker_slot):
-                            break
-
-                    while future_to_context:
-                        _drain_progress_events(
-                            progress_queue,
-                            progress_display,
-                            slot_completed_runs,
-                        )
-                        done, _ = wait(
-                            tuple(future_to_context),
-                            timeout=0.1,
-                            return_when=FIRST_COMPLETED,
-                        )
-                        if not done:
-                            continue
-                        _drain_progress_events(
-                            progress_queue,
-                            progress_display,
-                            slot_completed_runs,
-                        )
-                        for future in done:
-                            entry_index, worker_slot, entry = future_to_context.pop(
-                                future
-                            )
                             try:
-                                trajectory_result = future.result()
-                            except (
-                                Exception
-                            ) as exc:  # pragma: no cover - defensive path
-                                trajectory_result = _build_trajectory_crash_results(
-                                    entry,
-                                    entry_index=entry_index,
-                                    total_runs=total_runs,
-                                    combos=combos,
-                                    error_message=str(exc),
-                                    traceback_text=traceback.format_exc(),
+                                entry_index, entry = next(pending_entries)
+                            except StopIteration:
+                                return False
+                            _assign_progress_worker(
+                                progress_display,
+                                slot_completed_runs,
+                                worker_slot=worker_slot,
+                                entry=entry,
+                                combo_count=combo_count,
+                            )
+                            progress_reporter = None
+                            if progress_queue is not None:
+                                progress_reporter = partial(
+                                    _enqueue_progress_event,
+                                    progress_queue,
+                                    worker_slot,
                                 )
+                            future = executor.submit(
+                                run_trajectory_entry,
+                                entry,
+                                entry_index=entry_index,
+                                total_runs=total_runs,
+                                combos=combos,
+                                output_root=output_root,
+                                robots=robots,
+                                placement=placement,
+                                cell_size=cell_size,
+                                robot_spawn=robot_spawn,
+                                skip_videos=skip_videos,
+                                suppress_stdout=suppress_run_stdout,
+                                gpu_id=(
+                                    gpu_allocation[worker_slot]
+                                    if gpu_allocation is not None
+                                    else None
+                                ),
+                                gl_backend=gl_backend,
+                                render_width=render_width,
+                                render_height=render_height,
+                                progress_reporter=progress_reporter,
+                            )
+                            future_to_context[future] = (
+                                entry_index,
+                                worker_slot,
+                                entry,
+                            )
+                            return True
 
+                        for worker_slot in range(max_workers):
+                            if not submit_entry(worker_slot):
+                                break
+
+                        while future_to_context:
                             _drain_progress_events(
                                 progress_queue,
                                 progress_display,
                                 slot_completed_runs,
                             )
-                            ordered_results[entry_index] = trajectory_result["results"]
-                            _finalize_progress_worker(
+                            done, _ = wait(
+                                tuple(future_to_context),
+                                timeout=0.1,
+                                return_when=FIRST_COMPLETED,
+                            )
+                            if not done:
+                                continue
+                            _drain_progress_events(
+                                progress_queue,
                                 progress_display,
                                 slot_completed_runs,
-                                worker_slot=worker_slot,
-                                results=trajectory_result["results"],
                             )
-                            _emit_trajectory_log_lines(
-                                trajectory_result,
-                                log_writer=log_writer,
-                                log_run_completions=log_run_completions,
-                            )
-                            submit_entry(worker_slot)
-                    _drain_progress_events(
-                        progress_queue,
-                        progress_display,
-                        slot_completed_runs,
-                    )
+                            for future in done:
+                                entry_index, worker_slot, entry = future_to_context.pop(
+                                    future
+                                )
+                                try:
+                                    trajectory_result = future.result()
+                                except (
+                                    Exception
+                                ) as exc:  # pragma: no cover - defensive path
+                                    trajectory_result = _build_trajectory_crash_results(
+                                        entry,
+                                        entry_index=entry_index,
+                                        total_runs=total_runs,
+                                        combos=combos,
+                                        error_message=str(exc),
+                                        traceback_text=traceback.format_exc(),
+                                    )
+
+                                _drain_progress_events(
+                                    progress_queue,
+                                    progress_display,
+                                    slot_completed_runs,
+                                )
+                                ordered_results[entry_index] = trajectory_result[
+                                    "results"
+                                ]
+                                _finalize_progress_worker(
+                                    progress_display,
+                                    slot_completed_runs,
+                                    worker_slot=worker_slot,
+                                    results=trajectory_result["results"],
+                                )
+                                _emit_trajectory_log_lines(
+                                    trajectory_result,
+                                    log_writer=log_writer,
+                                    log_run_completions=log_run_completions,
+                                )
+                                submit_entry(worker_slot)
+                        _drain_progress_events(
+                            progress_queue,
+                            progress_display,
+                            slot_completed_runs,
+                        )
+                    finally:
+                        if cancellation_controller is not None:
+                            cancellation_controller.detach_executor(executor)
+                active_executor = None
+    except KeyboardInterrupt:
+        _shutdown_sweep_executor(active_executor, cancel_running=True)
+        clear_executor_cache()
+        raise
     finally:
         if progress_display is not None:
             progress_display.close()
@@ -1351,7 +1921,8 @@ def build_dataset_card(
         ).strip()
         notes_tail = "- This layout is self-contained under `load_dataset()`, but nested sequence columns are less friendly for the HF table viewer."
     task_list = ", ".join(tasks) if tasks else "Unknown"
-    return textwrap.dedent(f"""\
+    return textwrap.dedent(
+        f"""\
         ---
         pretty_name: RoboCasa Trajectories Single
         configs:
@@ -1474,10 +2045,66 @@ def main():
     parser.add_argument("--placement", choices=["grid", "continuous"], default="grid")
     parser.add_argument("--cell-size", type=float, default=0.05)
     parser.add_argument(
+        "--render-width",
+        type=int,
+        default=512,
+        help=(
+            "Offscreen render width in pixels. Lower values reduce VRAM and "
+            "render time."
+        ),
+    )
+    parser.add_argument(
+        "--render-height",
+        type=int,
+        default=512,
+        help=(
+            "Offscreen render height in pixels. Lower values reduce VRAM and "
+            "render time."
+        ),
+    )
+    parser.add_argument(
         "--workers",
         type=int,
         default=1,
         help="Maximum parallel trajectory workers (default: 1).",
+    )
+    parser.add_argument(
+        "--max-tasks-per-child",
+        type=int,
+        default=None,
+        help=(
+            "Optional number of trajectory entries to run before replacing a "
+            "worker process. Use this to reclaim simulator RAM between runs."
+        ),
+    )
+    parser.add_argument(
+        "--gpu-ids",
+        type=int,
+        nargs="+",
+        default=None,
+        help=(
+            "Optional GPU IDs to assign across concurrent workers. When set, "
+            "workers are distributed across these GPUs."
+        ),
+    )
+    parser.add_argument(
+        "--procs-per-gpu",
+        type=int,
+        nargs="+",
+        default=None,
+        help=(
+            "Optional worker counts per GPU. Must match --gpu-ids in length and "
+            "sum to at least the number of concurrent workers."
+        ),
+    )
+    parser.add_argument(
+        "--gl-backend",
+        choices=["osmesa", "egl"],
+        default=None,
+        help=(
+            "OpenGL backend. Defaults to 'egl' when --gpu-ids is set, "
+            "otherwise 'osmesa'."
+        ),
     )
     parser.add_argument(
         "--robot-spawn",
@@ -1521,6 +2148,12 @@ def main():
 
     if args.workers <= 0:
         parser.error("--workers must be greater than 0.")
+    if args.max_tasks_per_child is not None and args.max_tasks_per_child <= 0:
+        parser.error("--max-tasks-per-child must be greater than 0.")
+    if args.render_width <= 0:
+        parser.error("--render-width must be greater than 0.")
+    if args.render_height <= 0:
+        parser.error("--render-height must be greater than 0.")
 
     # Child workers inherit this process environment, so set the shared
     # simulator debug gate before launching any sweep work.
@@ -1535,13 +2168,34 @@ def main():
 
     combos = list(itertools.product(args.layouts, args.styles, args.seeds))
     total_runs = len(entries) * len(combos)
+    concurrent_workers = min(args.workers, len(entries))
+    resolved_gl_backend = args.gl_backend or ("egl" if args.gpu_ids else "osmesa")
+    if args.gpu_ids is not None and resolved_gl_backend != "egl":
+        parser.error("--gpu-ids requires --gl-backend egl.")
+    try:
+        gpu_allocation = get_gpu_allocation(
+            concurrent_workers,
+            args.gpu_ids,
+            args.procs_per_gpu,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
 
     if not args.quiet:
         print(
             f"Found {len(entries)} trajectories x {len(combos)} scene combos = {total_runs} runs"
         )
         if args.workers > 1:
-            print(f"Using {min(args.workers, len(entries))} trajectory workers")
+            print(f"Using {concurrent_workers} trajectory workers")
+        if args.max_tasks_per_child is not None:
+            print(
+                "Recycling worker processes after "
+                f"{args.max_tasks_per_child} trajectory entries"
+            )
+        if gpu_allocation is not None:
+            print(f"Using GL backend: {resolved_gl_backend}")
+            print(f"GPU allocation by worker slot: {gpu_allocation}")
+        print(f"Render size: {args.render_width}x{args.render_height}")
         if len(combos) > 1:
             print(f"  layouts: {args.layouts}")
             print(f"  styles:  {args.styles}")
@@ -1572,20 +2226,29 @@ def main():
             print(f"\n{total_runs} runs (dry run, nothing executed)")
         return
 
-    results = execute_sweep(
-        entries,
-        combos=tuple(combos),
-        output_root=output_root,
-        workers=args.workers,
-        robots=args.robots,
-        placement=args.placement,
-        cell_size=args.cell_size,
-        robot_spawn=args.robot_spawn,
-        skip_videos=not args.videos,
-        log_run_completions=not args.quiet,
-        show_progress=True,
-        suppress_run_stdout=args.quiet,
-    )
+    cancellation_controller = SweepCancellationController()
+    with _install_sweep_signal_handlers(cancellation_controller):
+        results = execute_sweep(
+            entries,
+            combos=tuple(combos),
+            output_root=output_root,
+            workers=args.workers,
+            robots=args.robots,
+            placement=args.placement,
+            cell_size=args.cell_size,
+            robot_spawn=args.robot_spawn,
+            skip_videos=not args.videos,
+            log_run_completions=not args.quiet,
+            show_progress=True,
+            suppress_run_stdout=args.quiet,
+            gpu_ids=args.gpu_ids,
+            procs_per_gpu=args.procs_per_gpu,
+            max_tasks_per_child=args.max_tasks_per_child,
+            gl_backend=resolved_gl_backend,
+            render_width=args.render_width,
+            render_height=args.render_height,
+            cancellation_controller=cancellation_controller,
+        )
 
     # Write sweep summary
     output_root.mkdir(parents=True, exist_ok=True)
@@ -1599,6 +2262,12 @@ def main():
         "total": len(results),
         "succeeded": sum(1 for r in results if r["status"] == "ok"),
         "failed": sum(1 for r in results if r["status"] == "error"),
+        "gl_backend": resolved_gl_backend,
+        "gpu_ids": args.gpu_ids,
+        "max_tasks_per_child": args.max_tasks_per_child,
+        "procs_per_gpu": args.procs_per_gpu,
+        "render_width": args.render_width,
+        "render_height": args.render_height,
         "results": results,
     }
     with open(output_root / "sweep_summary.json", "w") as f:
@@ -1636,4 +2305,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.exit(130)

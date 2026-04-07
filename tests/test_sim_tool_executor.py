@@ -1,5 +1,7 @@
 import json
+import os
 from pathlib import Path
+import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -20,6 +22,7 @@ from robocasa.utils.placement import (  # noqa: E402
     get_front_alignment_metrics,
     get_fixture_aabb,
 )
+import robocasa.utils.trajectory_runner as trajectory_runner_module
 from robocasa.utils.sim_tool_executor import SimToolExecutor  # noqa: E402
 from robocasa.utils.sim_tool_executor import _is_approach_center  # noqa: E402
 from robocasa.utils.sim_tool_specs import SIM_TOOL_SPEC_BY_NAME  # noqa: E402
@@ -41,6 +44,96 @@ def _objects_intersect(executor: SimToolExecutor, object_a: str, object_b: str) 
 
 
 class TestSimToolExecutor(unittest.TestCase):
+    def test_configure_mujoco_gl_backend_updates_cached_binding_choice(self):
+        original_gl = os.environ.get("MUJOCO_GL")
+        original_egl_device = os.environ.get("MUJOCO_EGL_DEVICE_ID")
+        fake_binding_utils = SimpleNamespace(_MUJOCO_GL="egl")
+        observed_gl = None
+        observed_egl_device = None
+
+        try:
+            os.environ["MUJOCO_GL"] = "egl"
+            os.environ["MUJOCO_EGL_DEVICE_ID"] = "7"
+            with patch.dict(
+                sys.modules,
+                {"robosuite.utils.binding_utils": fake_binding_utils},
+            ):
+                configured_backend = (
+                    trajectory_runner_module._configure_mujoco_gl_backend("osmesa")
+                )
+                observed_gl = os.environ.get("MUJOCO_GL")
+                observed_egl_device = os.environ.get("MUJOCO_EGL_DEVICE_ID")
+        finally:
+            if original_gl is None:
+                os.environ.pop("MUJOCO_GL", None)
+            else:
+                os.environ["MUJOCO_GL"] = original_gl
+            if original_egl_device is None:
+                os.environ.pop("MUJOCO_EGL_DEVICE_ID", None)
+            else:
+                os.environ["MUJOCO_EGL_DEVICE_ID"] = original_egl_device
+
+        self.assertEqual(configured_backend, "osmesa")
+        self.assertEqual(observed_gl, "osmesa")
+        self.assertIsNone(observed_egl_device)
+        self.assertEqual(fake_binding_utils._MUJOCO_GL, "osmesa")
+
+    def test_restore_baseline_state_resets_runtime_and_model_state(self):
+        executor = SimToolExecutor.__new__(SimToolExecutor)
+        fixture = SimpleNamespace(_turned_on=True, _num_steps_on=3)
+        model = SimpleNamespace(
+            site_rgba=np.ones((2, 4)),
+            site_size=np.ones((2, 3)),
+            geom_rgba=np.ones((3, 4)),
+        )
+        sim = MagicMock()
+        sim.model = model
+        env = SimpleNamespace(
+            sim=sim,
+            update_sites=MagicMock(),
+            update_state=MagicMock(),
+        )
+        runner = SimpleNamespace(
+            _fixtures={"coffee_machine": fixture},
+            _object_locations={"mug": "counter_mutated"},
+            _scene={"objects": {"mug": {"location": "counter_mutated"}}},
+        )
+
+        executor.env = env
+        executor.runner = runner
+        executor._held_objects = {0: "mug"}
+        executor._baseline_sim_state = np.array([1.0, 2.0, 3.0])
+        executor._baseline_model_site_rgba = np.zeros((2, 4))
+        executor._baseline_model_site_size = np.full((2, 3), 0.5)
+        executor._baseline_model_geom_rgba = np.full((3, 4), 0.25)
+        executor._baseline_fixture_runtime_state = {
+            "coffee_machine": {"_turned_on": False, "_num_steps_on": 0}
+        }
+        executor._baseline_object_locations = {"mug": "counter_clean"}
+        executor._baseline_scene = {"objects": {"mug": {"location": "counter_clean"}}}
+
+        executor.restore_baseline_state()
+
+        sim.set_state_from_flattened.assert_called_once()
+        np.testing.assert_array_equal(
+            sim.set_state_from_flattened.call_args.args[0],
+            np.array([1.0, 2.0, 3.0]),
+        )
+        self.assertEqual(sim.forward.call_count, 2)
+        env.update_sites.assert_called_once()
+        env.update_state.assert_called_once()
+        self.assertEqual(executor._held_objects, {})
+        self.assertFalse(fixture._turned_on)
+        self.assertEqual(fixture._num_steps_on, 0)
+        self.assertEqual(runner._object_locations["mug"], "counter_clean")
+        self.assertEqual(
+            runner._scene["objects"]["mug"]["location"],
+            "counter_clean",
+        )
+        np.testing.assert_array_equal(model.site_rgba, np.zeros((2, 4)))
+        np.testing.assert_array_equal(model.site_size, np.full((2, 3), 0.5))
+        np.testing.assert_array_equal(model.geom_rgba, np.full((3, 4), 0.25))
+
     def test_every_tool_spec_has_executor_method(self):
         executor = SimToolExecutor(
             task_name="HotDogSetup",

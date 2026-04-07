@@ -45,7 +45,11 @@ RoboCasa works across all major computing platforms. The easiest way to set up i
 
 5. Install the package and download assets:
    ```sh
-   python -m robocasa.scripts.setup_macros              # Set up system variables.
+   python -m robocasa.scripts.setup_macros
+   cp robosuite/robosuite/macros.py robosuite/robosuite/macros_private.py
    python -m robocasa.scripts.download_kitchen_assets   # Caution: Assets to be downloaded are around 10GB.
    ```
-
+   If you later see a missing `models/assets/objects/lightwheel/.../model.xml` error, fetch just that asset bundle with:
+   ```sh
+   python -m robocasa.scripts.download_kitchen_assets --type objs_lw
+   ```
