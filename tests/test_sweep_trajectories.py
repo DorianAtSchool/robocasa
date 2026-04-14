@@ -257,8 +257,21 @@ class SweepTrajectoryWorkerTests(unittest.TestCase):
             self.assertEqual(display._estimate_remaining_seconds(), 10.0)
             self.assertEqual(display._average_trajectory_seconds(), 10.0)
             self.assertAlmostEqual(display._trajectories_per_minute(), 5.0)
+            display.close()
 
-        display.close()
+    def test_execute_sweep_returns_empty_without_creating_workers(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            results = sweep_trajectories_script.execute_sweep(
+                [],
+                combos=((11, 34, 42),),
+                output_root=Path(temp_dir),
+                workers=112,
+                robots=2,
+                placement="grid",
+                cell_size=0.05,
+            )
+
+        self.assertEqual(results, [])
 
     def test_execute_sweep_preserves_summary_order_with_workers(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1032,6 +1045,39 @@ class SweepTrajectoryWorkerTests(unittest.TestCase):
         self.assertEqual(result["images_rendered"], 1)
 
 
+class SweepTrajectoryShardTests(unittest.TestCase):
+    """Validate deterministic trajectory sharding behavior."""
+
+    def test_select_trajectory_shard_uses_round_robin_order(self) -> None:
+        entries = [
+            {
+                "task_dir_name": "task_a",
+                "traj_file": Path(f"traj_{idx}.json"),
+                "traj_idx": idx,
+            }
+            for idx in range(7)
+        ]
+
+        shard_entries = sweep_trajectories_script.select_trajectory_shard(
+            entries,
+            num_shards=3,
+            shard_index=1,
+        )
+
+        self.assertEqual(
+            [entry["traj_idx"] for entry in shard_entries],
+            [1, 4],
+        )
+
+    def test_select_trajectory_shard_rejects_out_of_range_index(self) -> None:
+        with self.assertRaisesRegex(ValueError, "--shard-index"):
+            sweep_trajectories_script.select_trajectory_shard(
+                [],
+                num_shards=2,
+                shard_index=2,
+            )
+
+
 class SweepTrajectoryCliTests(unittest.TestCase):
     """Validate user-facing CLI output for quiet and non-quiet runs."""
 
@@ -1152,6 +1198,132 @@ class SweepTrajectoryCliTests(unittest.TestCase):
                                 sweep_trajectories_script.main()
 
         self.assertEqual(observed_verbose_setting, ["1"])
+
+    def test_main_writes_custom_summary_path_for_sharded_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_dir = temp_path / "input"
+            output_dir = temp_path / "output"
+            custom_summary_path = temp_path / "summaries" / "shard_1.json"
+            input_dir.mkdir()
+            observed_kwargs: dict[str, object] = {}
+
+            def fake_execute_sweep(*args, **kwargs):
+                observed_kwargs.update(kwargs)
+                return [
+                    {
+                        "status": "ok",
+                        "task_dir": "prepare_coffee",
+                        "traj_idx": 1,
+                        "layout": 11,
+                        "style": 34,
+                        "seed": 42,
+                    }
+                ]
+
+            discovered_entries = [
+                {
+                    "task_dir_name": "prepare_coffee",
+                    "traj_file": input_dir / f"traj_{idx:06d}.json",
+                    "traj_idx": idx,
+                }
+                for idx in range(3)
+            ]
+
+            with mock.patch.object(
+                sweep_trajectories_script,
+                "discover_trajectories",
+                return_value=discovered_entries,
+            ):
+                with mock.patch.object(
+                    sweep_trajectories_script,
+                    "execute_sweep",
+                    side_effect=fake_execute_sweep,
+                ):
+                    with mock.patch.object(
+                        sys,
+                        "argv",
+                        [
+                            "sweep_trajectories.py",
+                            "--input-dir",
+                            str(input_dir),
+                            "--output-dir",
+                            str(output_dir),
+                            "--summary-path",
+                            str(custom_summary_path),
+                            "--num-shards",
+                            "2",
+                            "--shard-index",
+                            "1",
+                            "--quiet",
+                        ],
+                    ):
+                        with contextlib.redirect_stdout(io.StringIO()):
+                            with contextlib.redirect_stderr(io.StringIO()):
+                                sweep_trajectories_script.main()
+
+        summary_payload = json.loads(custom_summary_path.read_text(encoding="utf-8"))
+        self.assertEqual(summary_payload["trajectories"], 1)
+        self.assertEqual(summary_payload["num_shards"], 2)
+        self.assertEqual(summary_payload["shard_index"], 1)
+        self.assertEqual(observed_kwargs["workers"], 1)
+
+    def test_main_allows_empty_shard_and_writes_zero_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_dir = temp_path / "input"
+            output_dir = temp_path / "output"
+            input_dir.mkdir()
+            execute_calls = 0
+
+            def fake_execute_sweep(*args, **kwargs):
+                nonlocal execute_calls
+                execute_calls += 1
+                return []
+
+            with mock.patch.object(
+                sweep_trajectories_script,
+                "discover_trajectories",
+                return_value=[
+                    {
+                        "task_dir_name": "prepare_coffee",
+                        "traj_file": input_dir / "traj_000000.json",
+                        "traj_idx": 0,
+                    }
+                ],
+            ):
+                with mock.patch.object(
+                    sweep_trajectories_script,
+                    "execute_sweep",
+                    side_effect=fake_execute_sweep,
+                ):
+                    with mock.patch.object(
+                        sys,
+                        "argv",
+                        [
+                            "sweep_trajectories.py",
+                            "--input-dir",
+                            str(input_dir),
+                            "--output-dir",
+                            str(output_dir),
+                            "--num-shards",
+                            "4",
+                            "--shard-index",
+                            "3",
+                            "--quiet",
+                        ],
+                    ):
+                        with contextlib.redirect_stdout(io.StringIO()):
+                            with contextlib.redirect_stderr(io.StringIO()):
+                                sweep_trajectories_script.main()
+
+        summary_payload = json.loads(
+            (output_dir / "sweep_summary.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(execute_calls, 1)
+        self.assertEqual(summary_payload["trajectories"], 0)
+        self.assertEqual(summary_payload["total"], 0)
+        self.assertEqual(summary_payload["results"], [])
 
     def test_main_gpu_ids_default_to_egl_and_forward_allocation_args(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

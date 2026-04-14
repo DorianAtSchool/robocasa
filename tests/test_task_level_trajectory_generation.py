@@ -152,6 +152,7 @@ def build_prepare_coffee_prompt(*args, **kwargs):
 def build_prepare_sandwich_station_prompt(*args, **kwargs):
     return PREPARE_SANDWICH_STATION_TASK.build_prompt(*args, **kwargs)
 
+
 PREPARE_COFFEE_ACTION_SPECS = (
     ("navigate_to_fixture", {"fixture_id": "mug_source_fixture"}),
     ("open_hinged_part", {"target_id": "mug_source_fixture", "part_id": "door"}),
@@ -1537,6 +1538,34 @@ class DotenvLoadingTests(unittest.TestCase):
 
         self.assertEqual(runtime_config.composite_task, supported_task_names()[0])
         self.assertEqual(runtime_config.composite_tasks, supported_task_names())
+
+    def test_format_selected_task_summary_includes_verbalized_trajectory_counts(self):
+        runtime_config = parse_args(
+            [
+                "--tasks",
+                "PrepareCoffee",
+                "HotDogSetup",
+                "PrepareCheeseStation",
+                "--num-runs",
+                "20",
+                "--sampling",
+                "verbalized",
+                "--verbalized-k",
+                "4",
+            ]
+        )
+
+        self.assertEqual(
+            trajectory_generation_module._format_selected_task_summary(runtime_config),
+            (
+                "Tasks queued (3):\n"
+                "  20 runs/task x 4 trajectories/run = 80 trajectories/task\n"
+                "  3 tasks x 80 trajectories/task = 240 total trajectories\n"
+                "  [1/3] PrepareCoffee\n"
+                "  [2/3] HotDogSetup\n"
+                "  [3/3] PrepareCheeseStation"
+            ),
+        )
 
     def test_runtime_config_for_task_preserves_single_requested_task(self):
         runtime_config = parse_args(["--tasks", "PrepareCoffee", "HotDogSetup"])
@@ -6969,6 +6998,127 @@ class GenerationTests(unittest.TestCase):
                     request_summary_path.parent / "hot_dog_setup" / "summary.json"
                 ).exists()
             )
+
+    def test_main_lists_selected_tasks_before_multi_task_generation(self):
+        prepare_coffee_payload = {
+            "composite_task": "PrepareCoffee",
+            "sdk": "google-genai",
+            "model": "gemini-3-flash-preview",
+            "model_config": {
+                "reasoning": {"thinking_level": None},
+                "sampling": {"temperature": 0.2, "strategy": "base"},
+            },
+            "num_runs": 1,
+            "num_trajectories": 1,
+            "generated_at": "2026-03-10T00:00:00+00:00",
+            "cost_summary": {
+                "prompt_tokens": 100,
+                "cached_input_tokens": 20,
+                "output_tokens": 40,
+                "reasoning_tokens": 0,
+                "total_tokens": 140,
+                "input_cost_usd": 0.001,
+                "output_cost_usd": 0.002,
+                "total_cost_usd": 0.003,
+                "average_trajectory_cost_usd": 0.003,
+                "notes": [],
+            },
+            "trajectory_prompts": [],
+            "attempt_prompts": [],
+            "trajectory_outputs": [],
+            "error_events": [],
+            "completed_run_indices": [0],
+            "failed_run_indices": [],
+            "pending_run_indices": [],
+            "is_complete": True,
+            "trajectories": [
+                {
+                    "trajectory_id": "traj_000000",
+                    "generation_usage": {
+                        "successful_attempt_number": 1,
+                        "observed_cost_usd": 0.003,
+                    },
+                    "validation": {"is_valid": True},
+                }
+            ],
+        }
+        hot_dog_payload = {
+            "composite_task": "HotDogSetup",
+            "sdk": "google-genai",
+            "model": "gemini-3-flash-preview",
+            "model_config": {
+                "reasoning": {"thinking_level": None},
+                "sampling": {"temperature": 0.2, "strategy": "base"},
+            },
+            "num_runs": 1,
+            "num_trajectories": 1,
+            "generated_at": "2026-03-10T00:00:01+00:00",
+            "cost_summary": {
+                "prompt_tokens": 120,
+                "cached_input_tokens": 30,
+                "output_tokens": 50,
+                "reasoning_tokens": 0,
+                "total_tokens": 170,
+                "input_cost_usd": 0.002,
+                "output_cost_usd": 0.003,
+                "total_cost_usd": 0.005,
+                "average_trajectory_cost_usd": 0.005,
+                "notes": [],
+            },
+            "trajectory_prompts": [],
+            "attempt_prompts": [],
+            "trajectory_outputs": [],
+            "error_events": [],
+            "completed_run_indices": [0],
+            "failed_run_indices": [],
+            "pending_run_indices": [],
+            "is_complete": True,
+            "trajectories": [
+                {
+                    "trajectory_id": "traj_000000",
+                    "generation_usage": {
+                        "successful_attempt_number": 1,
+                        "observed_cost_usd": 0.005,
+                    },
+                    "validation": {"is_valid": True},
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            request_summary_path = Path(tmpdir) / "20260310T000000Z" / "summary.json"
+            with mock.patch(
+                "data_generation.task_level.generation.raw.cli.generate_trajectories",
+                side_effect=[prepare_coffee_payload, hot_dog_payload],
+            ):
+                with mock.patch(
+                    "data_generation.task_level.generation.raw.cli.resolve_request_output_path",
+                    return_value=request_summary_path,
+                ):
+                    with mock.patch(
+                        "data_generation.task_level.generation.raw.cli._write_selected_task_summary"
+                    ) as mocked_write_selected_task_summary:
+                        exit_code = main(
+                            [
+                                "--tasks",
+                                "PrepareCoffee",
+                                "HotDogSetup",
+                                "--num-runs",
+                                "1",
+                            ]
+                        )
+
+        self.assertEqual(exit_code, 0)
+        mocked_write_selected_task_summary.assert_called_once()
+        task_summary_runtime_config = mocked_write_selected_task_summary.call_args.args[
+            0
+        ]
+        self.assertEqual(
+            task_summary_runtime_config.composite_tasks,
+            ("PrepareCoffee", "HotDogSetup"),
+        )
+        self.assertEqual(task_summary_runtime_config.num_runs, 1)
+        self.assertEqual(task_summary_runtime_config.verbalized_k, 1)
 
     def test_main_paralleize_tasks_executes_tasks_concurrently(self):
         prepare_coffee_payload = {

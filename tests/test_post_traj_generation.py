@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import shutil
 import tempfile
 import unittest
 
@@ -242,7 +243,9 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
 
         self.assertEqual(
             resolve_output_dataset_path(dataset_path).resolve(),
-            Path("/tmp/data/pre_image/prepare_coffee/20260316T022801Z/summary.json").resolve(),
+            Path(
+                "/tmp/data/pre_image/prepare_coffee/20260316T022801Z/summary.json"
+            ).resolve(),
         )
 
     def test_resolve_output_dataset_path_preserves_multitask_layout(self):
@@ -252,7 +255,9 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
 
         self.assertEqual(
             resolve_output_dataset_path(dataset_path).resolve(),
-            Path("/tmp/data/pre_image/20260316T022801Z/prepare_coffee/summary.json").resolve(),
+            Path(
+                "/tmp/data/pre_image/20260316T022801Z/prepare_coffee/summary.json"
+            ).resolve(),
         )
 
     def test_post_process_dataset_writes_summary_copy_without_mutating_source(self):
@@ -282,16 +287,22 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
             )
             trajectory_path = dataset_path.parent / "trajectories" / "traj_000000.json"
             prompt_path = dataset_path.parent / "prompts" / "traj_000000.md"
+            raw_output_path = dataset_path.parent / "outputs" / "traj_000000.txt"
             error_summary_path = dataset_path.parent / "summary_errors.json"
+            cost_summary_path = dataset_path.parent / "cost_summary.json"
             output_dataset_path = resolve_output_dataset_path(dataset_path)
             output_trajectory_path = (
                 output_dataset_path.parent / "trajectories" / "traj_000000.json"
             )
+            output_error_summary_path = (
+                output_dataset_path.parent / "summary_errors.json"
+            )
+            output_cost_summary_path = output_dataset_path.parent / "cost_summary.json"
             output_prompt_path = (
                 output_dataset_path.parent / "prompts" / "traj_000000.md"
             )
-            output_error_summary_path = (
-                output_dataset_path.parent / "summary_errors.json"
+            output_raw_output_path = (
+                output_dataset_path.parent / "outputs" / "traj_000000.txt"
             )
             output_images_dir = output_dataset_path.parent / "images"
             dataset_path.parent.mkdir(parents=True, exist_ok=True)
@@ -300,13 +311,19 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
             )
             trajectory_path.parent.mkdir(parents=True, exist_ok=True)
             prompt_path.parent.mkdir(parents=True, exist_ok=True)
+            raw_output_path.parent.mkdir(parents=True, exist_ok=True)
             trajectory_path.write_text(
                 json.dumps(make_sample_trajectory(), indent=2),
                 encoding="utf-8",
             )
             prompt_path.write_text("prompt copy me", encoding="utf-8")
+            raw_output_path.write_text("raw output copy me", encoding="utf-8")
             error_summary_path.write_text(
                 json.dumps({"total_errors": 1}, indent=2),
+                encoding="utf-8",
+            )
+            cost_summary_path.write_text(
+                json.dumps({"total_cost_usd": 1.23}, indent=2),
                 encoding="utf-8",
             )
 
@@ -344,13 +361,225 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
                 summary_payload["trajectory_files"],
             )
             self.assertEqual(
-                output_prompt_path.read_text(encoding="utf-8"), "prompt copy me"
-            )
-            self.assertEqual(
                 json.loads(output_error_summary_path.read_text(encoding="utf-8")),
                 {"total_errors": 1},
             )
+            self.assertEqual(
+                json.loads(output_cost_summary_path.read_text(encoding="utf-8")),
+                {"total_cost_usd": 1.23},
+            )
             self.assertTrue(output_images_dir.is_dir())
+            self.assertFalse(output_prompt_path.exists())
+            self.assertFalse(output_raw_output_path.exists())
+
+    def test_post_process_dataset_matches_legacy_copy_for_materialized_outputs(self):
+        summary_payload = {
+            "composite_task": "PrepareCoffee",
+            "sdk": "google-genai",
+            "model": "gemini-3-flash-preview",
+            "num_trajectories": 2,
+            "generated_at": "2026-03-10T00:00:00+00:00",
+            "trajectory_directory": "trajectories",
+            "trajectory_files": [
+                {
+                    "trajectory_id": "traj_000000",
+                    "path": "trajectories/traj_000000.json",
+                },
+                {
+                    "trajectory_id": "traj_000001",
+                    "path": "trajectories/traj_000001.json",
+                },
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dataset_path = (
+                Path(tmpdir)
+                / "data"
+                / "raw"
+                / "20260310T000000Z"
+                / "prepare_coffee"
+                / "summary.json"
+            )
+            source_root = dataset_path.parent
+            source_root.mkdir(parents=True, exist_ok=True)
+            dataset_path.write_text(
+                json.dumps(summary_payload, indent=2), encoding="utf-8"
+            )
+            (source_root / "summary_errors.json").write_text(
+                json.dumps({"total_errors": 1}, indent=2),
+                encoding="utf-8",
+            )
+            (source_root / "cost_summary.json").write_text(
+                json.dumps({"total_cost_usd": 1.23}, indent=2),
+                encoding="utf-8",
+            )
+            prompts_dir = source_root / "prompts"
+            prompts_dir.mkdir(parents=True, exist_ok=True)
+            (prompts_dir / "traj_000000.md").write_text("prompt 0", encoding="utf-8")
+            (prompts_dir / "traj_000001.md").write_text("prompt 1", encoding="utf-8")
+            outputs_dir = source_root / "outputs"
+            outputs_dir.mkdir(parents=True, exist_ok=True)
+            (outputs_dir / "traj_000000.txt").write_text("output 0", encoding="utf-8")
+            (outputs_dir / "traj_000001.txt").write_text("output 1", encoding="utf-8")
+            trajectories_dir = source_root / "trajectories"
+            trajectories_dir.mkdir(parents=True, exist_ok=True)
+            for trajectory_id in ("traj_000000", "traj_000001"):
+                trajectory = make_sample_trajectory()
+                trajectory["trajectory_id"] = trajectory_id
+                (trajectories_dir / f"{trajectory_id}.json").write_text(
+                    json.dumps(trajectory, indent=2),
+                    encoding="utf-8",
+                )
+
+            optimized_output = (
+                Path(tmpdir)
+                / "data"
+                / "pre_image_optimized"
+                / "20260310T000000Z"
+                / "prepare_coffee"
+                / "summary.json"
+            )
+            legacy_output = (
+                Path(tmpdir)
+                / "data"
+                / "pre_image_legacy"
+                / "20260310T000000Z"
+                / "prepare_coffee"
+                / "summary.json"
+            )
+
+            processed_count = post_process_dataset(
+                dataset_path,
+                output_dataset_path=optimized_output,
+                disable_progress=True,
+            )
+
+            shutil.copytree(source_root, legacy_output.parent, dirs_exist_ok=True)
+            legacy_payload = json.loads(legacy_output.read_text(encoding="utf-8"))
+            for trajectory_file in legacy_payload["trajectory_files"]:
+                legacy_trajectory_path = legacy_output.parent / trajectory_file["path"]
+                legacy_updated_trajectory = post_process_trajectory(
+                    json.loads(legacy_trajectory_path.read_text(encoding="utf-8"))
+                )
+                legacy_trajectory_path.write_text(
+                    json.dumps(legacy_updated_trajectory, indent=2),
+                    encoding="utf-8",
+                )
+            (legacy_output.parent / "images").mkdir(parents=True, exist_ok=True)
+            legacy_output.write_text(
+                json.dumps(legacy_payload, indent=2),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(processed_count, 2)
+            self.assertEqual(
+                json.loads(optimized_output.read_text(encoding="utf-8")),
+                json.loads(legacy_output.read_text(encoding="utf-8")),
+            )
+            for trajectory_id in ("traj_000000", "traj_000001"):
+                optimized_trajectory_path = (
+                    optimized_output.parent / "trajectories" / f"{trajectory_id}.json"
+                )
+                legacy_trajectory_path = (
+                    legacy_output.parent / "trajectories" / f"{trajectory_id}.json"
+                )
+                self.assertEqual(
+                    json.loads(optimized_trajectory_path.read_text(encoding="utf-8")),
+                    json.loads(legacy_trajectory_path.read_text(encoding="utf-8")),
+                )
+            self.assertEqual(
+                json.loads(
+                    (optimized_output.parent / "summary_errors.json").read_text(
+                        encoding="utf-8"
+                    )
+                ),
+                json.loads(
+                    (legacy_output.parent / "summary_errors.json").read_text(
+                        encoding="utf-8"
+                    )
+                ),
+            )
+            self.assertEqual(
+                json.loads(
+                    (optimized_output.parent / "cost_summary.json").read_text(
+                        encoding="utf-8"
+                    )
+                ),
+                json.loads(
+                    (legacy_output.parent / "cost_summary.json").read_text(
+                        encoding="utf-8"
+                    )
+                ),
+            )
+            self.assertTrue((optimized_output.parent / "images").is_dir())
+            self.assertFalse((optimized_output.parent / "prompts").exists())
+            self.assertFalse((optimized_output.parent / "outputs").exists())
+
+    def test_post_process_dataset_accepts_parallel_workers(self):
+        summary_payload = {
+            "composite_task": "PrepareCoffee",
+            "sdk": "google-genai",
+            "model": "gemini-3-flash-preview",
+            "num_trajectories": 2,
+            "generated_at": "2026-03-10T00:00:00+00:00",
+            "trajectory_directory": "trajectories",
+            "trajectory_files": [
+                {
+                    "trajectory_id": "traj_000000",
+                    "path": "trajectories/traj_000000.json",
+                },
+                {
+                    "trajectory_id": "traj_000001",
+                    "path": "trajectories/traj_000001.json",
+                },
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dataset_path = (
+                Path(tmpdir)
+                / "data"
+                / "raw"
+                / "20260310T000000Z"
+                / "prepare_coffee"
+                / "summary.json"
+            )
+            dataset_path.parent.mkdir(parents=True, exist_ok=True)
+            dataset_path.write_text(
+                json.dumps(summary_payload, indent=2), encoding="utf-8"
+            )
+            trajectories_dir = dataset_path.parent / "trajectories"
+            trajectories_dir.mkdir(parents=True, exist_ok=True)
+            for trajectory_id in ("traj_000000", "traj_000001"):
+                trajectory = make_sample_trajectory()
+                trajectory["trajectory_id"] = trajectory_id
+                (trajectories_dir / f"{trajectory_id}.json").write_text(
+                    json.dumps(trajectory, indent=2),
+                    encoding="utf-8",
+                )
+
+            processed_count = post_process_dataset(
+                dataset_path,
+                disable_progress=True,
+                workers=2,
+            )
+
+            self.assertEqual(processed_count, 2)
+            output_dataset_path = resolve_output_dataset_path(dataset_path)
+            for trajectory_id in ("traj_000000", "traj_000001"):
+                output_trajectory = json.loads(
+                    (
+                        output_dataset_path.parent
+                        / "trajectories"
+                        / f"{trajectory_id}.json"
+                    ).read_text(encoding="utf-8")
+                )
+                self.assertEqual(output_trajectory["steps"][0]["tool"], "get_image")
+                self.assertEqual(
+                    output_trajectory["steps"][0]["image_paths"][0],
+                    f"images/{trajectory_id}/0_top_view_agent_0.png",
+                )
 
     def test_parse_args_requires_dataset(self):
         with self.assertRaises(SystemExit):
@@ -361,6 +590,16 @@ class PostTrajectoryGenerationTests(unittest.TestCase):
 
         self.assertEqual(args.dataset, Path("summary.json"))
         self.assertFalse(args.disable_progress)
+        self.assertEqual(args.workers, 1)
+
+    def test_parse_args_accepts_workers(self):
+        args = parse_args(["--dataset", "summary.json", "--workers", "4"])
+
+        self.assertEqual(args.workers, 4)
+
+    def test_parse_args_rejects_non_positive_workers(self):
+        with self.assertRaises(SystemExit):
+            parse_args(["--dataset", "summary.json", "--workers", "0"])
 
     def test_parse_args_rejects_legacy_image_tool_version_flag(self):
         with self.assertRaises(SystemExit):

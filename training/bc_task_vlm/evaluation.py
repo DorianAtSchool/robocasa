@@ -14,10 +14,13 @@ from transformers import AutoProcessor
 from training.bc_task_vlm.schema_utils import (
     canonicalize_for_comparison,
     compact_json_dumps,
-    parse_first_json_object,
-    validate_single_step_payload,
 )
 from training.bc_task_vlm.task_registry import AGENT_IDS
+from training.bc_task_vlm.tool_calling import (
+    extract_pre_tool_call_text,
+    parse_first_qwen_tool_call,
+    tool_call_to_single_step_payload,
+)
 
 
 class VisionGenerationCollator:
@@ -55,10 +58,12 @@ class VisionGenerationCollator:
         prompt_texts = [
             self.processor.apply_chat_template(
                 message,
+                tools=feature["tool_schemas"],
                 tokenize=False,
                 add_generation_prompt=True,
+                enable_thinking=False,
             )
-            for message in prompt_messages
+            for message, feature in zip(prompt_messages, features, strict=True)
         ]
 
         tokenizer_kwargs = {
@@ -79,7 +84,9 @@ class VisionGenerationCollator:
                 "task_name": feature["task_name"],
                 "trajectory_id": feature["trajectory_id"],
                 "step_index": feature["step_index"],
+                "agent_id": feature["agent_id"],
                 "target_payload": feature["target_payload"],
+                "target_text": feature["target_text"],
                 "allowed_tool_specs": feature["allowed_tool_specs"],
             }
             for feature in features
@@ -145,11 +152,11 @@ def evaluate_structured_generation(
     device = next(unwrapped_model.parameters()).device
 
     total_samples = 0
-    parsed_samples = 0
-    schema_valid_samples = 0
+    parsed_tool_calls = 0
+    valid_tool_calls = 0
     exact_tool_matches = 0
     exact_args_matches = 0
-    exact_full_matches = 0
+    exact_action_matches = 0
 
     previous_use_cache = getattr(unwrapped_model.config, "use_cache", None)
     if previous_use_cache is not None:
@@ -185,25 +192,31 @@ def evaluate_structured_generation(
                 ):
                     total_samples += 1
                     target_payload = metadata["target_payload"]
-                    parsed_payload = None
+                    parsed_tool_call = None
                     normalized_prediction = None
                     parse_error = None
                     validation_error = None
 
                     try:
-                        parsed_payload = parse_first_json_object(decoded_text)
-                        parsed_samples += 1
+                        parsed_tool_call = parse_first_qwen_tool_call(decoded_text)
+                        parsed_tool_calls += 1
                     except Exception as exc:  # pragma: no cover - defensive eval logging
                         parse_error = str(exc)
 
-                    if parsed_payload is not None:
+                    if parsed_tool_call is not None:
                         try:
-                            normalized_prediction = validate_single_step_payload(
-                                parsed_payload,
+                            normalized_prediction = tool_call_to_single_step_payload(
+                                parsed_tool_call,
+                                step_index=metadata["step_index"],
+                                agent_id=metadata["agent_id"],
                                 agent_ids=AGENT_IDS,
                                 allowed_tool_specs=metadata["allowed_tool_specs"],
+                                reasoning_text=(
+                                    extract_pre_tool_call_text(decoded_text)
+                                    or "tool_call"
+                                ),
                             )
-                            schema_valid_samples += 1
+                            valid_tool_calls += 1
                         except Exception as exc:  # pragma: no cover - defensive eval logging
                             validation_error = str(exc)
 
@@ -217,9 +230,21 @@ def evaluate_structured_generation(
                         ) == canonicalize_for_comparison(target_step["args"]):
                             exact_args_matches += 1
                         if canonicalize_for_comparison(
-                            normalized_prediction
-                        ) == canonicalize_for_comparison(target_payload):
-                            exact_full_matches += 1
+                            {
+                                "step": predicted_step["step"],
+                                "agent": predicted_step["agent"],
+                                "tool": predicted_step["tool"],
+                                "args": predicted_step["args"],
+                            }
+                        ) == canonicalize_for_comparison(
+                            {
+                                "step": target_step["step"],
+                                "agent": target_step["agent"],
+                                "tool": target_step["tool"],
+                                "args": target_step["args"],
+                            }
+                        ):
+                            exact_action_matches += 1
 
                     handle.write(
                         json.dumps(
@@ -229,7 +254,9 @@ def evaluate_structured_generation(
                                 "trajectory_id": metadata["trajectory_id"],
                                 "step_index": metadata["step_index"],
                                 "prediction_text": decoded_text,
-                                "target_text": compact_json_dumps(target_payload),
+                                "target_text": metadata["target_text"],
+                                "target_payload": compact_json_dumps(target_payload),
+                                "parsed_tool_call": parsed_tool_call,
                                 "parse_error": parse_error,
                                 "validation_error": validation_error,
                             },
@@ -248,11 +275,11 @@ def evaluate_structured_generation(
 
     metrics = {
         "structured_eval_num_samples": float(total_samples),
-        "structured_eval_json_parse_rate": rate(parsed_samples),
-        "structured_eval_schema_valid_rate": rate(schema_valid_samples),
+        "structured_eval_tool_call_parse_rate": rate(parsed_tool_calls),
+        "structured_eval_tool_call_valid_rate": rate(valid_tool_calls),
         "structured_eval_exact_tool_accuracy": rate(exact_tool_matches),
         "structured_eval_exact_args_match_rate": rate(exact_args_matches),
-        "structured_eval_exact_full_step_match_rate": rate(exact_full_matches),
+        "structured_eval_exact_action_step_match_rate": rate(exact_action_matches),
     }
     metrics_path = output_dir / "structured_eval_metrics.json"
     metrics_path.write_text(

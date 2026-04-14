@@ -6,15 +6,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
-from data_generation.task_level.tasks.hot_dog_setup import (
-    HOT_DOG_SETUP_ALLOWED_TOOL_SPECS,
-)
-from data_generation.task_level.tasks.prepare_coffee import (
-    PREPARE_COFFEE_ALLOWED_TOOL_SPECS,
-)
-from data_generation.task_level.tasks.prepare_sandwich_station import (
-    PREPARE_SANDWICH_STATION_ALLOWED_TOOL_SPECS,
-)
+from data_generation.task_level.tasks.specs import load_task_spec
 
 AGENT_IDS: tuple[str, ...] = ("agent_0", "agent_1")
 
@@ -32,17 +24,19 @@ TASK_METADATA_REGISTRY: dict[str, TaskMetadata] = {
     "hot_dog_setup": TaskMetadata(
         dataset_name="hot_dog_setup",
         composite_task="HotDogSetup",
-        allowed_tool_specs=deepcopy(HOT_DOG_SETUP_ALLOWED_TOOL_SPECS),
+        allowed_tool_specs=deepcopy(load_task_spec("HotDogSetup").allowed_tool_specs),
     ),
     "prepare_coffee": TaskMetadata(
         dataset_name="prepare_coffee",
         composite_task="PrepareCoffee",
-        allowed_tool_specs=deepcopy(PREPARE_COFFEE_ALLOWED_TOOL_SPECS),
+        allowed_tool_specs=deepcopy(load_task_spec("PrepareCoffee").allowed_tool_specs),
     ),
     "prepare_sandwich_station": TaskMetadata(
         dataset_name="prepare_sandwich_station",
         composite_task="PrepareSandwichStation",
-        allowed_tool_specs=deepcopy(PREPARE_SANDWICH_STATION_ALLOWED_TOOL_SPECS),
+        allowed_tool_specs=deepcopy(
+            load_task_spec("PrepareSandwichStation").allowed_tool_specs
+        ),
     ),
 }
 

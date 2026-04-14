@@ -7,9 +7,9 @@ from typing import Any, Iterable
 from training.bc_task_vlm.schema_utils import compact_json_dumps
 
 SYSTEM_PROMPT = (
-    "You are a robot task planner. Predict exactly one next symbolic action step "
-    "as JSON. Use the images only as scene context. Do not output image paths, "
-    "do not output get_image, and do not describe the images."
+    "You are a robot task planner. Predict exactly one next tool call for the "
+    "current acting agent. Use the images only as scene context. Do not output "
+    "image paths, do not output get_image, and do not describe the images."
 )
 
 
@@ -80,46 +80,57 @@ def build_user_prompt(
         f"{format_history_steps(history_steps)}\n\n"
         "Available tools for this task:\n"
         f"{format_allowed_tool_block(allowed_tool_specs)}\n\n"
-        "Return JSON only using this exact shape:\n"
-        '{"steps":[{"step":<int>,"agent":"<agent_id>","tool":"<tool_name>",'
-        '"args":{...},"reasoning":"<short text>"}]}\n\n'
+        "The tool schemas are provided separately as function definitions.\n\n"
         "Rules:\n"
-        "- Predict exactly one next step.\n"
+        "- Predict exactly one next tool call.\n"
         "- Use symbolic IDs only, never concrete simulator IDs.\n"
-        "- The agent field must match the current acting agent.\n"
+        "- The acting agent is fixed by the prompt; do not choose actions for the other agent.\n"
         "- The tool must be one of the allowed tools listed above.\n"
-        "- The args object must contain exactly the arguments required by that tool.\n"
-        "- Keep reasoning short and action-focused.\n"
-        "- Do not emit markdown, prose, or any text outside the JSON object."
+        "- Supply exactly the arguments required by the selected tool.\n"
+        "- Prefer the most immediate executable next action.\n"
+        "- Do not emit markdown or narrative after the tool call."
     )
+
+
+def build_system_message() -> dict[str, Any]:
+    """Builds the fixed system instruction for one chat conversation."""
+
+    return {
+        "role": "system",
+        "content": [{"type": "text", "text": SYSTEM_PROMPT}],
+    }
+
+
+def build_user_message(*, user_prompt: str, num_images: int) -> dict[str, Any]:
+    """Builds one multimodal user turn with placeholder image slots."""
+
+    user_content = [{"type": "image"} for _ in range(num_images)]
+    user_content.append({"type": "text", "text": user_prompt})
+    return {
+        "role": "user",
+        "content": user_content,
+    }
 
 
 def build_messages(
     *,
     user_prompt: str,
     num_images: int,
-    target_text: str | None = None,
+    target_tool_call: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Builds one chat conversation for training or generation."""
 
-    user_content = [{"type": "image"} for _ in range(num_images)]
-    user_content.append({"type": "text", "text": user_prompt})
-
     messages: list[dict[str, Any]] = [
-        {
-            "role": "system",
-            "content": [{"type": "text", "text": SYSTEM_PROMPT}],
-        },
-        {
-            "role": "user",
-            "content": user_content,
-        },
+        build_system_message(),
+        build_user_message(user_prompt=user_prompt, num_images=num_images),
     ]
-    if target_text is not None:
+    if target_tool_call is not None:
+        from training.bc_task_vlm.tool_calling import build_assistant_tool_call_message
+
         messages.append(
-            {
-                "role": "assistant",
-                "content": [{"type": "text", "text": target_text}],
-            }
+            build_assistant_tool_call_message(
+                tool_name=target_tool_call["name"],
+                arguments=target_tool_call["arguments"],
+            )
         )
     return messages

@@ -260,15 +260,21 @@ place, skips completed runs, and retries only the pending run indices.
 ### Adding Images via Post-Processing of Raw Data
 
 After the raw data is generated via LLM, run post-processing to add default multi-view
-`get_image` observation steps and deterministic `image_paths` fields in a copied
-dataset tree under `data/pre_image/`. The copied path mirrors the source tree
-after `data/raw/`, so
+`get_image` observation steps and deterministic `image_paths` fields in a
+materialized dataset under `data/pre_image/`. The summary path mirrors the source
+tree after `data/raw/`, so
 `data/raw/{timestamp}/{task}/summary.json` becomes
 `data/pre_image/{timestamp}/{task}/summary.json`. The source dataset stays unchanged.
+The post-processing step writes rewritten trajectories plus lightweight task-level
+metadata needed downstream; it does not duplicate the raw `prompts/` and
+`outputs/` directories into `pre_image/`.
 The normal entrypoint is the timestamp wrapper:
 
 ```bash
 bash scripts/post_process_task_level_images.sh {timestamp}
+
+# Parallelize trajectory rewriting within each task summary.
+bash scripts/post_process_task_level_images.sh {timestamp} --workers 8 --disable-progress
 ```
 
 Default post-processing behavior:
@@ -282,10 +288,11 @@ Default post-processing behavior:
 
 The wrapper expands `{timestamp}` to
 `data_generation/task_level/data/raw/{timestamp}/*/summary.json` and runs the
-image post-processing CLI once per task. It writes the copied post-processed
+image post-processing CLI once per task. It writes the post-processed
 trajectories to `data_generation/task_level/data/pre_image/{timestamp}/...`.
 You can pass shared CLI flags after the timestamp, for example
-`--disable-progress`.
+`--workers 8 --disable-progress`. `--workers` parallelizes trajectory rewriting
+within each task summary.
 
 To sweep one post-processed timestamp through the simulator, use the matching
 timestamp wrapper:

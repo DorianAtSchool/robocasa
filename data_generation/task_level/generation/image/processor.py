@@ -2,18 +2,15 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
-from dataclasses import dataclass
 from pathlib import Path
 import shutil
 from typing import Any, Sequence
 
-from data_generation.task_level.generation.raw.progress import (
-    _close_progress_handles,
-    _create_progress_handles,
-)
 from data_generation.task_level.tasks.shared.constants import NAVIGATION_TOOL_NAMES
 from data_generation.utils import stable_json_sha256, write_json_output
+from tqdm import tqdm
 
 GET_IMAGE_TOOL_NAME = "get_image"
 LEGACY_ENV_IMAGE_TOOL_NAME = "get_env_image"
@@ -83,24 +80,6 @@ POST_PROCESS_OUTPUT_DIRECTORY_NAMES = frozenset(
         LEGACY_IMAGE_OUTPUT_DIRECTORY_NAME,
     }
 )
-
-
-@dataclass(frozen=True)
-class PostProcessRuntimeConfig:
-    """Stores the minimal progress configuration needed by the shared UI helpers."""
-
-    num_trajectories: int
-    num_runs: int | None = None
-    max_retries: int = 1
-    run_indices: tuple[int, ...] = ()
-    sampling: str = "base"
-    batch_processing: bool = False
-
-    def __post_init__(self) -> None:
-        """Keeps the lightweight progress config aligned with raw runtime helpers."""
-
-        if self.num_runs is None:
-            object.__setattr__(self, "num_runs", self.num_trajectories)
 
 
 def build_step_image_path(
@@ -500,49 +479,154 @@ def _resolve_summary_trajectory_paths(
     return resolved_paths
 
 
+def _resolve_summary_trajectory_path_pairs(
+    source_dataset_path: Path,
+    output_dataset_path: Path,
+    payload: dict[str, Any],
+) -> list[tuple[Path, Path]]:
+    """Resolves one source/output path pair per summary trajectory entry."""
+
+    trajectory_files = payload.get("trajectory_files")
+    if not isinstance(trajectory_files, list):
+        raise ValueError(
+            "Summary datasets must contain a trajectory_files list of relative JSON paths."
+        )
+
+    resolved_pairs: list[tuple[Path, Path]] = []
+    for entry in trajectory_files:
+        if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
+            raise ValueError("Each trajectory_files entry must contain a string path.")
+        relative_path = Path(entry["path"])
+        resolved_pairs.append(
+            (
+                (source_dataset_path.parent / relative_path).resolve(),
+                (output_dataset_path.parent / relative_path).resolve(),
+            )
+        )
+    return resolved_pairs
+
+
+def _materialize_summary_output_metadata(
+    source_dataset_path: Path,
+    output_dataset_path: Path,
+) -> None:
+    """Copies lightweight top-level metadata files into the output task directory."""
+
+    source_root = source_dataset_path.parent
+    output_root = output_dataset_path.parent
+    if output_root.resolve() == source_root.resolve():
+        return
+
+    output_root.mkdir(parents=True, exist_ok=True)
+    for source_path in source_root.iterdir():
+        if not source_path.is_file():
+            continue
+        if source_path.name == source_dataset_path.name:
+            continue
+        shutil.copy2(source_path, output_root / source_path.name)
+
+
+def _create_post_process_progress(*, total: int, disable_progress: bool) -> Any:
+    """Creates the lightweight overall progress bar used during post-processing."""
+
+    return tqdm(
+        total=total,
+        desc="Trajectories",
+        disable=disable_progress,
+        dynamic_ncols=True,
+    )
+
+
+def _set_post_process_progress_status(progress_bar: Any, status: str) -> None:
+    """Updates the visible post-processing status text when progress is enabled."""
+
+    if progress_bar is None or getattr(progress_bar, "disable", False):
+        return
+    progress_bar.set_postfix_str(status)
+    progress_bar.refresh()
+
+
+def _post_process_summary_trajectory_file(
+    source_trajectory_path: Path,
+    output_trajectory_path: Path,
+) -> int:
+    """Rewrites one saved trajectory file and returns its final step count."""
+
+    trajectory = _load_json_file(source_trajectory_path)
+    updated_trajectory = post_process_trajectory(trajectory)
+    write_json_output(updated_trajectory, output_trajectory_path)
+    return len(updated_trajectory["steps"])
+
+
+def _post_process_payload_trajectory(
+    index: int,
+    trajectory: dict[str, Any],
+) -> tuple[int, dict[str, Any]]:
+    """Processes one inline trajectory while preserving caller-managed ordering."""
+
+    return index, post_process_trajectory(trajectory)
+
+
 def _post_process_summary_dataset(
     dataset_path: Path,
     payload: dict[str, Any],
     *,
     output_dataset_path: Path,
     disable_progress: bool,
+    workers: int,
 ) -> int:
     """Writes a copied summary dataset tree and post-processes its trajectories."""
 
-    if output_dataset_path.resolve() != dataset_path.resolve():
-        # Copy the whole dataset tree first so relative artifact paths remain
-        # valid after trajectory files are rewritten in place.
-        shutil.copytree(
-            dataset_path.parent,
-            output_dataset_path.parent,
-            dirs_exist_ok=True,
-        )
-        payload = _load_json_file(output_dataset_path)
-
-    # Post-processing only inserts deterministic image references, but later
-    # rendering stages expect the sibling image root to exist up front.
-    _resolve_output_image_dir(output_dataset_path).mkdir(parents=True, exist_ok=True)
-    trajectory_paths = _resolve_summary_trajectory_paths(output_dataset_path, payload)
-    progress_handles = _create_progress_handles(
-        PostProcessRuntimeConfig(num_trajectories=len(trajectory_paths)),
+    trajectory_count = len(_resolve_summary_trajectory_paths(dataset_path, payload))
+    progress_bar = _create_post_process_progress(
+        total=trajectory_count,
         disable_progress=disable_progress,
     )
     try:
-        for index, trajectory_path in enumerate(trajectory_paths):
-            trajectory_progress = progress_handles.trajectory_progress_bars[index]
-            trajectory_progress.set_postfix_str("processing")
-            trajectory = _load_json_file(trajectory_path)
-            updated_trajectory = post_process_trajectory(trajectory)
-            write_json_output(updated_trajectory, trajectory_path)
-            trajectory_progress.update(1)
-            trajectory_progress.set_postfix_str(
-                f"done calls={len(updated_trajectory['steps'])}"
+        if output_dataset_path.parent.resolve() != dataset_path.parent.resolve():
+            _set_post_process_progress_status(
+                progress_bar,
+                "copying summary metadata",
             )
-            progress_handles.overall_progress.update(1)
+            _materialize_summary_output_metadata(
+                dataset_path,
+                output_dataset_path,
+            )
+
+        # Post-processing only inserts deterministic image references, but later
+        # rendering stages expect the sibling image root to exist up front.
+        _resolve_output_image_dir(output_dataset_path).mkdir(
+            parents=True, exist_ok=True
+        )
+        trajectory_path_pairs = _resolve_summary_trajectory_path_pairs(
+            dataset_path,
+            output_dataset_path,
+            payload,
+        )
+        _set_post_process_progress_status(progress_bar, "rewriting trajectories")
+        max_workers = min(workers, len(trajectory_path_pairs))
+        if max_workers <= 1:
+            for source_path, output_path in trajectory_path_pairs:
+                _post_process_summary_trajectory_file(source_path, output_path)
+                progress_bar.update(1)
+        else:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = [
+                    executor.submit(
+                        _post_process_summary_trajectory_file,
+                        source_path,
+                        output_path,
+                    )
+                    for source_path, output_path in trajectory_path_pairs
+                ]
+                for future in as_completed(futures):
+                    future.result()
+                    progress_bar.update(1)
+        _set_post_process_progress_status(progress_bar, "writing summary")
         write_json_output(payload, output_dataset_path)
     finally:
-        _close_progress_handles(progress_handles)
-    return len(trajectory_paths)
+        progress_bar.close()
+    return trajectory_count
 
 
 def _post_process_payload_dataset(
@@ -551,6 +635,7 @@ def _post_process_payload_dataset(
     *,
     output_dataset_path: Path,
     disable_progress: bool,
+    workers: int,
 ) -> int:
     """Writes a copied inline dataset payload with post-processed trajectories."""
 
@@ -560,8 +645,8 @@ def _post_process_payload_dataset(
             "Inline datasets must contain a trajectories list or trajectory_files list."
         )
 
-    progress_handles = _create_progress_handles(
-        PostProcessRuntimeConfig(num_trajectories=len(trajectories)),
+    progress_bar = _create_post_process_progress(
+        total=len(trajectories),
         disable_progress=disable_progress,
     )
     try:
@@ -570,21 +655,29 @@ def _post_process_payload_dataset(
         _resolve_output_image_dir(output_dataset_path).mkdir(
             parents=True, exist_ok=True
         )
-        updated_trajectories: list[dict[str, Any]] = []
-        for index, trajectory in enumerate(trajectories):
-            trajectory_progress = progress_handles.trajectory_progress_bars[index]
-            trajectory_progress.set_postfix_str("processing")
-            updated_trajectory = post_process_trajectory(trajectory)
-            updated_trajectories.append(updated_trajectory)
-            trajectory_progress.update(1)
-            trajectory_progress.set_postfix_str(
-                f"done calls={len(updated_trajectory['steps'])}"
-            )
-            progress_handles.overall_progress.update(1)
+        _set_post_process_progress_status(progress_bar, "rewriting trajectories")
+        max_workers = min(workers, len(trajectories))
+        if max_workers <= 1:
+            updated_trajectories = []
+            for trajectory in trajectories:
+                updated_trajectories.append(post_process_trajectory(trajectory))
+                progress_bar.update(1)
+        else:
+            updated_trajectories = [None] * len(trajectories)
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = [
+                    executor.submit(_post_process_payload_trajectory, index, trajectory)
+                    for index, trajectory in enumerate(trajectories)
+                ]
+                for future in as_completed(futures):
+                    index, updated_trajectory = future.result()
+                    updated_trajectories[index] = updated_trajectory
+                    progress_bar.update(1)
         payload["trajectories"] = updated_trajectories
+        _set_post_process_progress_status(progress_bar, "writing summary")
         write_json_output(payload, output_dataset_path)
     finally:
-        _close_progress_handles(progress_handles)
+        progress_bar.close()
     return len(trajectories)
 
 
@@ -593,9 +686,12 @@ def post_process_dataset(
     *,
     output_dataset_path: Path | None = None,
     disable_progress: bool = False,
+    workers: int = 1,
 ) -> int:
     """Post-processes one dataset into a copied output JSON and returns the count."""
 
+    if workers <= 0:
+        raise ValueError("--workers must be greater than 0.")
     output_dataset_path = output_dataset_path or resolve_output_dataset_path(
         dataset_path
     )
@@ -606,10 +702,12 @@ def post_process_dataset(
             payload,
             output_dataset_path=output_dataset_path,
             disable_progress=disable_progress,
+            workers=workers,
         )
     return _post_process_payload_dataset(
         dataset_path,
         payload,
         output_dataset_path=output_dataset_path,
         disable_progress=disable_progress,
+        workers=workers,
     )

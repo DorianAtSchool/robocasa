@@ -145,7 +145,7 @@ CLI_EPILOG = textwrap.dedent(
         --output-dir tmp/sweep_output_traj \\
         --row-granularity trajectory
     """
-    )
+)
 
 QUIET_DIAGNOSTIC_PATTERN = re.compile(
     r"\b(warn(?:ing)?|error|exception|traceback|critical|fatal)\b",
@@ -958,6 +958,27 @@ def discover_trajectories(
     return entries
 
 
+def select_trajectory_shard(
+    entries: list[dict[str, Any]],
+    *,
+    num_shards: int | None = None,
+    shard_index: int | None = None,
+) -> list[dict[str, Any]]:
+    """Select one deterministic round-robin shard from the discovered entries."""
+
+    if num_shards is None and shard_index is None:
+        return list(entries)
+    if num_shards is None or shard_index is None:
+        raise ValueError("--num-shards and --shard-index must be provided together.")
+    if num_shards <= 0:
+        raise ValueError("--num-shards must be greater than 0.")
+    if shard_index < 0 or shard_index >= num_shards:
+        raise ValueError("--shard-index must be in [0, --num-shards).")
+    if num_shards == 1:
+        return list(entries)
+    return list(entries[shard_index::num_shards])
+
+
 def _resolve_run_output_dir(
     output_root: Path,
     *,
@@ -1345,6 +1366,9 @@ def execute_sweep(
     """Execute the discovered trajectories and preserve summary ordering."""
 
     total_runs = len(entries) * len(combos)
+    if not entries or total_runs == 0:
+        return []
+
     ordered_results: list[list[dict[str, Any]] | None] = [None] * len(entries)
     combo_count = len(combos)
     max_workers = min(workers, len(entries)) if entries else 0
@@ -1686,7 +1710,9 @@ def upload_sweep_metadata_files(repo_id: str, output_root: Path) -> None:
     )
 
 
-def _resolve_step_images(image_paths: list[str] | None, image_columns: list[str]) -> dict[str, str | None]:
+def _resolve_step_images(
+    image_paths: list[str] | None, image_columns: list[str]
+) -> dict[str, str | None]:
     images = {col: None for col in image_columns}
     for img_path_str in image_paths or []:
         img_path = Path(img_path_str)
@@ -1794,8 +1820,13 @@ def _build_trajectory_level_dataset(output_root: Path) -> "datasets.Dataset":
     from datasets import Dataset, Features, Sequence, Value, Image as HFImage
 
     IMAGE_COLUMNS = [
-        "room_view", "top_view", "map",
-        "agentview_center", "agentview_left", "agentview_right", "wrist",
+        "room_view",
+        "top_view",
+        "map",
+        "agentview_center",
+        "agentview_left",
+        "agentview_right",
+        "wrist",
     ]
 
     rows: list[dict] = []
@@ -1810,8 +1841,12 @@ def _build_trajectory_level_dataset(output_root: Path) -> "datasets.Dataset":
             "seed": run["seed"],
             "num_steps": len(metadata.get("steps", [])),
             "run_dir": run["run_dir_rel"],
-            "adapted_trajectory": _read_compact_json(run["run_dir"] / "adapted_trajectory.json"),
-            "original_trajectory": _read_compact_json(run["run_dir"] / "original_trajectory.json"),
+            "adapted_trajectory": _read_compact_json(
+                run["run_dir"] / "adapted_trajectory.json"
+            ),
+            "original_trajectory": _read_compact_json(
+                run["run_dir"] / "original_trajectory.json"
+            ),
             "execution_metadata": json.dumps(metadata, separators=(",", ":")),
             "step_index": [],
             "tool_name": [],
@@ -1823,7 +1858,9 @@ def _build_trajectory_level_dataset(output_root: Path) -> "datasets.Dataset":
 
         for step in metadata.get("steps", []):
             images = _resolve_step_images(step.get("image_paths"), IMAGE_COLUMNS)
-            args_clean = {k: v for k, v in (step.get("args") or {}).items() if k != "image_paths"}
+            args_clean = {
+                k: v for k, v in (step.get("args") or {}).items() if k != "image_paths"
+            }
 
             row["step_index"].append(step.get("step_index", 0))
             row["tool_name"].append(step.get("tool", ""))
@@ -1835,25 +1872,27 @@ def _build_trajectory_level_dataset(output_root: Path) -> "datasets.Dataset":
 
         rows.append(row)
 
-    features = Features({
-        "episode_id": Value("string"),
-        "task": Value("string"),
-        "task_dir": Value("string"),
-        "layout": Value("int32"),
-        "style": Value("int32"),
-        "seed": Value("int32"),
-        "num_steps": Value("int32"),
-        "run_dir": Value("string"),
-        "adapted_trajectory": Value("large_string"),
-        "original_trajectory": Value("large_string"),
-        "execution_metadata": Value("large_string"),
-        "step_index": Sequence(Value("int32")),
-        "tool_name": Sequence(Value("string")),
-        "tool_args": Sequence(Value("string")),
-        "robot_idx": Sequence(Value("int32")),
-        "success": Sequence(Value("bool")),
-        **{col: Sequence(HFImage()) for col in IMAGE_COLUMNS},
-    })
+    features = Features(
+        {
+            "episode_id": Value("string"),
+            "task": Value("string"),
+            "task_dir": Value("string"),
+            "layout": Value("int32"),
+            "style": Value("int32"),
+            "seed": Value("int32"),
+            "num_steps": Value("int32"),
+            "run_dir": Value("string"),
+            "adapted_trajectory": Value("large_string"),
+            "original_trajectory": Value("large_string"),
+            "execution_metadata": Value("large_string"),
+            "step_index": Sequence(Value("int32")),
+            "tool_name": Sequence(Value("string")),
+            "tool_args": Sequence(Value("string")),
+            "robot_idx": Sequence(Value("int32")),
+            "success": Sequence(Value("bool")),
+            **{col: Sequence(HFImage()) for col in IMAGE_COLUMNS},
+        }
+    )
 
     ds = Dataset.from_list(rows, features=features)
     print(f"Built dataset: {len(ds)} trajectory rows")
@@ -1885,7 +1924,9 @@ def build_dataset_card(
     episodes = len(set(episode_ids))
     if row_granularity == "step":
         avg_steps = len(ds) / max(episodes, 1)
-        intro = "This dataset contains flat RoboCasa step rows with sidecar episode JSON."
+        intro = (
+            "This dataset contains flat RoboCasa step rows with sidecar episode JSON."
+        )
         row_text = "Each row is one tool step."
         episode_json_text = textwrap.dedent(
             """\
@@ -1990,7 +2031,11 @@ def upload_dataset_card(
     from huggingface_hub import HfApi
 
     HfApi().upload_file(
-        path_or_fileobj=BytesIO(build_dataset_card(repo_id, ds, row_granularity=row_granularity).encode("utf-8")),
+        path_or_fileobj=BytesIO(
+            build_dataset_card(repo_id, ds, row_granularity=row_granularity).encode(
+                "utf-8"
+            )
+        ),
         path_in_repo="README.md",
         repo_id=repo_id,
         repo_type="dataset",
@@ -2007,6 +2052,15 @@ def main():
     parser.add_argument("--input-dir", type=str, required=True, help="Dataset root dir")
     parser.add_argument("--output-dir", type=str, required=True, help="Output root dir")
     parser.add_argument(
+        "--summary-path",
+        type=str,
+        default=None,
+        help=(
+            "Optional path for the sweep summary JSON. Defaults to "
+            "<output-dir>/sweep_summary.json."
+        ),
+    )
+    parser.add_argument(
         "--tasks",
         type=str,
         nargs="+",
@@ -2019,6 +2073,24 @@ def main():
         nargs="+",
         default=None,
         help="Filter to specific traj indices",
+    )
+    parser.add_argument(
+        "--num-shards",
+        type=int,
+        default=None,
+        help=(
+            "Optional number of deterministic round-robin shards to split the "
+            "discovered trajectories across."
+        ),
+    )
+    parser.add_argument(
+        "--shard-index",
+        type=int,
+        default=None,
+        help=(
+            "Zero-based shard index to run when --num-shards is set. Useful for "
+            "multi-node launches."
+        ),
     )
     parser.add_argument(
         "--layouts",
@@ -2145,6 +2217,11 @@ def main():
 
     input_dir = Path(args.input_dir)
     output_root = Path(args.output_dir)
+    summary_path = (
+        Path(args.summary_path)
+        if args.summary_path is not None
+        else output_root / "sweep_summary.json"
+    )
 
     if args.workers <= 0:
         parser.error("--workers must be greater than 0.")
@@ -2154,17 +2231,33 @@ def main():
         parser.error("--render-width must be greater than 0.")
     if args.render_height <= 0:
         parser.error("--render-height must be greater than 0.")
+    if (args.num_shards is None) != (args.shard_index is None):
+        parser.error("--num-shards and --shard-index must be provided together.")
+    if args.num_shards is not None and args.num_shards <= 0:
+        parser.error("--num-shards must be greater than 0.")
+    if args.num_shards is not None and (
+        args.shard_index < 0 or args.shard_index >= args.num_shards
+    ):
+        parser.error("--shard-index must be in [0, --num-shards).")
 
     # Child workers inherit this process environment, so set the shared
     # simulator debug gate before launching any sweep work.
     os.environ["ROBOCASA_SWEEP_VERBOSE"] = "0" if args.quiet else "1"
 
-    entries = discover_trajectories(
+    discovered_entries = discover_trajectories(
         input_dir, task_filter=args.tasks, indices=args.indices
     )
-    if not entries:
+    if not discovered_entries:
         print("No trajectories found.", file=sys.stderr, flush=True)
         sys.exit(1)
+    try:
+        entries = select_trajectory_shard(
+            discovered_entries,
+            num_shards=args.num_shards,
+            shard_index=args.shard_index,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
 
     combos = list(itertools.product(args.layouts, args.styles, args.seeds))
     total_runs = len(entries) * len(combos)
@@ -2185,6 +2278,12 @@ def main():
         print(
             f"Found {len(entries)} trajectories x {len(combos)} scene combos = {total_runs} runs"
         )
+        if args.num_shards is not None:
+            print(
+                "Running shard "
+                f"{args.shard_index + 1}/{args.num_shards} "
+                f"from {len(discovered_entries)} discovered trajectories"
+            )
         if args.workers > 1:
             print(f"Using {concurrent_workers} trajectory workers")
         if args.max_tasks_per_child is not None:
@@ -2264,18 +2363,21 @@ def main():
         "failed": sum(1 for r in results if r["status"] == "error"),
         "gl_backend": resolved_gl_backend,
         "gpu_ids": args.gpu_ids,
+        "num_shards": args.num_shards,
+        "shard_index": args.shard_index,
         "max_tasks_per_child": args.max_tasks_per_child,
         "procs_per_gpu": args.procs_per_gpu,
         "render_width": args.render_width,
         "render_height": args.render_height,
         "results": results,
     }
-    with open(output_root / "sweep_summary.json", "w") as f:
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(summary_path, "w") as f:
         json.dump(summary, f, indent=2)
 
     print()
     print(f"Done: {summary['succeeded']}/{summary['total']} succeeded")
-    print(f"Summary: {output_root / 'sweep_summary.json'}")
+    print(f"Summary: {summary_path}")
 
     if summary["failed"] > 0:
         print(f"\nFailed runs:")
@@ -2288,20 +2390,22 @@ def main():
     # Push to HuggingFace Hub if requested
     if args.push_to_hub:
         if not args.quiet:
-          print(f"\nConverting sweep output to HuggingFace dataset...")
+            print(f"\nConverting sweep output to HuggingFace dataset...")
         ds = sweep_output_to_dataset(output_root, row_granularity=args.row_granularity)
         if not args.quiet:
-          print(f"Pushing to {args.push_to_hub}...")
+            print(f"Pushing to {args.push_to_hub}...")
         ds.push_to_hub(args.push_to_hub)
         if args.row_granularity == "step":
             if not args.quiet:
-              print("Uploading sweep metadata sidecars...")
+                print("Uploading sweep metadata sidecars...")
             upload_sweep_sidecars(args.push_to_hub, output_root)
         if not args.quiet:
-          print("Uploading dataset card...")
+            print("Uploading dataset card...")
         upload_dataset_card(args.push_to_hub, ds, row_granularity=args.row_granularity)
         if not args.quiet:
-          print(f"Done! Dataset pushed to https://huggingface.co/datasets/{args.push_to_hub}")
+            print(
+                f"Done! Dataset pushed to https://huggingface.co/datasets/{args.push_to_hub}"
+            )
 
 
 if __name__ == "__main__":
