@@ -37,6 +37,25 @@ def _append_unique_field_names(
             destination.append(field_name)
 
 
+def _iter_declared_tool_arg_names(tool_spec: dict[str, Any]) -> tuple[str, ...]:
+    """Return every schema-visible arg name declared by a tool spec."""
+
+    ordered_field_names: list[str] = []
+    _append_unique_field_names(ordered_field_names, tool_spec.get("tool_args", ()))
+    for arg_group in tool_spec.get("tool_arg_any_of", ()):
+        if not isinstance(arg_group, (list, tuple)):
+            raise ValueError("tool_arg_any_of entries must be lists or tuples.")
+        _append_unique_field_names(
+            ordered_field_names,
+            tuple(
+                field_name
+                for field_name in arg_group
+                if isinstance(field_name, str)
+            ),
+        )
+    return tuple(ordered_field_names)
+
+
 def _build_scalar_field_schema(
     field_name: str,
     agent_ids: Sequence[str],
@@ -109,7 +128,7 @@ def build_task_response_schema(
     tool_arg_schema_types: dict[str, str] = {}
     for tool_spec in allowed_tool_specs.values():
         # Preserve the tool registry order so schema rendering stays stable.
-        for field_name in tool_spec.get("tool_args", ()):
+        for field_name in _iter_declared_tool_arg_names(tool_spec):
             schema_type = _resolve_tool_arg_schema_type(field_name, tool_spec)
             if field_name not in tool_arg_schema_types:
                 tool_arg_schema_types[field_name] = schema_type
@@ -117,7 +136,7 @@ def build_task_response_schema(
                 raise ValueError(
                     f"Conflicting schema types were configured for tool arg {field_name}."
                 )
-        _append_unique_field_names(tool_arg_names, tool_spec.get("tool_args", ()))
+        _append_unique_field_names(tool_arg_names, _iter_declared_tool_arg_names(tool_spec))
 
     return {
         "type": "OBJECT",

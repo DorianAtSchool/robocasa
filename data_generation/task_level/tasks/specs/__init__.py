@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -114,6 +115,14 @@ class TaskSpec:
 
 
 SPEC_DIRECTORY = Path(__file__).resolve().parent
+TASK_SPEC_DIRECTORY_OVERRIDE_ENV_VAR = "ROBOCASA_TASK_SPEC_DIR"
+
+
+def _resolve_spec_directory() -> Path:
+    override_directory = os.environ.get(TASK_SPEC_DIRECTORY_OVERRIDE_ENV_VAR)
+    if not override_directory:
+        return SPEC_DIRECTORY
+    return Path(override_directory).expanduser().resolve()
 
 
 def _task_spec_path(task_name: str) -> Path:
@@ -123,7 +132,7 @@ def _task_spec_path(task_name: str) -> Path:
         character.lower() if character.isalnum() else "_" for character in task_name
     )
     collapsed_name = "_".join(part for part in normalized_name.split("_") if part)
-    return SPEC_DIRECTORY / f"{collapsed_name}.json"
+    return _resolve_spec_directory() / f"{collapsed_name}.json"
 
 
 def load_task_spec(task_name: str) -> TaskSpec:
@@ -140,7 +149,7 @@ def load_all_task_specs() -> tuple[TaskSpec, ...]:
     """Load every JSON-backed task spec shipped in this package."""
 
     specs: list[TaskSpec] = []
-    for spec_path in sorted(SPEC_DIRECTORY.glob("*.json")):
+    for spec_path in sorted(_resolve_spec_directory().glob("*.json")):
         with spec_path.open("r", encoding="utf-8") as handle:
             specs.append(TaskSpec.from_dict(json.load(handle)))
     return tuple(specs)

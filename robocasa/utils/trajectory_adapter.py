@@ -70,8 +70,6 @@ class TrajectoryAdapter:
         "anchor_fixture_id",
         "fixture_id",
         "reference_fixture_id",
-        "source_id",
-        "support_id",
         "target_id",
     }
     _OBJECT_ARG_NAMES = {
@@ -614,8 +612,33 @@ class TrajectoryAdapter:
                     value,
                     requested_fixture_state=(
                         resolved_initial_state.get("fixtures", {}).get(value) or None
-                    ),
-                )
+                        ),
+                    )
+            elif arg_name in {"source_id", "support_id"}:
+                if value in self._fixture_aliases or value in self.scene.get("fixtures", {}):
+                    resolved_args[arg_name] = self._resolve_fixture_id(
+                        value,
+                        requested_fixture_state=(
+                            resolved_initial_state.get("fixtures", {}).get(value) or None
+                        ),
+                    )
+                    continue
+
+                initial_fixtures = resolved_initial_state.get("fixtures", {})
+                if isinstance(initial_fixtures, dict):
+                    is_known_support_site = any(
+                        isinstance(fixture_state, dict)
+                        and (
+                            value in (fixture_state.get("support_sites") or {})
+                            or value in (fixture_state.get("support_sites") or [])
+                        )
+                        for fixture_state in initial_fixtures.values()
+                    )
+                    if is_known_support_site:
+                        resolved_args[arg_name] = value
+                        continue
+
+                resolved_args[arg_name] = value
             elif arg_name in self._OBJECT_ARG_NAMES:
                 # The value may actually be a fixture (e.g. "toaster_oven"
                 # passed as reference_object_id in place_next_to).  Check

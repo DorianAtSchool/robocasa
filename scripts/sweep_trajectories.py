@@ -91,6 +91,21 @@ import traceback
 from pathlib import Path
 from typing import Any, Callable
 
+
+def _bootstrap_mujoco_gl() -> None:
+    """Prevent inherited unsupported GL backends from breaking imports."""
+
+    current = os.environ.get("MUJOCO_GL", "").strip().lower()
+    if sys.platform == "darwin":
+        if current in {"", "osmesa", "egl"}:
+            os.environ["MUJOCO_GL"] = "cgl"
+        return
+    if not current:
+        os.environ["MUJOCO_GL"] = "osmesa"
+
+
+_bootstrap_mujoco_gl()
+
 # Make repo-root imports work when this file is executed as a script.
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -595,21 +610,53 @@ def run_one(
 
     task_name = trajectory.get("composite_task", "Kitchen")
     pruning_config = build_trajectory_pruning_config(trajectory, layout=layout)
+    used_pruning_fallback = False
+    pruning_fallback_reason: str | None = None
 
-    executor = SimToolExecutor(
-        task_name=task_name,
-        robots=robots,
-        layout=layout,
-        style=style,
-        seed=seed,
-        placement=placement,
-        cell_size=cell_size,
-        robot_spawn=robot_spawn,
-        update_fxtr_cfg_dict=pruning_config["update_fxtr_cfg_dict"],
-        trajectory_object_names=pruning_config["trajectory_object_names"],
-        trajectory_object_types=pruning_config["trajectory_object_types"],
-        trajectory_object_specs=pruning_config["trajectory_object_specs"],
+    def _make_executor(*, use_pruning: bool) -> SimToolExecutor:
+        return SimToolExecutor(
+            task_name=task_name,
+            robots=robots,
+            layout=layout,
+            style=style,
+            seed=seed,
+            placement=placement,
+            cell_size=cell_size,
+            robot_spawn=robot_spawn,
+            update_fxtr_cfg_dict=(
+                pruning_config["update_fxtr_cfg_dict"] if use_pruning else None
+            ),
+            trajectory_object_names=(
+                pruning_config["trajectory_object_names"] if use_pruning else None
+            ),
+            trajectory_object_types=(
+                pruning_config["trajectory_object_types"] if use_pruning else None
+            ),
+            trajectory_object_specs=(
+                pruning_config["trajectory_object_specs"] if use_pruning else None
+            ),
+        )
+
+    should_try_pruning = any(
+        (
+            pruning_config.get("update_fxtr_cfg_dict"),
+            pruning_config.get("trajectory_object_names"),
+            pruning_config.get("trajectory_object_types"),
+            pruning_config.get("trajectory_object_specs"),
+        )
     )
+
+    if should_try_pruning:
+        try:
+            executor = _make_executor(use_pruning=True)
+        except Exception as exc:
+            pruning_fallback_reason = (
+                f"trajectory pruning init failed: {type(exc).__name__}: {exc}"
+            )
+            executor = _make_executor(use_pruning=False)
+            used_pruning_fallback = True
+    else:
+        executor = _make_executor(use_pruning=False)
 
     try:
         # Copy original trajectory JSON to output dir
@@ -636,6 +683,8 @@ def run_one(
             "steps_succeeded": n_success,
             "steps_total": n_total,
             "images_rendered": n_images,
+            "used_pruning_fallback": used_pruning_fallback,
+            "pruning_fallback_reason": pruning_fallback_reason,
         }
     finally:
         executor.close()

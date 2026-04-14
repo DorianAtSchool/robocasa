@@ -88,13 +88,13 @@ def _build_fsm_prompt_rules(
         )
         prompt_rules.append(
             "After an agent executes give_space, that agent is no longer at the fixture. "
-            "Before that agent can interact there again (pick up, place, open, close, or press_button), "
+            "Before that agent can interact there again (pick up, place, open, close, or use a control), "
             "it must navigate_to_fixture first. Similarly, the arriving agent must give_space in turn "
             "before the original agent can navigate back."
         )
     if allowed_tool_names & INTERACTION_TOOL_NAMES:
         prompt_rules.append(
-            "Interaction tools (press_button) require the agent to be at the target fixture. Navigate to the fixture first."
+            "Interaction tools (press_button, press_lever, set_rotary_control) require the agent to be at the target fixture. Navigate to the fixture first."
         )
     # Keep later references aligned with prior FSM effects.
     prompt_rules.append(
@@ -112,10 +112,26 @@ def _build_fsm_prompt_rules(
                 f"{condition['fixture_id']}.{condition['part_id']} before using "
                 f"{condition['tool']} from {condition['source_id']}."
             )
-        elif condition_kind == "object_location_required_for_action":
+        elif condition_kind == "fixture_part_state_required_for_action":
+            arg_name = condition.get("arg_name")
+            arg_value = condition.get("arg_value")
+            action_scope = ""
+            if isinstance(arg_name, str) and isinstance(arg_value, str):
+                action_scope = f" when {arg_name}={arg_value}"
             prompt_rules.append(
-                f"Only use {condition['tool']} after {condition['object_id']} is "
-                f"already at {condition['required_location']}."
+                "Open "
+                f"{condition['fixture_id']}.{condition['part_id']} before using "
+                f"{condition['tool']}{action_scope}."
+            )
+        elif condition_kind == "object_location_required_for_action":
+            arg_name = condition.get("arg_name")
+            arg_value = condition.get("arg_value")
+            action_scope = ""
+            if isinstance(arg_name, str) and arg_value is not None:
+                action_scope = f" when {arg_name}={arg_value}"
+            prompt_rules.append(
+                f"Only use {condition['tool']}{action_scope} after "
+                f"{condition['object_id']} is already at {condition['required_location']}."
             )
 
     for rule in extra_rules or ():

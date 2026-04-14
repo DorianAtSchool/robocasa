@@ -128,6 +128,29 @@ def _retry_feedback_step_lines(
     return lines
 
 
+# Targeted repair hints keyed by TrajectoryValidationError subclass name.
+# These are appended to the generic repair instructions so the model gets
+# error-specific guidance. Add a new entry when an error type starts appearing
+# often enough that the generic text is not enough to unblock retries.
+_ERROR_TYPE_TARGETED_GUIDANCE: dict[str, list[str]] = {
+    "PostGoalActionSemanticValidationError": [
+        "- The trajectory's goal state was already satisfied before this step.",
+        "- Check `details.goal_satisfied_at_step` to see which earlier step first satisfied the goal.",
+        "- The trajectory must END at the step that first satisfies the goal — no further manipulation or placement steps are allowed after that point.",
+        "- Only observation tools may appear after the goal is reached; do not pad with extra actions, re-checks, or re-placements.",
+        "- Rework the plan so the final task action is exactly the one that satisfies the goal, then stop.",
+    ],
+}
+
+
+def _targeted_guidance_lines(error_type: str | None) -> list[str]:
+    """Returns error-specific repair hints for the given error class name."""
+
+    if not isinstance(error_type, str):
+        return []
+    return list(_ERROR_TYPE_TARGETED_GUIDANCE.get(error_type, ()))
+
+
 def _build_retry_feedback_text(
     exc: TrajectoryValidationError,
     *,
@@ -151,6 +174,10 @@ def _build_retry_feedback_text(
     step_lines = _retry_feedback_step_lines(candidate, failing_step=exc.step)
     if step_lines:
         lines.extend(["", "Local bad example:", *step_lines])
+
+    targeted_lines = _targeted_guidance_lines(exc.error_type)
+    if targeted_lines:
+        lines.extend(["", "Targeted guidance:", *targeted_lines])
 
     lines.extend(
         [
@@ -194,6 +221,10 @@ def _build_retry_feedback_text_from_validation(
     )
     if step_lines:
         lines.extend(["", "Local bad example:", *step_lines])
+
+    targeted_lines = _targeted_guidance_lines(error_type)
+    if targeted_lines:
+        lines.extend(["", "Targeted guidance:", *targeted_lines])
 
     lines.extend(
         [

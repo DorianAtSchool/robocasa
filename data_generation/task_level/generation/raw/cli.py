@@ -155,7 +155,7 @@ def _task_resume_output_paths(
                 composite_task,
             )
     elif request_summary_path is None:
-        summary_path = resolve_dataset_output_path(
+        summary_path = runtime_config.summary_path or resolve_dataset_output_path(
             composite_task,
             model=runtime_config.model,
         )
@@ -457,6 +457,16 @@ def parse_args(argv: list[str] | None = None) -> RuntimeConfig:
         ),
     )
     parser.add_argument(
+        "--summary-path",
+        type=Path,
+        default=None,
+        help=(
+            "Optional JSON path for the generated summary output. For a "
+            "single task this is the task summary path; for multiple tasks "
+            "this is the combined request summary path."
+        ),
+    )
+    parser.add_argument(
         "--resume",
         type=Path,
         default=None,
@@ -562,6 +572,22 @@ def parse_args(argv: list[str] | None = None) -> RuntimeConfig:
         help="Maximum generation attempts per trajectory.",
     )
     parser.add_argument(
+        "--generation-timeout-sec",
+        type=int,
+        default=300,
+        help=(
+            "Per-request wall-clock cap (seconds) for the underlying SDK call. "
+            "Stalled requests raise a timeout error so retries can recover. "
+            "Set to 0 to disable. Default: 300."
+        ),
+    )
+    parser.add_argument(
+        "--generation_timeout_sec",
+        type=int,
+        dest="generation_timeout_sec",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
         "--paralleize-tasks",
         action="store_true",
         dest="parallelize_tasks",
@@ -645,7 +671,7 @@ def parse_args(argv: list[str] | None = None) -> RuntimeConfig:
     normalized_tasks = RuntimeConfig._normalize_composite_tasks(None, parsed_tasks)
     # Resolve the default single-task summary path from the normalized task list
     # so special selectors like `all` follow the same output-path behavior.
-    default_summary_path = (
+    default_summary_path = args.summary_path or (
         resolve_dataset_output_path(normalized_tasks[0], model=args.model)
         if len(normalized_tasks) == 1
         else None
@@ -673,6 +699,9 @@ def parse_args(argv: list[str] | None = None) -> RuntimeConfig:
         batch_processing=args.batch_processing,
         batch_gcs_prefix=args.batch_gcs_prefix,
         composite_tasks=parsed_tasks,
+        generation_timeout_sec=(
+            None if args.generation_timeout_sec == 0 else args.generation_timeout_sec
+        ),
     )
 
 
@@ -699,7 +728,11 @@ def main(argv: list[str] | None = None) -> int:
     request_summary_path = (
         runtime_config.resume_path / "summary.json"
         if runtime_config.resume_path is not None
-        else resolve_request_output_path(model=runtime_config.model)
+        else (
+            runtime_config.summary_path
+            if runtime_config.summary_path is not None
+            else resolve_request_output_path(model=runtime_config.model)
+        )
     )
     task_run_results = _generate_task_results(
         runtime_config,

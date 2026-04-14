@@ -24,6 +24,7 @@ import imageio
 import numpy as np
 import robosuite.utils.transform_utils as T
 
+from robocasa.models.fixtures.blender import Blender
 from robocasa.models.fixtures.coffee_machine import CoffeeMachine
 from robocasa.models.fixtures.electric_kettle import ElectricKettle
 from robocasa.models.fixtures.microwave import Microwave
@@ -846,18 +847,35 @@ class SimToolExecutor:
         raise ValueError(f"Unknown part/control {token!r} for fixture {fixture.name!r}")
 
     def _get_scene_object_location(self, object_id: str) -> str | None:
-        cached_location = self.runner._object_locations.get(object_id)
-        if (
-            isinstance(cached_location, str)
-            and cached_location in self.runner._fixtures
-        ):
-            return cached_location
-
+        current_object_id = object_id
+        seen_object_ids: set[str] = set()
         scene = self.get_scene_description()
-        object_info = scene.get("objects", {}).get(object_id, {})
-        location = object_info.get("location")
-        if isinstance(location, str) and location in scene.get("fixtures", {}):
-            return location
+        scene_objects = scene.get("objects", {})
+        scene_fixtures = scene.get("fixtures", {})
+
+        while isinstance(current_object_id, str):
+            if current_object_id in seen_object_ids:
+                return None
+            seen_object_ids.add(current_object_id)
+
+            cached_location = self.runner._object_locations.get(current_object_id)
+            if isinstance(cached_location, str):
+                if cached_location in self.runner._fixtures:
+                    return cached_location
+                if cached_location in scene_objects:
+                    current_object_id = cached_location
+                    continue
+
+            object_info = scene_objects.get(current_object_id, {})
+            location = object_info.get("location")
+            if isinstance(location, str):
+                if location in scene_fixtures:
+                    return location
+                if location in scene_objects:
+                    current_object_id = location
+                    continue
+                if location in self.runner._fixtures:
+                    return location
 
         try:
             obj_pos, _ = self._get_object_pose(object_id)
@@ -867,6 +885,21 @@ class SimToolExecutor:
         if inferred in self.runner._fixtures:
             return inferred
         return None
+
+    def _resolve_pick_source_target(
+        self,
+        source_id: str,
+    ) -> tuple[str, str | None, str | None]:
+        if source_id in self.env.objects:
+            source_fixture_id = self._get_scene_object_location(source_id)
+            if not isinstance(source_fixture_id, str):
+                raise ValueError(
+                    f"Could not resolve containing fixture for source object {source_id!r}"
+                )
+            return source_fixture_id, None, source_id
+
+        source_fixture_id, source_site_id = self._resolve_support_target(source_id)
+        return source_fixture_id, source_site_id, None
 
     def _get_task_class_name(self) -> str:
         env = self.env
@@ -1613,6 +1646,9 @@ class SimToolExecutor:
         fixture = self._require_fixture(fixture_id)
         parts = []
 
+        if isinstance(fixture, Blender):
+            return ["lid"]
+
         if hasattr(fixture, "door_joint_names"):
             for joint_name in fixture.door_joint_names:
                 if "slide" in joint_name.lower() or "drawer" in joint_name.lower():
@@ -1623,7 +1659,12 @@ class SimToolExecutor:
 
         if hasattr(fixture, "_joint_names"):
             for key in fixture._joint_names:
-                if "lid" in key or "head" in key:
+                lowered = key.lower()
+                if any(token in lowered for token in ("door", "lid", "head")):
+                    parts.append("hinged")
+                    parts.append(key)
+                elif any(token in lowered for token in ("rack", "drawer", "slide")):
+                    parts.append("sliding")
                     parts.append(key)
 
         return sorted(set(parts))
@@ -1631,13 +1672,47 @@ class SimToolExecutor:
     def get_controls(self, fixture_id: str) -> list[str]:
         fixture = self._require_fixture(fixture_id)
 
-        if hasattr(fixture, "_joint_names"):
-            return sorted(fixture._joint_names.keys())
         if isinstance(fixture, CoffeeMachine):
-            return sorted(fixture._start_button_names)
+            return ["start_button"]
         if isinstance(fixture, Microwave):
             return ["start_button", "stop_button"]
+        if hasattr(fixture, "_joint_names"):
+            return sorted(fixture._joint_names.keys())
+        if hasattr(fixture, "_joint_infos"):
+            controls = []
+            naming_prefix = str(getattr(fixture, "naming_prefix", "") or "")
+            for joint_name in fixture._joint_infos:
+                lowered_joint_name = joint_name.lower()
+                if any(
+                    excluded_token in lowered_joint_name
+                    for excluded_token in ("door", "drawer", "slide", "rack", "tray")
+                ):
+                    continue
+                normalized_name = str(joint_name)
+                if naming_prefix and normalized_name.startswith(naming_prefix):
+                    normalized_name = normalized_name[len(naming_prefix):]
+                if normalized_name.endswith("_joint") and normalized_name.startswith(
+                    ("knob_", "lever_", "button_")
+                ):
+                    normalized_name = normalized_name[: -len("_joint")]
+                controls.append(normalized_name)
+            if controls:
+                return sorted(set(controls))
         return []
+
+    def get_support_sites(self, fixture_id: str) -> list[str]:
+        fixture = self._require_fixture(fixture_id)
+        try:
+            reset_regions = fixture.get_reset_regions(env=self.env)
+        except Exception:
+            reset_regions = None
+        if not isinstance(reset_regions, dict):
+            return []
+        return sorted(
+            support_site_id
+            for support_site_id in reset_regions
+            if isinstance(support_site_id, str)
+        )
 
     # ------------------------------------------------------------------
     # Primitive tools
@@ -1750,6 +1825,10 @@ class SimToolExecutor:
             )
             if moved:
                 self._sync_held_object(robot_idx)
+        if isinstance(fixture, Blender) and part_id == "lid":
+            return ToolResult(
+                "open_hinged_part", True, {"target_id": target_id, "part_id": part_id}
+            )
         if part_id == "hinged" and hasattr(fixture, "open_door"):
             fixture.open_door(env=self.env)
             self.env.sim.forward()
@@ -1775,6 +1854,10 @@ class SimToolExecutor:
             )
             if moved:
                 self._sync_held_object(robot_idx)
+        if isinstance(fixture, Blender) and part_id == "lid":
+            return ToolResult(
+                "close_hinged_part", True, {"target_id": target_id, "part_id": part_id}
+            )
         if part_id == "hinged" and hasattr(fixture, "close_door"):
             fixture.close_door(env=self.env)
             self.env.sim.forward()
@@ -1906,6 +1989,48 @@ class SimToolExecutor:
             moved_any = True
         return moved_any
 
+    def _preferred_xy_for_support_site(
+        self,
+        fixture_id: str,
+        support_site_id: str,
+    ) -> np.ndarray | None:
+        fixture = self._require_fixture(fixture_id)
+        try:
+            reset_regions = fixture.get_reset_regions(env=self.env)
+        except Exception:
+            return None
+        if not isinstance(reset_regions, dict):
+            return None
+        region = reset_regions.get(support_site_id)
+        if not isinstance(region, dict):
+            return None
+        offset = np.asarray(region.get("offset", (0.0, 0.0, 0.0)), dtype=float)
+        world_pos = self.runner._fixture_local_to_world(fixture, offset)
+        return np.asarray(world_pos[:2], dtype=float)
+
+    def _resolve_support_target(
+        self,
+        support_id: str,
+    ) -> tuple[str, str | None]:
+        if support_id in self.runner._fixtures:
+            return support_id, None
+
+        matching_targets: list[tuple[str, str]] = []
+        for fixture_id in self.runner._fixtures:
+            if support_id in self.get_support_sites(fixture_id):
+                matching_targets.append((fixture_id, support_id))
+
+        if len(matching_targets) == 1:
+            return matching_targets[0]
+        if matching_targets:
+            matching_fixture_ids = sorted(
+                fixture_id for fixture_id, _support_site_id in matching_targets
+            )
+            raise ValueError(
+                f"Ambiguous support site {support_id!r}; matches fixtures {matching_fixture_ids}"
+            )
+        raise ValueError(f"Unknown support fixture/site {support_id!r}")
+
     def _move_robot_near_fixture_with_retries(
         self,
         robot_idx: int,
@@ -1941,7 +2066,9 @@ class SimToolExecutor:
         robot_idx: int = 0,
     ) -> ToolResult:
         self._require_object(object_id)
-        self._require_fixture(source_id)
+        source_fixture_id, source_site_id, source_object_id = (
+            self._resolve_pick_source_target(source_id)
+        )
 
         current_holder = self._held_by_robot(object_id)
         if current_holder is not None and current_holder != robot_idx:
@@ -1951,13 +2078,13 @@ class SimToolExecutor:
 
         # Skip navigation only if the robot is already in a usable working
         # pose for the fixture.
-        if not self._robot_near_fixture(robot_idx, source_id):
-            source_fxtr = self.runner._fixtures[source_id]
+        if not self._robot_near_fixture(robot_idx, source_fixture_id):
+            source_fxtr = self.runner._fixtures[source_fixture_id]
             if _is_approach_center(source_fxtr):
                 # Interactive fixture (fridge, cabinet) — must approach from front
                 moved = self._move_robot_near_fixture_with_retries(
                     robot_idx,
-                    source_id,
+                    source_fixture_id,
                     require_front=True,
                 )
             else:
@@ -1966,7 +2093,7 @@ class SimToolExecutor:
                 ref_pos = obj_pos[:2].copy()
                 moved = self._move_robot_near_fixture_with_retries(
                     robot_idx,
-                    source_id,
+                    source_fixture_id,
                     ref_pos_override=ref_pos,
                 )
             if not moved:
@@ -1976,6 +2103,9 @@ class SimToolExecutor:
                     {
                         "object_id": object_id,
                         "source_id": source_id,
+                        "resolved_source_fixture_id": source_fixture_id,
+                        "resolved_source_site_id": source_site_id,
+                        "resolved_source_object_id": source_object_id,
                         "robot_idx": robot_idx,
                     },
                 )
@@ -1996,7 +2126,14 @@ class SimToolExecutor:
         return ToolResult(
             "pick_up_object",
             True,
-            {"object_id": object_id, "source_id": source_id, "robot_idx": robot_idx},
+            {
+                "object_id": object_id,
+                "source_id": source_id,
+                "resolved_source_fixture_id": source_fixture_id,
+                "resolved_source_site_id": source_site_id,
+                "resolved_source_object_id": source_object_id,
+                "robot_idx": robot_idx,
+            },
         )
 
     def place_on_surface(
@@ -2006,24 +2143,40 @@ class SimToolExecutor:
         robot_idx: int = 0,
     ) -> ToolResult:
         self._require_object(object_id)
-        self._require_fixture(support_id)
         holder = self._held_by_robot(object_id)
         if holder not in {None, robot_idx}:
             raise ValueError(f"Object {object_id!r} is held by robot {holder}")
 
+        support_fixture_id, support_site_id = self._resolve_support_target(support_id)
+        preferred_xy = (
+            self._preferred_xy_for_support_site(support_fixture_id, support_site_id)
+            if isinstance(support_site_id, str)
+            else None
+        )
+
         # Pre-compute where the object will land so the robot stands near it.
-        target_pos = self._safe_compute_object_target_pos(support_id, object_id)
+        target_pos = self._safe_compute_object_target_pos(
+            support_fixture_id,
+            object_id,
+            preferred_xy=preferred_xy,
+        )
         self.runner._move_robot_near_fixture(
             robot_idx,
-            support_id,
+            support_fixture_id,
             ref_pos_override=target_pos[:2],
         )
-        self.runner.move_object(object_id, support_id, target_pos=target_pos)
+        self.runner.move_object(object_id, support_fixture_id, target_pos=target_pos)
         self._held_objects.pop(robot_idx, None)
         return ToolResult(
             "place_on_surface",
             True,
-            {"object_id": object_id, "support_id": support_id, "robot_idx": robot_idx},
+            {
+                "object_id": object_id,
+                "support_id": support_id,
+                "resolved_support_fixture_id": support_fixture_id,
+                "resolved_support_site_id": support_site_id,
+                "robot_idx": robot_idx,
+            },
         )
 
     def place_in_receptacle(
@@ -2201,9 +2354,9 @@ class SimToolExecutor:
             support_fixture_id = self._find_placeable_surface_near_fixture(
                 reference_fixture_id
             )
-            self.runner._set_object_location(object_id, support_fixture_id)
+            self.runner._set_object_location(object_id, reference_fixture_id)
             for child_id in contained:
-                self.runner._set_object_location(child_id, support_fixture_id)
+                self.runner._set_object_location(child_id, reference_fixture_id)
         else:
             # Generic: project fixture XY, find the surface below.
             fxtr_pos = np.asarray(fixture.pos, dtype=float)

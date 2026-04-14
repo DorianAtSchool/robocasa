@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from difflib import SequenceMatcher
+import re
 from typing import Any, Sequence
 
 from data_generation.utils import stable_json_sha256
@@ -45,6 +47,43 @@ from .schema import (
     _resolve_tool_arg_schema_type,
 )
 from .state import AgentRuntimeState, TaskRuntimeState
+
+_SUPPORT_SITE_TOKEN_RE = re.compile(r"[a-z0-9]+")
+_SUPPORT_SITE_STOPWORDS = frozenset(
+    {"support", "site", "surface", "region", "placement", "place", "burner"}
+)
+
+
+def _normalize_support_site_signature(token: str) -> tuple[str, ...]:
+    normalized_tokens: list[str] = []
+    for raw_token in _SUPPORT_SITE_TOKEN_RE.findall(str(token).lower()):
+        alias = "rear" if raw_token == "back" else raw_token
+        if alias in _SUPPORT_SITE_STOPWORDS or not alias:
+            continue
+        if alias not in normalized_tokens:
+            normalized_tokens.append(alias)
+    if normalized_tokens:
+        return tuple(normalized_tokens)
+    lowered = str(token).strip().lower()
+    return (lowered,) if lowered else ()
+
+
+def _support_site_alias_matches(requested_id: str, candidate_id: str) -> bool:
+    if requested_id == candidate_id:
+        return True
+    requested_signature = _normalize_support_site_signature(requested_id)
+    candidate_signature = _normalize_support_site_signature(candidate_id)
+    if requested_signature == candidate_signature:
+        return True
+    requested_text = "_".join(requested_signature)
+    candidate_text = "_".join(candidate_signature)
+    if not requested_text or not candidate_text:
+        return False
+    overlap = len(set(requested_signature) & set(candidate_signature))
+    union = len(set(requested_signature) | set(candidate_signature))
+    jaccard = overlap / union if union else 0.0
+    ratio = SequenceMatcher(None, requested_text, candidate_text).ratio()
+    return max(jaccard, ratio) >= 0.67
 
 
 class FiniteStateTaskValidator:
@@ -105,6 +144,9 @@ class FiniteStateTaskValidator:
         runtime_state = self._build_runtime_state(agents)
         first_action_seen = False
         goal_state_satisfied = self.is_goal_state_satisfied(runtime_state)
+        # Step index at which the goal first became satisfied, or None if it
+        # was already satisfied at the initial state (before any step).
+        goal_satisfied_at_step: int | None = None
 
         for expected_index, step in enumerate(steps):
             try:
@@ -125,12 +167,18 @@ class FiniteStateTaskValidator:
                         details={
                             "tool": step["tool"],
                             "composite_task": self.composite_task,
+                            "goal_satisfied_at_step": goal_satisfied_at_step,
                         },
                     )
 
                 if step["tool"] == "communicate":
                     self._validate_communicate_step(step)
                     runtime_state.communicated_agents.add(step["agent"])
+                    self.apply_task_effects(step, runtime_state)
+                    was_satisfied = goal_state_satisfied
+                    goal_state_satisfied = self.is_goal_state_satisfied(runtime_state)
+                    if goal_state_satisfied and not was_satisfied:
+                        goal_satisfied_at_step = step["step"]
                     continue
 
                 # Shared observation steps may appear before the opening
@@ -173,7 +221,10 @@ class FiniteStateTaskValidator:
                 self._apply_generic_effects(step, runtime_state)
                 self.apply_task_effects(step, runtime_state)
                 first_action_seen = True
+                was_satisfied = goal_state_satisfied
                 goal_state_satisfied = self.is_goal_state_satisfied(runtime_state)
+                if goal_state_satisfied and not was_satisfied:
+                    goal_satisfied_at_step = step["step"]
             except TrajectoryValidationError as exc:
                 raise self._validation_error_with_step(exc, step["step"]) from exc
 
@@ -534,81 +585,125 @@ class FiniteStateTaskValidator:
         tool_args = step["args"]
 
         for arg_name in tool_spec.get("tool_args", ()):
-            arg_value = tool_args.get(arg_name)
-            arg_schema_type = _resolve_tool_arg_schema_type(arg_name, tool_spec)
-            if arg_schema_type == "STRING":
-                if not isinstance(arg_value, str) or not " ".join(
-                    arg_value.strip().split()
-                ):
-                    raise ToolArgumentSemanticValidationError(
-                        f"{step['tool']} requires {arg_name} to be a non-empty string.",
-                        details={
-                            "tool": step["tool"],
-                            "arg_name": arg_name,
-                            "arg_value": arg_value,
-                        },
-                    )
-                tool_args[arg_name] = " ".join(arg_value.strip().split())
-            elif arg_schema_type == "INTEGER":
-                if not isinstance(arg_value, int) or isinstance(arg_value, bool):
-                    raise ToolArgumentSemanticValidationError(
-                        f"{step['tool']} requires {arg_name} to be an integer.",
-                        details={
-                            "tool": step["tool"],
-                            "arg_name": arg_name,
-                            "arg_value": arg_value,
-                        },
-                    )
-            elif arg_schema_type == "STRING_ARRAY":
-                if not isinstance(arg_value, list) or not arg_value:
-                    raise ToolArgumentSemanticValidationError(
-                        f"{step['tool']} requires {arg_name} to be a non-empty string list.",
-                        details={
-                            "tool": step["tool"],
-                            "arg_name": arg_name,
-                            "arg_value": arg_value,
-                        },
-                    )
+            self._validate_task_local_tool_arg(
+                step=step,
+                tool_spec=tool_spec,
+                arg_name=arg_name,
+            )
 
-                normalized_values: list[str] = []
-                for list_value in arg_value:
-                    if not isinstance(list_value, str) or not " ".join(
-                        list_value.strip().split()
-                    ):
-                        raise ToolArgumentSemanticValidationError(
-                            f"{step['tool']} requires {arg_name} to contain only non-empty strings.",
-                            details={
-                                "tool": step["tool"],
-                                "arg_name": arg_name,
-                                "arg_value": arg_value,
-                            },
-                        )
-                    normalized_values.append(" ".join(list_value.strip().split()))
-                tool_args[arg_name] = normalized_values
-            allowed_ids_key = _allowed_ids_key_for_arg_name(arg_name)
-            if allowed_ids_key is None or allowed_ids_key not in tool_spec:
-                continue
-
-            allowed_ids = tool_spec[allowed_ids_key]
-            if not isinstance(allowed_ids, list) or not all(
-                isinstance(allowed_id, str) for allowed_id in allowed_ids
-            ):
+        for arg_group in tool_spec.get("tool_arg_any_of", ()):
+            if not isinstance(arg_group, (list, tuple)) or len(arg_group) < 2:
                 raise ValueError(
-                    f"{self.composite_task} configured {step['tool']}.{allowed_ids_key} "
-                    "with a non-string list."
+                    f"{self.composite_task} configured {step['tool']}.tool_arg_any_of "
+                    "with an invalid alternative-arg group."
                 )
-
-            if tool_args[arg_name] not in allowed_ids:
+            normalized_group = tuple(
+                arg_name for arg_name in arg_group if isinstance(arg_name, str)
+            )
+            present_args = [
+                arg_name
+                for arg_name in normalized_group
+                if tool_args.get(arg_name) is not None
+            ]
+            if len(present_args) != 1:
                 raise ToolArgumentSemanticValidationError(
-                    f"{step['tool']} requires {arg_name} to be one of "
-                    f"{allowed_ids}, got {tool_args[arg_name]!r}.",
+                    f"{step['tool']} requires exactly one of {list(normalized_group)}.",
+                    details={
+                        "tool": step["tool"],
+                        "arg_group": list(normalized_group),
+                        "present_args": present_args,
+                    },
+                )
+            self._validate_task_local_tool_arg(
+                step=step,
+                tool_spec=tool_spec,
+                arg_name=present_args[0],
+            )
+
+    def _validate_task_local_tool_arg(
+        self,
+        *,
+        step: dict[str, Any],
+        tool_spec: dict[str, Any],
+        arg_name: str,
+    ) -> None:
+        """Validate one concrete step arg against shared tool metadata."""
+
+        tool_args = step["args"]
+        arg_value = tool_args.get(arg_name)
+        arg_schema_type = _resolve_tool_arg_schema_type(arg_name, tool_spec)
+        if arg_schema_type == "STRING":
+            if not isinstance(arg_value, str) or not " ".join(arg_value.strip().split()):
+                raise ToolArgumentSemanticValidationError(
+                    f"{step['tool']} requires {arg_name} to be a non-empty string.",
                     details={
                         "tool": step["tool"],
                         "arg_name": arg_name,
-                        "arg_value": tool_args[arg_name],
-                        "allowed_values": list(allowed_ids),
+                        "arg_value": arg_value,
                     },
                 )
+            tool_args[arg_name] = " ".join(arg_value.strip().split())
+        elif arg_schema_type == "INTEGER":
+            if not isinstance(arg_value, int) or isinstance(arg_value, bool):
+                raise ToolArgumentSemanticValidationError(
+                    f"{step['tool']} requires {arg_name} to be an integer.",
+                    details={
+                        "tool": step["tool"],
+                        "arg_name": arg_name,
+                        "arg_value": arg_value,
+                    },
+                )
+        elif arg_schema_type == "STRING_ARRAY":
+            if not isinstance(arg_value, list) or not arg_value:
+                raise ToolArgumentSemanticValidationError(
+                    f"{step['tool']} requires {arg_name} to be a non-empty string list.",
+                    details={
+                        "tool": step["tool"],
+                        "arg_name": arg_name,
+                        "arg_value": arg_value,
+                    },
+                )
+
+            normalized_values: list[str] = []
+            for list_value in arg_value:
+                if not isinstance(list_value, str) or not " ".join(
+                    list_value.strip().split()
+                ):
+                    raise ToolArgumentSemanticValidationError(
+                        f"{step['tool']} requires {arg_name} to contain only non-empty strings.",
+                        details={
+                            "tool": step["tool"],
+                            "arg_name": arg_name,
+                            "arg_value": arg_value,
+                        },
+                    )
+                normalized_values.append(" ".join(list_value.strip().split()))
+            tool_args[arg_name] = normalized_values
+
+        allowed_ids_key = _allowed_ids_key_for_arg_name(arg_name)
+        if allowed_ids_key is None or allowed_ids_key not in tool_spec:
+            return
+
+        allowed_ids = tool_spec[allowed_ids_key]
+        if not isinstance(allowed_ids, list) or not all(
+            isinstance(allowed_id, str) for allowed_id in allowed_ids
+        ):
+            raise ValueError(
+                f"{self.composite_task} configured {step['tool']}.{allowed_ids_key} "
+                "with a non-string list."
+            )
+
+        if tool_args[arg_name] not in allowed_ids:
+            raise ToolArgumentSemanticValidationError(
+                f"{step['tool']} requires {arg_name} to be one of "
+                f"{allowed_ids}, got {tool_args[arg_name]!r}.",
+                details={
+                    "tool": step["tool"],
+                    "arg_name": arg_name,
+                    "arg_value": tool_args[arg_name],
+                    "allowed_values": list(allowed_ids),
+                },
+            )
 
     def _apply_generic_effects(
         self,
@@ -637,7 +732,12 @@ class FiniteStateTaskValidator:
                 runtime_state=runtime_state,
                 target_id=tool_args["target_id"],
                 part_id=tool_args["part_id"],
-                part_state="open",
+                part_state=self._resolve_part_state_transition(
+                    runtime_state=runtime_state,
+                    target_id=tool_args["target_id"],
+                    part_id=tool_args["part_id"],
+                    opening=True,
+                ),
             )
             return
 
@@ -646,7 +746,40 @@ class FiniteStateTaskValidator:
                 runtime_state=runtime_state,
                 target_id=tool_args["target_id"],
                 part_id=tool_args["part_id"],
-                part_state="closed",
+                part_state=self._resolve_part_state_transition(
+                    runtime_state=runtime_state,
+                    target_id=tool_args["target_id"],
+                    part_id=tool_args["part_id"],
+                    opening=False,
+                ),
+            )
+            return
+
+        if tool_name in INTERACTION_TOOL_NAMES:
+            control_state: str
+            if tool_name == "set_rotary_control":
+                control_state = tool_args["goal"]
+            elif tool_name == "press_button":
+                current_state = (
+                    runtime_state.fixtures.get(tool_args["target_id"], {})
+                    .get("controls", {})
+                    .get(tool_args["control_id"], {})
+                    .get("state")
+                )
+                control_state = "on" if current_state == "off" else "pressed"
+            else:
+                current_state = (
+                    runtime_state.fixtures.get(tool_args["target_id"], {})
+                    .get("controls", {})
+                    .get(tool_args["control_id"], {})
+                    .get("state")
+                )
+                control_state = "down" if current_state == "up" else "pressed"
+            self._set_control_state(
+                runtime_state=runtime_state,
+                target_id=tool_args["target_id"],
+                control_id=tool_args["control_id"],
+                control_state=control_state,
             )
             return
 
@@ -697,6 +830,21 @@ class FiniteStateTaskValidator:
 
         reference_fixture_id = tool_args.get("reference_fixture_id")
         if isinstance(reference_fixture_id, str):
+            if step["tool"] == "place_next_to":
+                adjacent_location_id = self._resolve_reference_location(
+                    reference_id=reference_fixture_id,
+                    runtime_state=runtime_state,
+                )
+                if isinstance(adjacent_location_id, str):
+                    return adjacent_location_id
+                raise PlacementDestinationSemanticValidationError(
+                    f"{step['tool']} requires {reference_fixture_id} to expose an adjacent symbolic support location.",
+                    details={
+                        "tool": step["tool"],
+                        "reference_fixture_id": reference_fixture_id,
+                        "reference_location": adjacent_location_id,
+                    },
+                )
             # Prefer a fixture's symbolic dispenser output when the task state exposes one.
             fixture_machine_state = runtime_state.machine_state.get(
                 reference_fixture_id, {}
@@ -719,11 +867,28 @@ class FiniteStateTaskValidator:
     ) -> str | None:
         """Resolves the symbolic placement location for an object or fixture reference."""
 
-        reference_location = runtime_state.objects.get(reference_id, {}).get("location")
-        if isinstance(reference_location, str):
+        current_reference_id = reference_id
+        seen_reference_ids: set[str] = set()
+
+        # Some placements are specified relative to an object that sits on top
+        # of another object (for example cake -> plate -> counter). Walk up the
+        # object location chain until we reach a non-object symbolic location.
+        while current_reference_id in runtime_state.objects:
+            if current_reference_id in seen_reference_ids:
+                return None
+            seen_reference_ids.add(current_reference_id)
+
+            reference_location = runtime_state.objects.get(current_reference_id, {}).get(
+                "location"
+            )
+            if not isinstance(reference_location, str):
+                return None
+            if reference_location in runtime_state.objects:
+                current_reference_id = reference_location
+                continue
             return reference_location
 
-        fixture_machine_state = runtime_state.machine_state.get(reference_id, {})
+        fixture_machine_state = runtime_state.machine_state.get(current_reference_id, {})
         if not isinstance(fixture_machine_state, dict):
             return None
 
@@ -747,6 +912,33 @@ class FiniteStateTaskValidator:
         parts_state = target_state.setdefault("parts", {})
         part_entry = parts_state.setdefault(part_id, {})
         part_entry["state"] = part_state
+
+    def _set_control_state(
+        self,
+        *,
+        runtime_state: TaskRuntimeState,
+        target_id: str,
+        control_id: str,
+        control_state: str,
+    ) -> None:
+        """Updates the symbolic state for a fixture control."""
+
+        target_state = runtime_state.fixtures.setdefault(target_id, {})
+        controls_state = target_state.setdefault("controls", {})
+        control_entry = controls_state.setdefault(control_id, {})
+        control_entry["state"] = control_state
+
+    def _resolve_part_state_transition(
+        self,
+        *,
+        runtime_state: TaskRuntimeState,
+        target_id: str,
+        part_id: str,
+        opening: bool,
+    ) -> str:
+        """Map open or close actions onto the symbolic state vocabulary for that part."""
+
+        return "open" if opening else "closed"
 
     def _require_agent_location(
         self,
@@ -854,21 +1046,90 @@ class FiniteStateTaskValidator:
             "support_id",
             "receptacle_id",
             "reference_fixture_id",
+            "support_object_id",
+            "reference_object_id",
         ):
-            fixture_id = tool_args.get(arg_name)
-            if isinstance(fixture_id, str):
-                return fixture_id
-
-        for arg_name in ("support_object_id", "reference_object_id"):
-            reference_object_id = tool_args.get(arg_name)
-            if not isinstance(reference_object_id, str):
+            value = tool_args.get(arg_name)
+            if not isinstance(value, str):
                 continue
-            support_location = self._resolve_reference_location(
-                reference_id=reference_object_id,
+            if arg_name in {"fixture_id", "target_id", "reference_fixture_id"}:
+                return value
+            # If the value is an object, resolve to the fixture it sits on.
+            resolved = self._resolve_reference_location(
+                reference_id=value,
                 runtime_state=runtime_state,
             )
-            if isinstance(support_location, str):
-                return support_location
+            if isinstance(resolved, str):
+                enclosing_fixture_id = self._resolve_enclosing_fixture_id(
+                    reference_id=resolved,
+                    runtime_state=runtime_state,
+                )
+                if isinstance(enclosing_fixture_id, str):
+                    return enclosing_fixture_id
+                return resolved
+            enclosing_fixture_id = self._resolve_enclosing_fixture_id(
+                reference_id=value,
+                runtime_state=runtime_state,
+            )
+            if isinstance(enclosing_fixture_id, str):
+                return enclosing_fixture_id
+            # Otherwise treat it as a fixture ID directly.
+            return value
+        return None
+
+    def _resolve_enclosing_fixture_id(
+        self,
+        *,
+        reference_id: str,
+        runtime_state: TaskRuntimeState,
+    ) -> str | None:
+        """Resolve a sub-entity like a drawer part back to its containing fixture."""
+
+        matching_fixture_ids: list[str] = []
+        for fixture_id, fixture_state in runtime_state.fixtures.items():
+            if not isinstance(fixture_state, dict):
+                continue
+            fixture_parts = fixture_state.get("parts", {})
+            if isinstance(fixture_parts, dict) and reference_id in fixture_parts:
+                matching_fixture_ids.append(fixture_id)
+            fixture_controls = fixture_state.get("controls", {})
+            if isinstance(fixture_controls, dict) and reference_id in fixture_controls:
+                matching_fixture_ids.append(fixture_id)
+            fixture_support_sites = fixture_state.get("support_sites", {})
+            if (
+                isinstance(fixture_support_sites, dict)
+                and reference_id in fixture_support_sites
+            ) or (
+                isinstance(fixture_support_sites, list)
+                and reference_id in fixture_support_sites
+            ):
+                matching_fixture_ids.append(fixture_id)
+            if isinstance(fixture_support_sites, dict):
+                if any(
+                    isinstance(support_site_id, str)
+                    and _support_site_alias_matches(reference_id, support_site_id)
+                    for support_site_id in fixture_support_sites
+                ):
+                    matching_fixture_ids.append(fixture_id)
+            elif isinstance(fixture_support_sites, list):
+                if any(
+                    isinstance(support_site_id, str)
+                    and _support_site_alias_matches(reference_id, support_site_id)
+                    for support_site_id in fixture_support_sites
+                ):
+                    matching_fixture_ids.append(fixture_id)
+
+        for fixture_id, fixture_machine_state in runtime_state.machine_state.items():
+            if not isinstance(fixture_machine_state, dict):
+                continue
+            if fixture_machine_state.get("dispenser_id") == reference_id:
+                matching_fixture_ids.append(fixture_id)
+            if fixture_machine_state.get("adjacent_location_id") == reference_id:
+                matching_fixture_ids.append(fixture_id)
+
+        deduped_fixture_ids = tuple(dict.fromkeys(matching_fixture_ids))
+        if len(deduped_fixture_ids) == 1:
+            return deduped_fixture_ids[0]
         return None
 
     def validate_task_preconditions(

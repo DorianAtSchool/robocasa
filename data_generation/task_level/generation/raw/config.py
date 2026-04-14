@@ -7,7 +7,10 @@ import threading
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from data_generation.task_level.runtime.client import TrajectoryGenerationError
+from data_generation.task_level.runtime.client import (
+    DEFAULT_GENERATION_TIMEOUT_SEC,
+    TrajectoryGenerationError,
+)
 from data_generation.task_level.tasks import supported_task_names
 
 # This module lives under data_generation/task_level/generation/raw, so the
@@ -66,6 +69,7 @@ class RuntimeConfig:
     run_indices: tuple[int, ...] = ()
     composite_tasks: tuple[str, ...] = ()
     task_cancellation_event: threading.Event | None = None
+    generation_timeout_sec: int | None = DEFAULT_GENERATION_TIMEOUT_SEC
 
     def __post_init__(self) -> None:
         """Normalizes single-task and multi-task config fields to a stable shape."""

@@ -90,6 +90,7 @@ def generate_single_run(
             sdk=runtime_config.sdk,
             project=runtime_config.project,
             location=runtime_config.location,
+            timeout_sec=runtime_config.generation_timeout_sec,
         )
     )
     task_instance = task_definition.build_task_instance(run_index, runtime_config)
@@ -104,6 +105,10 @@ def generate_single_run(
         and runtime_config.verbalized_k > 1
     )
     run_completed = False
+    # Track actual retry usage so the failure display can distinguish
+    # "exhausted all retries" from "hit a non-retryable error early".
+    attempts_run = 0
+    non_retryable_stop = False
     accumulated_valid_results: list[tuple[Any, dict[str, Any], dict[str, Any], str]] = (
         []
     )
@@ -114,6 +119,7 @@ def generate_single_run(
     # Each attempt rebuilds the full prompt so retries can incorporate repair
     # feedback without mutating saved outputs from prior attempts.
     for attempt_index in range(runtime_config.max_retries):
+        attempts_run = attempt_index + 1
         _runtime_support._raise_if_task_cancelled(runtime_config)
         # Variation keys give retries a stable way to ask for distinct traces.
         variation_key = _runtime_support.format_trajectory_variation_key(
@@ -514,6 +520,7 @@ def generate_single_run(
                 error_events_lock=error_events_lock,
             )
             if _runtime_support._is_non_retryable_generation_error(exc):
+                non_retryable_stop = True
                 break
             if trajectory_progress is not None:
                 invalid_summary = None
@@ -540,12 +547,25 @@ def generate_single_run(
         with seen_signatures_lock:
             seen_signatures.difference_update(reserved_run_signatures)
     if trajectory_progress is not None:
-        trajectory_progress.set_postfix_str(
-            f"failed attempts={runtime_config.max_retries}/{runtime_config.max_retries}"
+        if non_retryable_stop:
+            failure_label = (
+                f"failed non-retryable at {attempts_run}/{runtime_config.max_retries}"
+            )
+        else:
+            failure_label = (
+                f"failed attempts={attempts_run}/{runtime_config.max_retries}"
+            )
+        trajectory_progress.set_postfix_str(failure_label)
+    if non_retryable_stop:
+        reason_detail = (
+            f"at attempt {attempts_run}/{runtime_config.max_retries} "
+            f"(non-retryable error; no further retries)"
         )
+    else:
+        reason_detail = f"after {attempts_run} attempts"
     raise _runtime_support.RunExhaustedError(
-        f"Unable to generate a valid trajectory run for index {run_index} after "
-        f"{runtime_config.max_retries} attempts: "
+        f"Unable to generate a valid trajectory run for index {run_index} "
+        f"{reason_detail}: "
         f"{_runtime_support._exception_summary(last_error) if last_error is not None else 'Unknown error'}"
     )
 

@@ -21,14 +21,20 @@ def _build_subatomic_allowed_tool_specs() -> dict[str, dict[str, Any]]:
             for argument in tool_spec.constructor_args
             if argument.schema_type != "STRING"
         }
-        subatomic_allowed_tool_specs[tool_spec.name] = {
+        subatomic_allowed_tool_spec = {
             "description": tool_spec.description,
             "tool_args": list(argument_names),
         }
         if tool_arg_types:
-            subatomic_allowed_tool_specs[tool_spec.name][
-                "tool_arg_types"
-            ] = tool_arg_types
+            subatomic_allowed_tool_spec["tool_arg_types"] = tool_arg_types
+        if tool_spec.name == "place_next_to":
+            # `place_next_to` can anchor relative to either a movable object
+            # or a fixture with an explicit adjacent symbolic surface.
+            subatomic_allowed_tool_spec["tool_args"] = ["object_id"]
+            subatomic_allowed_tool_spec["tool_arg_any_of"] = [
+                ["reference_object_id", "reference_fixture_id"]
+            ]
+        subatomic_allowed_tool_specs[tool_spec.name] = subatomic_allowed_tool_spec
     return subatomic_allowed_tool_specs
 
 
