@@ -54,7 +54,8 @@ from data_generation.task_level.tasks import (
     get_task_definition,
     supported_task_names,
 )
-from data_generation.task_level.tasks.specs import load_task_spec
+from data_generation.task_level.tasks.specs import TaskSpec, load_task_spec
+from data_generation.task_level.tasks.specs.runtime import SpecDrivenTaskValidator
 from data_generation.task_level.subatomic_tool_calls import discover_subatomic_tools
 from data_generation.task_level.runtime.batch_generation import (
     BatchRunContext,
@@ -107,6 +108,7 @@ from data_generation.task_level.generation.raw.progress import (
     _validation_error_progress_summary,
 )
 from data_generation.task_level.generation.raw.runtime_support import (
+    _validate_candidate_references_without_sim,
     _build_retry_feedback_text,
     _is_non_retryable_generation_error,
     _maybe_reserve_signature,
@@ -203,7 +205,7 @@ PREPARE_SANDWICH_STATION_ACTION_SPECS = (
         "place_next_to",
         {
             "object_id": "ingredient_bowl",
-            "reference_object_id": "toaster_oven",
+            "reference_fixture_id": "toaster_oven",
         },
     ),
     ("navigate_to_fixture", {"fixture_id": "ingredient_source_fixture"}),
@@ -216,7 +218,7 @@ PREPARE_SANDWICH_STATION_ACTION_SPECS = (
         "place_next_to",
         {
             "object_id": "baguette",
-            "reference_object_id": "toaster_oven",
+            "reference_fixture_id": "toaster_oven",
         },
     ),
 )
@@ -1065,11 +1067,11 @@ class SubatomicToolCatalogTests(unittest.TestCase):
             prompt,
         )
         self.assertIn(
-            "args must contain exactly the argument names required by that tool",
+            "args must contain every required argument for that tool",
             prompt,
         )
         self.assertIn(
-            "Do not omit required args and do not invent extra arg keys.",
+            "Only include optional args when they are useful for the placement you are specifying, and do not invent unsupported arg keys.",
             prompt,
         )
         self.assertIn(
@@ -1151,7 +1153,7 @@ class SubatomicToolCatalogTests(unittest.TestCase):
         self.assertIn("toaster_oven", prompt)
         self.assertNotIn("Args formatting example:", prompt)
         self.assertIn(
-            "Use place_next_to with reference_object_id toaster_oven",
+            "Use place_next_to with reference_fixture_id toaster_oven",
             prompt,
         )
         self.assertNotIn('"wait"', prompt)
@@ -1455,6 +1457,52 @@ class DotenvLoadingTests(unittest.TestCase):
     def test_parse_args_accepts_enable_validation(self):
         runtime_config = parse_args(["--enable-validation"])
         self.assertFalse(runtime_config.disable_validation)
+
+    def test_parse_args_enables_static_referential_validation_by_default(self):
+        runtime_config = parse_args([])
+        self.assertTrue(runtime_config.enable_static_referential_validation)
+
+    def test_parse_args_accepts_disable_static_referential_validation(self):
+        runtime_config = parse_args(["--disable-static-referential-validation"])
+        self.assertFalse(runtime_config.enable_static_referential_validation)
+
+    def test_static_referential_validation_rejects_unknown_part_id(self):
+        candidate = {
+            "steps": [
+                {
+                    "step": 0,
+                    "agent": "agent_0",
+                    "tool": "open_hinged_part",
+                    "args": {"target_id": "cabinet", "part_id": "left_door"},
+                    "reasoning": "Open the door.",
+                }
+            ]
+        }
+        initial_state = {
+            "fixtures": {
+                "cabinet": {
+                    "fixture_type": "cabinet",
+                    "parts": {"hinged": {"state": "closed"}},
+                    "controls": {},
+                }
+            }
+        }
+        allowed_tool_specs = {
+            "open_hinged_part": {
+                "tool_args": ["target_id", "part_id"],
+                "allowed_target_ids": ["cabinet"],
+                "allowed_part_ids": ["hinged"],
+            }
+        }
+
+        with self.assertRaises(ToolArgumentSemanticValidationError) as context:
+            _validate_candidate_references_without_sim(
+                candidate,
+                initial_state=initial_state,
+                allowed_tool_specs=allowed_tool_specs,
+            )
+
+        self.assertIn("Unknown part/control 'left_door' for fixture 'cabinet'", str(context.exception))
 
     def test_parse_args_accepts_thinking_level_flag_and_alias(self):
         dashed_runtime_config = parse_args(["--thinking-level", "minimal"])
@@ -1952,11 +2000,15 @@ class FiniteStateTaskValidatorTests(unittest.TestCase):
                 "views",
                 "object_id",
                 "source_id",
-                "receptacle_id",
-                "reference_object_id",
-                "support_object_id",
-                "reference_fixture_id",
+                "source_site_id",
                 "target_id",
+                "receptacle_id",
+                "target_site_id",
+                "relative_position",
+                "reference_id",
+                "reference_object_id",
+                "reference_fixture_id",
+                "support_object_id",
                 "control_id",
                 "goal",
                 "fixture_id",
@@ -2049,6 +2101,47 @@ class FiniteStateTaskValidatorTests(unittest.TestCase):
             validation["final_state"]["objects"]["apple_1"]["location"],
             "shelf_1",
         )
+
+    def test_validator_allows_pickup_from_fixture_when_object_is_on_support_site(self):
+        initial_state = deepcopy(TOY_FSM_INITIAL_STATE)
+        initial_state["agents"]["agent_0"]["location"] = "toaster_oven"
+        initial_state["agents"]["agent_1"]["location"] = "toaster_oven"
+        initial_state["objects"]["apple_1"]["location"] = "rack_0"
+        initial_state["fixtures"]["toaster_oven"] = {
+            "fixture_type": "toaster_oven",
+            "support_sites": {"rack_0": {"site_type": "support"}},
+        }
+
+        class ToasterSupportSiteValidator(FiniteStateTaskValidator):
+            def __init__(self):
+                super().__init__(
+                    composite_task="ToasterSupportSiteTask",
+                    agent_ids=("agent_0", "agent_1"),
+                    initial_state=initial_state,
+                    allowed_tool_specs=TOY_FSM_ALLOWED_TOOL_SPECS,
+                )
+
+            def is_goal_state_satisfied(self, runtime_state):
+                return runtime_state.objects["apple_1"]["location"] == "shelf_1"
+
+        actions = (
+            make_toy_action_spec(
+                "pick_up_object",
+                {"object_id": "apple_1", "source_id": "toaster_oven"},
+            ),
+            make_toy_action_spec(
+                "navigate_to_fixture",
+                {"fixture_id": "shelf_1"},
+            ),
+            make_toy_action_spec(
+                "place_on_surface",
+                {"object_id": "apple_1", "support_id": "shelf_1"},
+            ),
+        )
+
+        validation = ToasterSupportSiteValidator().validate(make_toy_candidate(actions))
+
+        self.assertTrue(validation["is_valid"])
 
     def test_validator_allows_get_image_while_holding(self):
         actions = (
@@ -2234,7 +2327,7 @@ class FiniteStateTaskValidatorTests(unittest.TestCase):
             ),
             make_toy_action_spec(
                 "place_next_to",
-                {"object_id": "apple_1", "reference_object_id": "toaster_oven_1"},
+                {"object_id": "apple_1", "reference_fixture_id": "toaster_oven_1"},
             ),
             make_toy_action_spec(
                 "navigate_to_fixture",
@@ -2306,6 +2399,405 @@ class FiniteStateTaskValidatorTests(unittest.TestCase):
         self.assertEqual(
             validation["final_state"]["objects"]["cup_1"]["location"],
             "coffee_machine_dispenser",
+        )
+
+    def test_validator_allows_place_under_using_sink_basin_support_site(self):
+        initial_state = deepcopy(PLACEMENT_REFERENCE_INITIAL_STATE)
+        initial_state["fixtures"]["sink_1"] = {
+            "fixture_type": "sink",
+            "support_sites": {
+                "sink_basin": {"site_type": "support"},
+            },
+        }
+        initial_state["agents"]["agent_0"]["location"] = "table_1"
+        initial_state["objects"]["cup_1"]["location"] = "table_1"
+
+        class SinkPlacementValidator(FiniteStateTaskValidator):
+            def __init__(self):
+                super().__init__(
+                    composite_task="SinkPlacementTask",
+                    agent_ids=("agent_0", "agent_1"),
+                    initial_state=initial_state,
+                    allowed_tool_specs=PLACEMENT_REFERENCE_ALLOWED_TOOL_SPECS,
+                )
+
+            def is_goal_state_satisfied(self, runtime_state):
+                return runtime_state.objects["cup_1"]["location"] == "sink_basin"
+
+        actions = (
+            make_toy_action_spec(
+                "navigate_to_fixture",
+                {"fixture_id": "table_1"},
+            ),
+            make_toy_action_spec(
+                "pick_up_object",
+                {"object_id": "cup_1", "source_id": "table_1"},
+            ),
+            make_toy_action_spec(
+                "navigate_to_fixture",
+                {"fixture_id": "sink_1"},
+            ),
+            make_toy_action_spec(
+                "place_under",
+                {"object_id": "cup_1", "reference_fixture_id": "sink_1"},
+            ),
+        )
+
+        validation = SinkPlacementValidator().validate(make_toy_candidate(actions))
+
+        self.assertTrue(validation["is_valid"])
+        self.assertEqual(
+            validation["final_state"]["objects"]["cup_1"]["location"],
+            "sink_basin",
+        )
+
+    def test_validator_records_explicit_target_site_as_release_location(self):
+        initial_state = deepcopy(PLACEMENT_REFERENCE_INITIAL_STATE)
+        initial_state["fixtures"]["blender_1"] = {
+            "fixture_type": "blender",
+            "support_sites": {
+                "int": {"site_type": "support"},
+            },
+        }
+        initial_state["machine_state"]["blender_1"] = {
+            "adjacent_location_id": "table_1",
+        }
+        initial_state["agents"]["agent_0"]["location"] = "table_1"
+        initial_state["objects"]["apple_1"]["location"] = "table_1"
+
+        allowed_tool_specs = build_allowed_tool_specs(
+            (
+                "communicate",
+                "get_image",
+                "navigate_to_fixture",
+                "pick_up_object",
+                "place_in_receptacle",
+            ),
+            overrides={
+                "pick_up_object": {
+                    "allowed_object_ids": ["apple_1"],
+                    "allowed_source_ids": ["table_1"],
+                },
+                "place_in_receptacle": {
+                    "allowed_object_ids": ["apple_1"],
+                    "allowed_receptacle_ids": ["blender_1"],
+                    "allowed_target_site_ids": ["int"],
+                },
+            },
+        )
+
+        class BlenderPlacementValidator(FiniteStateTaskValidator):
+            def __init__(self):
+                super().__init__(
+                    composite_task="BlenderPlacementTask",
+                    agent_ids=("agent_0", "agent_1"),
+                    initial_state=initial_state,
+                    allowed_tool_specs=allowed_tool_specs,
+                )
+
+            def is_goal_state_satisfied(self, runtime_state):
+                return runtime_state.objects["apple_1"]["location"] == "int"
+
+        actions = (
+            make_toy_action_spec("navigate_to_fixture", {"fixture_id": "table_1"}),
+            make_toy_action_spec(
+                "pick_up_object",
+                {"object_id": "apple_1", "source_id": "table_1"},
+            ),
+            make_toy_action_spec("navigate_to_fixture", {"fixture_id": "blender_1"}),
+            make_toy_action_spec(
+                "place_in_receptacle",
+                {
+                    "object_id": "apple_1",
+                    "receptacle_id": "blender_1",
+                    "target_site_id": "int",
+                },
+            ),
+        )
+
+        validation = BlenderPlacementValidator().validate(make_toy_candidate(actions))
+
+        self.assertTrue(validation["is_valid"])
+        self.assertEqual(
+            validation["final_state"]["objects"]["apple_1"]["location"],
+            "int",
+        )
+
+    def test_spec_validator_treats_support_site_as_parent_fixture_location(self):
+        initial_state = deepcopy(PLACEMENT_REFERENCE_INITIAL_STATE)
+        initial_state["fixtures"]["blender_1"] = {
+            "fixture_type": "blender",
+            "support_sites": {
+                "int": {"site_type": "support"},
+            },
+            "controls": {
+                "power_button": {"state": "off"},
+            },
+        }
+        initial_state["agents"]["agent_0"]["location"] = "table_1"
+        initial_state["objects"]["apple_1"]["location"] = "table_1"
+
+        allowed_tool_specs = build_allowed_tool_specs(
+            (
+                "communicate",
+                "get_image",
+                "navigate_to_fixture",
+                "pick_up_object",
+                "place_in_receptacle",
+                "press_button",
+            ),
+            overrides={
+                "pick_up_object": {
+                    "allowed_object_ids": ["apple_1"],
+                    "allowed_source_ids": ["table_1"],
+                },
+                "place_in_receptacle": {
+                    "allowed_object_ids": ["apple_1"],
+                    "allowed_receptacle_ids": ["blender_1"],
+                    "allowed_target_site_ids": ["int"],
+                },
+                "press_button": {
+                    "allowed_target_ids": ["blender_1"],
+                    "allowed_control_ids": ["power_button"],
+                },
+            },
+        )
+        spec = TaskSpec.from_dict(
+            {
+                "spec_version": 1,
+                "composite_task": "BlenderSpecTask",
+                "source_python_module": "tests",
+                "agent_ids": ["agent_0", "agent_1"],
+                "max_reasoning_chars": 200,
+                "validator_checks": [],
+                "preflight_token_estimate": {"prompt_tokens": 1, "output_tokens": 1},
+                "initial_state": initial_state,
+                "allowed_tool_specs": allowed_tool_specs,
+                "task_goal": "Put the apple in the blender and start it.",
+                "extra_execution_rules": [],
+                "initial_public_state": {},
+                "task_preconditions": [
+                    {
+                        "kind": "object_location_required_for_action",
+                        "tool": "press_button",
+                        "object_id": "apple_1",
+                        "required_location": "blender_1",
+                        "message": "apple_1 must be in the blender before turning it on.",
+                    }
+                ],
+                "goal_conditions": [
+                    {
+                        "kind": "object_at_location",
+                        "object_id": "apple_1",
+                        "location": "int",
+                    },
+                    {
+                        "kind": "fixture_control_state",
+                        "fixture_id": "blender_1",
+                        "control_id": "power_button",
+                        "state": "on",
+                    }
+                ],
+                "task_effects": [],
+                "grounding": {"objects": {}, "fixtures": {}},
+                "example_trajectory": {"steps": []},
+            }
+        )
+        actions = (
+            make_toy_action_spec("navigate_to_fixture", {"fixture_id": "table_1"}),
+            make_toy_action_spec(
+                "pick_up_object",
+                {"object_id": "apple_1", "source_id": "table_1"},
+            ),
+            make_toy_action_spec("navigate_to_fixture", {"fixture_id": "blender_1"}),
+            make_toy_action_spec(
+                "place_in_receptacle",
+                {
+                    "object_id": "apple_1",
+                    "receptacle_id": "blender_1",
+                    "target_site_id": "int",
+                },
+            ),
+            make_toy_action_spec(
+                "press_button",
+                {"target_id": "blender_1", "control_id": "power_button"},
+            ),
+        )
+
+        validation = SpecDrivenTaskValidator(spec).validate(make_toy_candidate(actions))
+
+        self.assertTrue(validation["is_valid"])
+
+    def test_spec_validator_follows_object_containment_to_support_site(self):
+        initial_state = deepcopy(PLACEMENT_REFERENCE_INITIAL_STATE)
+        initial_state["fixtures"]["sink_1"] = {
+            "fixture_type": "sink",
+            "support_sites": {
+                "basin_left": {"site_type": "support"},
+            },
+            "controls": {
+                "handle_joint": {"state": "off"},
+            },
+        }
+        initial_state["agents"]["agent_0"]["location"] = "table_1"
+        initial_state["objects"]["colander"] = {"location": "table_1"}
+        initial_state["objects"]["lettuce"] = {"location": "colander"}
+
+        allowed_tool_specs = build_allowed_tool_specs(
+            (
+                "communicate",
+                "get_image",
+                "navigate_to_fixture",
+                "pick_up_object",
+                "place_under",
+                "set_rotary_control",
+            ),
+            overrides={
+                "pick_up_object": {
+                    "allowed_object_ids": ["colander"],
+                    "allowed_source_ids": ["table_1"],
+                },
+                "place_under": {
+                    "allowed_object_ids": ["colander"],
+                    "allowed_reference_fixture_ids": ["sink_1"],
+                    "allowed_target_site_ids": ["basin_left"],
+                },
+                "set_rotary_control": {
+                    "allowed_target_ids": ["sink_1"],
+                    "allowed_control_ids": ["handle_joint"],
+                },
+            },
+        )
+        spec = TaskSpec.from_dict(
+            {
+                "spec_version": 1,
+                "composite_task": "WashSpecTask",
+                "source_python_module": "tests",
+                "agent_ids": ["agent_0", "agent_1"],
+                "max_reasoning_chars": 200,
+                "validator_checks": [],
+                "preflight_token_estimate": {"prompt_tokens": 1, "output_tokens": 1},
+                "initial_state": initial_state,
+                "allowed_tool_specs": allowed_tool_specs,
+                "task_goal": "Move the colander under the sink and turn water on.",
+                "extra_execution_rules": [],
+                "initial_public_state": {},
+                "task_preconditions": [
+                    {
+                        "kind": "object_location_required_for_action",
+                        "tool": "set_rotary_control",
+                        "object_id": "lettuce",
+                        "required_location": "basin_left",
+                        "message": "lettuce must be in the basin before water turns on.",
+                    }
+                ],
+                "goal_conditions": [
+                    {
+                        "kind": "object_at_location",
+                        "object_id": "colander",
+                        "location": "basin_left",
+                    },
+                    {
+                        "kind": "fixture_control_state",
+                        "fixture_id": "sink_1",
+                        "control_id": "handle_joint",
+                        "state": "on",
+                    }
+                ],
+                "task_effects": [],
+                "grounding": {"objects": {}, "fixtures": {}},
+                "example_trajectory": {"steps": []},
+            }
+        )
+        actions = (
+            make_toy_action_spec("navigate_to_fixture", {"fixture_id": "table_1"}),
+            make_toy_action_spec(
+                "pick_up_object",
+                {"object_id": "colander", "source_id": "table_1"},
+            ),
+            make_toy_action_spec("navigate_to_fixture", {"fixture_id": "sink_1"}),
+            make_toy_action_spec(
+                "place_under",
+                {
+                    "object_id": "colander",
+                    "reference_fixture_id": "sink_1",
+                    "target_site_id": "basin_left",
+                },
+            ),
+            make_toy_action_spec(
+                "set_rotary_control",
+                {"target_id": "sink_1", "control_id": "handle_joint", "goal": "on"},
+            ),
+        )
+
+        validation = SpecDrivenTaskValidator(spec).validate(make_toy_candidate(actions))
+
+        self.assertTrue(validation["is_valid"])
+
+    def test_validator_resolves_fixture_for_object_held_by_other_agent(self):
+        initial_state = deepcopy(PLACEMENT_REFERENCE_INITIAL_STATE)
+        initial_state["objects"]["bowl_1"] = {"location": "table_1"}
+        allowed_tool_specs = build_allowed_tool_specs(
+            (
+                "communicate",
+                "get_image",
+                "navigate_to_fixture",
+                "pick_up_object",
+                "place_in_receptacle",
+            ),
+            overrides={
+                "pick_up_object": {
+                    "allowed_object_ids": ["apple_1", "bowl_1"],
+                    "allowed_source_ids": ["table_1"],
+                },
+                "place_in_receptacle": {
+                    "allowed_object_ids": ["apple_1"],
+                    "allowed_receptacle_ids": ["bowl_1"],
+                },
+            },
+        )
+
+        class HeldReceptacleValidator(FiniteStateTaskValidator):
+            def __init__(self):
+                super().__init__(
+                    composite_task="HeldReceptacleTask",
+                    agent_ids=("agent_0", "agent_1"),
+                    initial_state=initial_state,
+                    allowed_tool_specs=allowed_tool_specs,
+                )
+
+            def is_goal_state_satisfied(self, runtime_state):
+                return runtime_state.objects["apple_1"]["location"] == "bowl_1"
+
+        actions = (
+            make_toy_action_spec(
+                "navigate_to_fixture",
+                {"fixture_id": "table_1"},
+            ),
+            make_toy_action_spec(
+                "pick_up_object",
+                {"object_id": "bowl_1", "source_id": "table_1"},
+            ),
+            make_toy_action_spec(
+                "pick_up_object",
+                {"object_id": "apple_1", "source_id": "table_1"},
+            ),
+            make_toy_action_spec(
+                "place_in_receptacle",
+                {"object_id": "apple_1", "receptacle_id": "bowl_1"},
+            ),
+        )
+        candidate = make_toy_candidate(
+            actions,
+            action_agents=("agent_1", "agent_1", "agent_0", "agent_0"),
+        )
+
+        validation = HeldReceptacleValidator().validate(candidate)
+
+        self.assertTrue(validation["is_valid"])
+        self.assertEqual(
+            validation["final_state"]["objects"]["apple_1"]["location"],
+            "bowl_1",
         )
 
     def test_validator_accepts_alternative_valid_action_order(self):

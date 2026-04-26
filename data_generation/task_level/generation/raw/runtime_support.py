@@ -33,6 +33,7 @@ from data_generation.task_level.tasks import (
     InsufficientValidUniqueTrajectoriesValidationError,
     ResponseFormatValidationError,
     TaskDefinition,
+    ToolArgumentSemanticValidationError,
     TaskValidator,
     TrajectoryValidationError,
     get_task_definition,
@@ -344,6 +345,7 @@ def _build_trajectory_record_from_candidate(
     trajectory_index: int,
     runtime_config: RuntimeConfig,
     task_definition: TaskDefinition,
+    task_instance: Any,
     candidate: dict[str, Any],
     prompt: str,
     raw_output: Any,
@@ -359,6 +361,7 @@ def _build_trajectory_record_from_candidate(
         run_index=trajectory_index,
         runtime_config=runtime_config,
         task_definition=task_definition,
+        task_instance=task_instance,
         sampled_candidates=[
             SampledTrajectoryCandidate(
                 candidate=candidate,
@@ -486,8 +489,22 @@ def _validate_candidate(
     validator: TaskValidator,
     *,
     enforce_validation: bool,
+    enable_static_referential_validation: bool = True,
+    initial_state: dict[str, Any] | None = None,
+    allowed_tool_specs: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     try:
+        if (
+            enforce_validation
+            and enable_static_referential_validation
+            and isinstance(initial_state, dict)
+            and isinstance(allowed_tool_specs, dict)
+        ):
+            _validate_candidate_references_without_sim(
+                candidate,
+                initial_state=initial_state,
+                allowed_tool_specs=allowed_tool_specs,
+            )
         validation = dict(validator.validate(candidate))
         normalized_candidate = validation.pop("normalized_candidate", candidate)
         return validation, normalized_candidate
@@ -510,6 +527,224 @@ def _validate_candidate(
             },
             candidate,
         )
+
+
+def _declared_tool_arg_names(tool_spec: dict[str, Any]) -> set[str]:
+    declared_arg_names = {
+        arg_name
+        for arg_name in tool_spec.get("tool_args", ())
+        if isinstance(arg_name, str)
+    }
+    declared_arg_names.update(
+        arg_name
+        for arg_name in tool_spec.get("optional_tool_args", ())
+        if isinstance(arg_name, str)
+    )
+    for arg_group in tool_spec.get("tool_arg_any_of", ()):
+        if not isinstance(arg_group, (list, tuple)):
+            continue
+        declared_arg_names.update(
+            arg_name for arg_name in arg_group if isinstance(arg_name, str)
+        )
+    return declared_arg_names
+
+
+def _support_site_parent_by_id(initial_state: dict[str, Any]) -> dict[str, str]:
+    fixtures_by_id = initial_state.get("fixtures") or {}
+    if not isinstance(fixtures_by_id, dict):
+        return {}
+
+    parent_by_site: dict[str, str] = {}
+    for fixture_id, fixture_state in fixtures_by_id.items():
+        if not isinstance(fixture_id, str) or not isinstance(fixture_state, dict):
+            continue
+        support_sites = fixture_state.get("support_sites") or {}
+        if isinstance(support_sites, dict):
+            for support_site_id in support_sites:
+                if isinstance(support_site_id, str):
+                    parent_by_site[support_site_id] = fixture_id
+        elif isinstance(support_sites, list):
+            for support_site_id in support_sites:
+                if isinstance(support_site_id, str):
+                    parent_by_site[support_site_id] = fixture_id
+    return parent_by_site
+
+
+def _step_fixture_id(
+    args: dict[str, Any],
+    support_site_parent_by_id: dict[str, str],
+) -> str | None:
+    for fixture_arg_name in (
+        "target_id",
+        "fixture_id",
+        "reference_fixture_id",
+        "source_id",
+        "support_id",
+        "receptacle_id",
+    ):
+        fixture_value = args.get(fixture_arg_name)
+        if not isinstance(fixture_value, str):
+            continue
+        return support_site_parent_by_id.get(fixture_value, fixture_value)
+    return None
+
+
+def _validate_candidate_references_without_sim(
+    candidate: dict[str, Any],
+    *,
+    initial_state: dict[str, Any],
+    allowed_tool_specs: dict[str, dict[str, Any]],
+) -> None:
+    """Validate task-local symbolic part/control/site references without sim init.
+
+    This is intentionally stricter than plain FSM replay for simulator-facing id
+    fields. It blocks obvious hallucinated ids early in raw generation runs so
+    the same protection applies both inside and outside the pipeline.
+    """
+
+    steps = candidate.get("steps")
+    if not isinstance(steps, list):
+        return
+
+    fixtures_by_id = initial_state.get("fixtures") or {}
+    if not isinstance(fixtures_by_id, dict):
+        fixtures_by_id = {}
+    support_site_parent_map = _support_site_parent_by_id(initial_state)
+
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        tool_name = step.get("tool")
+        args = step.get("args")
+        if not isinstance(tool_name, str) or not isinstance(args, dict):
+            continue
+        tool_spec = allowed_tool_specs.get(tool_name)
+        if not isinstance(tool_spec, dict):
+            continue
+
+        step_index = step.get("step")
+        step_number = step_index if isinstance(step_index, int) else None
+        declared_arg_names = _declared_tool_arg_names(tool_spec)
+        if declared_arg_names:
+            unexpected_arg_names = sorted(set(args) - declared_arg_names)
+            if unexpected_arg_names:
+                raise ToolArgumentSemanticValidationError(
+                    f"{tool_name} does not declare args {unexpected_arg_names}.",
+                    step=step_number,
+                    details={
+                        "tool": tool_name,
+                        "unexpected_args": unexpected_arg_names,
+                        "declared_args": sorted(declared_arg_names),
+                    },
+                )
+
+        fixture_id = _step_fixture_id(args, support_site_parent_map)
+        fixture_state = fixtures_by_id.get(fixture_id) if isinstance(fixture_id, str) else None
+        fixture_parts = (
+            fixture_state.get("parts", {})
+            if isinstance(fixture_state, dict) and isinstance(fixture_state.get("parts"), dict)
+            else {}
+        )
+        fixture_controls = (
+            fixture_state.get("controls", {})
+            if isinstance(fixture_state, dict)
+            and isinstance(fixture_state.get("controls"), dict)
+            else {}
+        )
+        fixture_support_sites = (
+            fixture_state.get("support_sites", {})
+            if isinstance(fixture_state, dict)
+            else {}
+        )
+        fixture_support_site_ids = (
+            set(fixture_support_sites)
+            if isinstance(fixture_support_sites, dict)
+            else {
+                site_id
+                for site_id in fixture_support_sites
+                if isinstance(site_id, str)
+            }
+            if isinstance(fixture_support_sites, list)
+            else set()
+        )
+
+        part_id = args.get("part_id")
+        allowed_part_ids = tool_spec.get("allowed_part_ids")
+        if (
+            isinstance(part_id, str)
+            and isinstance(allowed_part_ids, list)
+            and all(isinstance(part, str) for part in allowed_part_ids)
+            and part_id not in allowed_part_ids
+        ):
+            raise ToolArgumentSemanticValidationError(
+                f"Unknown part/control {part_id!r} for fixture {fixture_id!r}.",
+                step=step_number,
+                details={"tool": tool_name, "part_id": part_id, "fixture_id": fixture_id},
+            )
+        if (
+            isinstance(part_id, str)
+            and fixture_parts
+            and part_id not in fixture_parts
+        ):
+            raise ToolArgumentSemanticValidationError(
+                f"Unknown part/control {part_id!r} for fixture {fixture_id!r}.",
+                step=step_number,
+                details={"tool": tool_name, "part_id": part_id, "fixture_id": fixture_id},
+            )
+
+        control_id = args.get("control_id")
+        allowed_control_ids = tool_spec.get("allowed_control_ids")
+        if (
+            isinstance(control_id, str)
+            and isinstance(allowed_control_ids, list)
+            and all(isinstance(control, str) for control in allowed_control_ids)
+            and control_id not in allowed_control_ids
+        ):
+            raise ToolArgumentSemanticValidationError(
+                f"Unknown part/control {control_id!r} for fixture {fixture_id!r}.",
+                step=step_number,
+                details={"tool": tool_name, "control_id": control_id, "fixture_id": fixture_id},
+            )
+        if (
+            isinstance(control_id, str)
+            and fixture_controls
+            and control_id not in fixture_controls
+        ):
+            raise ToolArgumentSemanticValidationError(
+                f"Unknown part/control {control_id!r} for fixture {fixture_id!r}.",
+                step=step_number,
+                details={"tool": tool_name, "control_id": control_id, "fixture_id": fixture_id},
+            )
+
+        for site_arg_name in ("source_site_id", "target_site_id"):
+            site_id = args.get(site_arg_name)
+            if not isinstance(site_id, str):
+                continue
+            allowed_site_ids = tool_spec.get(f"allowed_{site_arg_name[:-3]}_ids")
+            if (
+                isinstance(allowed_site_ids, list)
+                and all(isinstance(site, str) for site in allowed_site_ids)
+                and site_id not in allowed_site_ids
+            ):
+                raise ToolArgumentSemanticValidationError(
+                    f"{tool_name} uses unknown {site_arg_name} {site_id!r}.",
+                    step=step_number,
+                    details={
+                        "tool": tool_name,
+                        site_arg_name: site_id,
+                        "allowed_site_ids": allowed_site_ids,
+                    },
+                )
+            if fixture_support_site_ids and site_id not in fixture_support_site_ids:
+                raise ToolArgumentSemanticValidationError(
+                    f"{tool_name} uses unknown {site_arg_name} {site_id!r} for fixture {fixture_id!r}.",
+                    step=step_number,
+                    details={
+                        "tool": tool_name,
+                        "fixture_id": fixture_id,
+                        site_arg_name: site_id,
+                    },
+                )
 
 
 def _validation_error_payload(
@@ -728,11 +963,28 @@ def _build_trajectory_records_from_sampled_candidates(
 
     validations: list[dict[str, Any]] = []
     normalized_candidates: list[dict[str, Any]] = []
+    initial_state = (
+        task_instance.initial_state
+        if isinstance(getattr(task_instance, "initial_state", None), dict)
+        else None
+    )
+    allowed_tool_specs = (
+        task_instance.allowed_tool_specs
+        if isinstance(getattr(task_instance, "allowed_tool_specs", None), dict)
+        else getattr(validator, "allowed_tool_specs", None)
+    )
+    if not isinstance(allowed_tool_specs, dict):
+        allowed_tool_specs = None
     for sampled_candidate in sampled_candidates:
         validation, normalized_candidate = _validate_candidate(
             sampled_candidate.candidate,
             validator,
             enforce_validation=not runtime_config.disable_validation,
+            enable_static_referential_validation=(
+                runtime_config.enable_static_referential_validation
+            ),
+            initial_state=initial_state,
+            allowed_tool_specs=allowed_tool_specs,
         )
         validations.append(validation)
         normalized_candidates.append(normalized_candidate)

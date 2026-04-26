@@ -1,0 +1,353 @@
+{
+  "spec_version": 1,
+  "composite_task": "SetBowlsForSoup",
+  "source_python_module": "robocasa.environments.kitchen.composite.setting_the_table.set_bowls_for_soup",
+  "agent_ids": [
+    "agent_0",
+    "agent_1"
+  ],
+  "max_reasoning_chars": 200,
+  "validator_checks": [
+    "initial_communication",
+    "allowed_tools",
+    "navigation_preconditions",
+    "manipulation_preconditions",
+    "effects",
+    "final_success"
+  ],
+  "preflight_token_estimate": {
+    "prompt_tokens": 3000,
+    "output_tokens": 3500,
+    "reasoning_tokens": 0
+  },
+  "initial_state": {
+    "agents": {
+      "agent_0": {
+        "location": "cab",
+        "held_object": null
+      },
+      "agent_1": {
+        "location": "dining_table",
+        "held_object": null
+      }
+    },
+    "objects": {
+      "plate1": {
+        "object_type": "plate",
+        "location": "dining_table"
+      },
+      "plate2": {
+        "object_type": "plate",
+        "location": "dining_table"
+      },
+      "bowl1": {
+        "object_type": "bowl",
+        "location": "cab"
+      },
+      "bowl2": {
+        "object_type": "bowl",
+        "location": "cab"
+      }
+    },
+    "fixtures": {
+      "cab": {
+        "fixture_type": "cabinet",
+        "parts": {
+          "hinged": {
+            "part_type": "hinged_part",
+            "state": "closed"
+          }
+        },
+        "controls": {}
+      },
+      "dining_table": {
+        "fixture_type": "counter",
+        "parts": {},
+        "controls": {}
+      }
+    },
+    "machine_state": {
+      "set_bowls_for_soup": {}
+    }
+  },
+  "allowed_tool_specs": {
+    "communicate": {
+      "description": "Send a short coordination message to the other agent in the scene. args.to must be that agent's exact ID.",
+      "tool_args": [
+        "to",
+        "message"
+      ]
+    },
+    "navigate_to_fixture": {
+      "description": "Move the robot base to the working pose of a fixture.",
+      "tool_args": [
+        "fixture_id"
+      ],
+      "allowed_fixture_ids": [
+        "cab",
+        "dining_table"
+      ]
+    },
+    "open_hinged_part": {
+      "description": "Open a hinged door, lid, or articulated head on a fixture.",
+      "tool_args": [
+        "target_id",
+        "part_id"
+      ],
+      "allowed_target_ids": [
+        "cab"
+      ],
+      "allowed_part_ids": [
+        "hinged"
+      ]
+    },
+    "pick_up_object": {
+      "description": "Grasp and lift an object from a symbolic source region.",
+      "tool_args": [
+        "object_id",
+        "source_id"
+      ],
+      "optional_tool_args": [
+        "source_site_id"
+      ],
+      "allowed_object_ids": [
+        "bowl1",
+        "bowl2"
+      ],
+      "allowed_source_ids": [
+        "cab"
+      ]
+    },
+    "place_on_object": {
+      "description": "Place an object on top of another movable support object such as a plate or cutting_board.",
+      "tool_args": [
+        "object_id"
+      ],
+      "tool_arg_any_of": [
+        [
+          "target_id",
+          "support_object_id"
+        ]
+      ],
+      "optional_tool_args": [
+        "target_id",
+        "relative_position"
+      ],
+      "allowed_object_ids": [
+        "bowl1",
+        "bowl2"
+      ],
+      "allowed_target_ids": [
+        "plate1",
+        "plate2"
+      ]
+    },
+    "give_space": {
+      "description": "Yield working room at a fixture so the other agent can complete an action there.",
+      "tool_args": [
+        "fixture_id"
+      ],
+      "allowed_fixture_ids": [
+        "cab",
+        "dining_table"
+      ]
+    }
+  },
+  "task_goal": "Move the bowls from the cabinet to the plates on the dining table.",
+  "extra_execution_rules": [
+    "Open the cabinet door before picking up the bowls.",
+    "Each bowl must be placed on a different plate."
+  ],
+  "initial_public_state": {
+    "bowl1_location": "cab",
+    "bowl2_location": "cab",
+    "plate1_location": "dining_table",
+    "plate2_location": "dining_table"
+  },
+  "task_preconditions": [
+    {
+      "kind": "fixture_part_state_required_for_pickup",
+      "tool": "pick_up_object",
+      "source_id": "cab",
+      "fixture_id": "cab",
+      "part_id": "hinged",
+      "required_state": "open"
+    }
+  ],
+  "goal_conditions": [
+    {
+      "kind": "object_at_location_one_of",
+      "object_id": "bowl1",
+      "locations": [
+        "plate1",
+        "plate2"
+      ],
+      "exclusive": true
+    },
+    {
+      "kind": "object_at_location_one_of",
+      "object_id": "bowl2",
+      "locations": [
+        "plate1",
+        "plate2"
+      ],
+      "exclusive": true
+    }
+  ],
+  "task_effects": [],
+  "grounding": {
+    "legacy_symbol_aliases": {},
+    "symbols": {
+      "plate1": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "object_type": "plate"
+      },
+      "plate2": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "object_type": "plate"
+      },
+      "bowl1": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "object_type": "bowl"
+      },
+      "bowl2": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "object_type": "bowl"
+      },
+      "cab": {
+        "entity_type": "fixture",
+        "resolver": "unique_fixture_type",
+        "object_id": "bowl1",
+        "fixture_type": "cabinet"
+      },
+      "dining_table": {
+        "entity_type": "fixture",
+        "resolver": "unique_fixture_type",
+        "fixture_type": "counter"
+      }
+    }
+  },
+  "example_trajectory": {
+    "agents": [
+      {
+        "agent": "agent_0"
+      },
+      {
+        "agent": "agent_1"
+      }
+    ],
+    "steps": [
+      {
+        "step": 0,
+        "agent": "agent_0",
+        "tool": "communicate",
+        "args": {
+          "to": "agent_1",
+          "message": "I will open the cabinet and get the first bowl."
+        },
+        "reasoning": "Coordinating the task start."
+      },
+      {
+        "step": 1,
+        "agent": "agent_1",
+        "tool": "communicate",
+        "args": {
+          "to": "agent_0",
+          "message": "I will wait at the dining table to receive the bowls."
+        },
+        "reasoning": "Acknowledging the plan."
+      },
+      {
+        "step": 2,
+        "agent": "agent_0",
+        "tool": "open_hinged_part",
+        "args": {
+          "target_id": "cab",
+          "part_id": "hinged"
+        },
+        "reasoning": "Opening cabinet to access bowls."
+      },
+      {
+        "step": 3,
+        "agent": "agent_0",
+        "tool": "pick_up_object",
+        "args": {
+          "object_id": "bowl1",
+          "source_id": "cab"
+        },
+        "reasoning": "Picking up the first bowl."
+      },
+      {
+        "step": 4,
+        "agent": "agent_1",
+        "tool": "give_space",
+        "args": {
+          "fixture_id": "dining_table"
+        },
+        "reasoning": "Clearing a shared fixture already occupied by this agent before the other agent uses it."
+      },
+      {
+        "step": 5,
+        "agent": "agent_0",
+        "tool": "navigate_to_fixture",
+        "args": {
+          "fixture_id": "dining_table"
+        },
+        "reasoning": "Moving to the dining table to place the bowl."
+      },
+      {
+        "step": 6,
+        "agent": "agent_0",
+        "tool": "place_on_object",
+        "args": {
+          "object_id": "bowl1",
+          "support_object_id": "plate1"
+        },
+        "reasoning": "Placing bowl1 on plate1."
+      },
+      {
+        "step": 7,
+        "agent": "agent_0",
+        "tool": "navigate_to_fixture",
+        "args": {
+          "fixture_id": "cab"
+        },
+        "reasoning": "Returning to cabinet for the second bowl."
+      },
+      {
+        "step": 8,
+        "agent": "agent_0",
+        "tool": "pick_up_object",
+        "args": {
+          "object_id": "bowl2",
+          "source_id": "cab"
+        },
+        "reasoning": "Picking up the second bowl."
+      },
+      {
+        "step": 9,
+        "agent": "agent_0",
+        "tool": "navigate_to_fixture",
+        "args": {
+          "fixture_id": "dining_table"
+        },
+        "reasoning": "Moving back to the dining table."
+      },
+      {
+        "step": 10,
+        "agent": "agent_0",
+        "tool": "place_on_object",
+        "args": {
+          "object_id": "bowl2",
+          "support_object_id": "plate2"
+        },
+        "reasoning": "Placing bowl2 on plate2."
+      }
+    ]
+  },
+  "notes": []
+}

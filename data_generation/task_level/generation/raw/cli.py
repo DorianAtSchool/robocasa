@@ -666,6 +666,24 @@ def parse_args(argv: list[str] | None = None) -> RuntimeConfig:
         dest="disable_validation",
         help=argparse.SUPPRESS,
     )
+    # Default-on static referential validation catches common symbolic id
+    # mistakes (e.g. left_door) before simulator execution.
+    parser.set_defaults(enable_static_referential_validation=True)
+    parser.add_argument(
+        "--disable-static-referential-validation",
+        action="store_false",
+        dest="enable_static_referential_validation",
+        help=(
+            "Disable non-sim static referential checks for part/control/site ids "
+            "before FSM validation."
+        ),
+    )
+    parser.add_argument(
+        "--enable-static-referential-validation",
+        action="store_true",
+        dest="enable_static_referential_validation",
+        help=argparse.SUPPRESS,
+    )
     args = parser.parse_args(argv)
     parsed_tasks = tuple(args.composite_tasks)
     normalized_tasks = RuntimeConfig._normalize_composite_tasks(None, parsed_tasks)
@@ -696,6 +714,7 @@ def parse_args(argv: list[str] | None = None) -> RuntimeConfig:
         cost_output_path=args.cost_output,
         resume_path=args.resume,
         disable_validation=args.disable_validation,
+        enable_static_referential_validation=args.enable_static_referential_validation,
         batch_processing=args.batch_processing,
         batch_gcs_prefix=args.batch_gcs_prefix,
         composite_tasks=parsed_tasks,

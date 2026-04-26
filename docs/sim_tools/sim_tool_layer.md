@@ -51,14 +51,21 @@ from a fixture so another robot can use it.
 ### Object Manipulation
 
 - `pick_up_object(object_id, source_id)`
-- `place_in_receptacle(object_id, receptacle_id)`
+- `place_in_receptacle(object_id, receptacle_id | target_id, target_site_id?, relative_position?)`
 - `place_on_object(object_id, support_object_id, anchor_fixture_id)`
-- `place_on_surface(object_id, support_id)`
-- `place_next_to(object_id, reference_object_id)`
-- `place_under(object_id, reference_fixture_id)`
+- `place_on_surface(object_id, support_id | target_id, target_site_id?, relative_position?)`
+- `place_next_to(object_id, reference_object_id | reference_fixture_id | reference_id, target_site_id?, relative_position?)`
+- `place_under(object_id, reference_fixture_id | target_id, target_site_id?)`
 
 These are distinct planner-level actions even when some of them share backend
 execution patterns.
+
+Notes:
+
+- `target_id` is an alias used by multiple placement tools so planner outputs
+  from different templates remain compatible.
+- `target_site_id` is how trajectories request a specific sub-location on a
+  fixture (for example burner, rack, shelf, basin, slot).
 
 Important semantic distinctions:
 

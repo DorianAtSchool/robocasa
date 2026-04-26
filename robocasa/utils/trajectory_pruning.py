@@ -149,6 +149,20 @@ def resolve_trajectory_object_cfg_matches(
         if _object_cfg_matches_spec(cfg, remaining_specs[symbol]):
             _bind(symbol, symbol)
 
+    for symbol in sorted(tuple(remaining_specs)):
+        symbol_ordinal = _extract_trailing_ordinal(symbol)
+        if symbol_ordinal is None:
+            continue
+        spec = remaining_specs[symbol]
+        ordinal_candidates = [
+            cfg_name
+            for cfg_name, cfg in available_cfgs.items()
+            if _object_cfg_matches_spec(cfg, spec)
+            and _extract_trailing_ordinal(cfg_name) == symbol_ordinal
+        ]
+        if len(ordinal_candidates) == 1:
+            _bind(symbol, ordinal_candidates[0])
+
     changed = True
     while changed:
         changed = False
@@ -247,6 +261,16 @@ def is_generated_object_name(name: str) -> bool:
     return normalized.endswith(_AUTO_GENERATED_SUFFIXES) or bool(
         _GENERIC_OBJECT_NAME_RE.match(normalized)
     )
+
+
+def _extract_trailing_ordinal(name: str) -> int | None:
+    normalized = str(name).strip()
+    if not normalized:
+        return None
+    tail = normalized.rsplit("_", 1)[-1]
+    if tail.isdigit():
+        return int(tail)
+    return None
 
 
 def _extract_required_object_requirements(
@@ -377,4 +401,16 @@ def _object_cfg_matches_spec(
     required_type = required_object_spec.get("object_type")
     if not required_type:
         return False
-    return _object_cfg_matches_required_type(object_cfg, {str(required_type)})
+
+    # ``try_to_place_in`` describes an implicit generated container for this
+    # object, not the object's own type. Binding a symbolic container such as
+    # "pan" to the child steak cfg prevents Kitchen from later creating and
+    # binding the native ``obj_container``.
+    candidate_types: set[str] = set()
+    obj_groups = object_cfg.get("obj_groups")
+    if isinstance(obj_groups, str):
+        candidate_types.add(obj_groups)
+    elif isinstance(obj_groups, (list, tuple, set)):
+        candidate_types.update(str(group) for group in obj_groups if group)
+
+    return str(required_type) in candidate_types

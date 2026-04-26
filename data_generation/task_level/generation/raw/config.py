@@ -64,6 +64,10 @@ class RuntimeConfig:
     cost_output_path: Path | None = None
     resume_path: Path | None = None
     disable_validation: bool = False
+    # Keep this default-on so raw trajectory generation rejects obvious
+    # hallucinated part/control/site ids even when running outside pipeline
+    # Phase 2 and without simulator initialization.
+    enable_static_referential_validation: bool = True
     batch_processing: bool = False
     batch_gcs_prefix: str | None = None
     run_indices: tuple[int, ...] = ()

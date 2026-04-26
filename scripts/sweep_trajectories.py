@@ -91,27 +91,24 @@ import traceback
 from pathlib import Path
 from typing import Any, Callable
 
-
-def _bootstrap_mujoco_gl() -> None:
-    """Prevent inherited unsupported GL backends from breaking imports."""
-
-    current = os.environ.get("MUJOCO_GL", "").strip().lower()
-    if sys.platform == "darwin":
-        if current in {"", "osmesa", "egl"}:
-            os.environ["MUJOCO_GL"] = "cgl"
-        return
-    if not current:
-        os.environ["MUJOCO_GL"] = "osmesa"
-
-
-_bootstrap_mujoco_gl()
-
 # Make repo-root imports work when this file is executed as a script.
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from data_generation.task_level.runtime.render_env import normalize_mujoco_render_env
+
+
+def _bootstrap_mujoco_gl() -> None:
+    """Prevent inherited unsupported GL backends from breaking imports."""
+
+    normalize_mujoco_render_env(os.environ)
+
+
+_bootstrap_mujoco_gl()
+
 from data_generation.task_level.generation.raw import progress as raw_progress
+from data_generation.task_level.runtime.client import load_dotenv_file
 from robocasa.utils.trajectory_pruning import build_trajectory_pruning_config
 
 BarColumn = raw_progress.BarColumn
@@ -1477,6 +1474,8 @@ def upload_dataset_card(
 
 
 def main():
+    load_dotenv_file()
+
     parser = argparse.ArgumentParser(
         description="Sweep trajectories through the sim executor and optionally publish the dataset.",
         epilog=CLI_EPILOG,

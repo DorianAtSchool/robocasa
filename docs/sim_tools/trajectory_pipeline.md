@@ -18,9 +18,11 @@ Raw Trajectory JSON (symbolic IDs, with get_image steps)
         |
         v
   SimToolExecutor.load_initial_state()
-        |  - opens/closes fixture parts
-        |  - moves objects to starting positions
-        |  - robots stay at sim-assigned spawn
+        |  - applies fixture-part states
+        |  - places objects at starting positions or preserves
+        |    scene-generated poses when requested
+        |  - places robots from trajectory initial_state in
+        |    `robot_spawn=trajectory` mode (default)
         v
   SimToolExecutor.run_tool_plan()
         |  - executes each step sequentially
@@ -37,7 +39,8 @@ A raw trajectory JSON is produced by an LLM planner. It uses symbolic IDs (not c
 - `trajectory_id`: unique identifier
 - `composite_task`: task class name (e.g. `HotDogSetup`)
 - `agents`: list of agent definitions
-- `initial_state`: object types, fixture types, agent locations (all symbolic)
+- `initial_state`: object types, fixture types, agent locations, and optional
+  object placement hints such as `preserve_pose` (all symbolic)
 - `grounding_map`: (optional, legacy) type hints for resolution
 - `steps`: ordered tool calls with symbolic IDs in args, interleaved with `get_image` steps
 - `validation`: planner's self-check of trajectory validity

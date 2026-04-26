@@ -21,6 +21,12 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from data_generation.task_level.object_type_families import (
+    OBJECT_TYPE_ALIASES,
+    OBJECT_TYPE_FAMILIES,
+    object_type_matches,
+)
+
 log = logging.getLogger(__name__)
 
 
@@ -58,14 +64,13 @@ class TrajectoryAdapter:
             "counter",
             "counter_non_dining",
             "counter_non_corner",
-            "dining_counter",
-            "island",
         },
         "drawer": {
             "drawer",
             "top_drawer",
         },
     }
+    _OBJECT_TYPE_FAMILIES = OBJECT_TYPE_FAMILIES
     _FIXTURE_ARG_NAMES = {
         "anchor_fixture_id",
         "fixture_id",
@@ -121,6 +126,7 @@ class TrajectoryAdapter:
         # scene_fixtures: ALL fixtures in the scene with positions, types, etc.
         # includes every counter, cabinet, appliance, etc. in the kitchen layout
         scene_fixtures = self.scene.get("fixtures", {})
+        scene_objects = self.scene.get("objects", {})
         env_object_ids = set(self.scene.get("objects", {}).keys())
 
         if not object_placements and not fixture_refs:
@@ -129,34 +135,38 @@ class TrajectoryAdapter:
 
         # --- Objects: match trajectory symbol → env.objects key by type ---
         traj_objects = initial_state.get("objects", {})
-        # Build reverse map: object_type → env.objects key
-        # env.objects keys are the task's obj_cfg names (e.g. "hotdog_bun")
-        type_to_env_key = {}
-        for env_key in env_object_ids:
-            obj_info = self.scene.get("objects", {}).get(env_key, {})
-            obj_type = obj_info.get("object_type", "")
-            # Map both the type and the key itself
-            type_to_env_key[obj_type] = env_key
-            type_to_env_key[env_key] = env_key
-
+        traj_fixtures = initial_state.get("fixtures", {})
         for symbol, obj_state in traj_objects.items():
-            obj_type = obj_state.get("object_type", "")
-            # Try: exact symbolic key match, then exact object_type-as-id match,
-            # then generic type match, then substring match.
-            resolved = None
-            if symbol in env_object_ids:
-                resolved = symbol
-            elif obj_type in env_object_ids:
-                resolved = obj_type
-            elif obj_type in type_to_env_key:
-                resolved = type_to_env_key[obj_type]
-            else:
-                for env_key in env_object_ids:
-                    if obj_type in env_key or env_key in obj_type:
-                        resolved = env_key
-                        break
-
+            resolved = self._implicit_container_candidate_for_symbol(
+                symbol,
+                requested_object_state=obj_state,
+                object_context=traj_objects,
+            )
             if resolved is not None:
+                obj_type = obj_state.get("object_type", "")
+                self._object_aliases[symbol] = resolved
+                self._resolution_log.append(
+                    ResolutionRecord(
+                        entity_type="object",
+                        requested_id=symbol,
+                        resolved_id=resolved,
+                        method="implicit_container",
+                        confidence=0.95,
+                        reason=(
+                            f"Mapped symbolic container {symbol!r} to native "
+                            f"container object {resolved!r}."
+                        ),
+                    )
+                )
+                continue
+            resolved = self._select_distinct_object_candidate(
+                symbol,
+                requested_object_state=obj_state,
+                env_object_ids=env_object_ids,
+                fixture_context=traj_fixtures,
+            )
+            if resolved is not None:
+                obj_type = obj_state.get("object_type", "")
                 self._object_aliases[symbol] = resolved
                 self._resolution_log.append(ResolutionRecord(
                     entity_type="object",
@@ -168,8 +178,6 @@ class TrajectoryAdapter:
                 ))
 
         # --- Fixtures: resolve via object placements and fixture refs ---
-        traj_fixtures = initial_state.get("fixtures", {})
-
         # Build map: symbolic fixture → concrete ID by tracing object locations
         # If trajectory says object X is at fixture Y, and we resolved X to
         # env key K, then object_placements[K] gives the concrete fixture ID.
@@ -182,13 +190,58 @@ class TrajectoryAdapter:
         # --- Pass 1: strategies that don't depend on other fixtures ---
         for fixture_symbol, fixture_state in traj_fixtures.items():
             fixture_type = fixture_state.get("fixture_type", "")
+            fixture_symbol_token = self._base_token(fixture_symbol)
+
+            # Strategy 0: direct role binding from task fixture refs.
+            # Prefer explicit task roles (e.g., "drawer", "cab", "stool")
+            # over scene heuristics so symbolic fixture ids stay aligned
+            # with task-defined references.
+            for role, fxtr_id in fixture_refs.items():
+                if not (isinstance(role, str) and isinstance(fxtr_id, str)):
+                    continue
+                role_token = self._base_token(role)
+                if not (
+                    fixture_symbol == role
+                    or fixture_symbol_token == role_token
+                ):
+                    continue
+                self._fixture_aliases[fixture_symbol] = fxtr_id
+                self._resolution_log.append(ResolutionRecord(
+                    entity_type="fixture",
+                    requested_id=fixture_symbol,
+                    resolved_id=fxtr_id,
+                    method="sim_ground_truth",
+                    confidence=1.0,
+                    reason=f"fixture_refs direct role binding {role!r} -> {fxtr_id!r}",
+                ))
+                break
+
+            if fixture_symbol in self._fixture_aliases:
+                continue
 
             # Strategy 1: trace via object that lives at this fixture
             obj_symbols_here = traj_obj_locations.get(fixture_symbol, [])
             for obj_sym in obj_symbols_here:
                 resolved_obj = self._object_aliases.get(obj_sym)
+                concrete_fixture = None
                 if resolved_obj and resolved_obj in object_placements:
                     concrete_fixture = object_placements[resolved_obj]
+                elif resolved_obj:
+                    scene_obj_info = scene_objects.get(resolved_obj) or {}
+                    scene_location = scene_obj_info.get("location")
+                    if isinstance(scene_location, str) and scene_location in scene_fixtures:
+                        scene_fixture_type = str(
+                            (scene_fixtures.get(scene_location) or {}).get(
+                                "fixture_type",
+                                "",
+                            )
+                        ).lower()
+                        if self._fixture_type_matches(
+                            str(fixture_type).lower(),
+                            scene_fixture_type,
+                        ):
+                            concrete_fixture = scene_location
+                if concrete_fixture:
                     self._fixture_aliases[fixture_symbol] = concrete_fixture
                     self._resolution_log.append(ResolutionRecord(
                         entity_type="fixture",
@@ -196,7 +249,10 @@ class TrajectoryAdapter:
                         resolved_id=concrete_fixture,
                         method="sim_ground_truth",
                         confidence=1.0,
-                        reason=f"Object {resolved_obj!r} placed on {concrete_fixture!r} by task config",
+                        reason=(
+                            f"Object {resolved_obj!r} is located at "
+                            f"{concrete_fixture!r} in the simulator scene"
+                        ),
                     ))
                     break
 
@@ -205,17 +261,25 @@ class TrajectoryAdapter:
 
             # Strategy 2: match fixture_refs (task-registered only) by type
             for role, fxtr_id in fixture_refs.items():
-                if role == fixture_type or fixture_type in role or role in fixture_type:
-                    self._fixture_aliases[fixture_symbol] = fxtr_id
-                    self._resolution_log.append(ResolutionRecord(
-                        entity_type="fixture",
-                        requested_id=fixture_symbol,
-                        resolved_id=fxtr_id,
-                        method="sim_ground_truth",
-                        confidence=1.0,
-                        reason=f"fixture_refs[{role!r}] matched fixture_type {fixture_type!r}",
-                    ))
-                    break
+                if not (isinstance(role, str) and isinstance(fxtr_id, str)):
+                    continue
+                role_token = self._base_token(role)
+                if not (
+                    fixture_symbol == role
+                    or fixture_symbol_token == role_token
+                    or str(fixture_type).lower() == role.lower()
+                ):
+                    continue
+                self._fixture_aliases[fixture_symbol] = fxtr_id
+                self._resolution_log.append(ResolutionRecord(
+                    entity_type="fixture",
+                    requested_id=fixture_symbol,
+                    resolved_id=fxtr_id,
+                    method="sim_ground_truth",
+                    confidence=1.0,
+                    reason=f"fixture_refs[{role!r}] matched fixture_type {fixture_type!r}",
+                ))
+                break
 
         # --- Pass 2: anchor-dependent resolution (needs other fixtures resolved first) ---
         for fixture_symbol, fixture_state in traj_fixtures.items():
@@ -244,7 +308,13 @@ class TrajectoryAdapter:
                     parent_id = anchor_info.get("parent_fixture")
                     if parent_id and parent_id in scene_fixtures:
                         parent_type = scene_fixtures[parent_id].get("fixture_type", "")
-                        if parent_type in match_types:
+                        if any(
+                            self._fixture_type_matches(
+                                str(match_type).lower(),
+                                str(parent_type).lower(),
+                            )
+                            for match_type in match_types
+                        ):
                             self._fixture_aliases[fixture_symbol] = parent_id
                             self._resolution_log.append(ResolutionRecord(
                                 entity_type="fixture",
@@ -265,7 +335,13 @@ class TrajectoryAdapter:
                     best_dist = float("inf")
                     for fid, finfo in scene_fixtures.items():
                         ftype = finfo.get("fixture_type", "")
-                        if ftype not in match_types:
+                        if not any(
+                            self._fixture_type_matches(
+                                str(match_type).lower(),
+                                str(ftype).lower(),
+                            )
+                            for match_type in match_types
+                        ):
                             continue
                         fpos = finfo.get("position", [0, 0, 0])
                         dist = ((fpos[0] - anchor_pos[0]) ** 2 + (fpos[1] - anchor_pos[1]) ** 2) ** 0.5
@@ -394,12 +470,32 @@ class TrajectoryAdapter:
                 json.dump(adapted, f, indent=2)
 
         # run_tool_plan handles rendering, frame saving, and video generation.
-        plan_metadata = self.executor.run_tool_plan(
-            tool_calls=adapted["tool_calls"],
-            output_dir=output_dir or ".",
-            fps=fps,
-            skip_videos=skip_videos,
-        )
+        if hasattr(self.executor, "run_tool_plan"):
+            plan_metadata = self.executor.run_tool_plan(
+                tool_calls=adapted["tool_calls"],
+                output_dir=output_dir or ".",
+                fps=fps,
+                skip_videos=skip_videos,
+            )
+        else:
+            plan_metadata = {"steps": []}
+            for tool_call in adapted["tool_calls"]:
+                robot_idx = tool_call.get("robot_idx", 0)
+                args = tool_call.get("args", {})
+                result = self.executor.execute(
+                    tool_call["tool"],
+                    robot_idx=robot_idx,
+                    **args,
+                )
+                plan_metadata["steps"].append(
+                    {
+                        "tool": tool_call["tool"],
+                        "robot_idx": robot_idx,
+                        "args": args,
+                        "success": result.success,
+                        "details": result.details,
+                    }
+                )
 
         metadata = {
             "trajectory_id": adapted.get("trajectory_id"),
@@ -456,6 +552,8 @@ class TrajectoryAdapter:
             else:
                 resolved_fixture_id = requested_fixture_id
             resolved_machine_state[resolved_fixture_id] = deepcopy(machine_cfg)
+            if not isinstance(machine_cfg, dict):
+                continue
             dispenser_id = machine_cfg.get("dispenser_id")
             if isinstance(dispenser_id, str):
                 self._dispenser_aliases[dispenser_id] = resolved_fixture_id
@@ -464,10 +562,13 @@ class TrajectoryAdapter:
             resolved_object_id = self._resolve_object_id(
                 requested_object_id,
                 requested_object_state=object_state,
+                fixture_context=fixture_context,
             )
             resolved_state = deepcopy(object_state)
             location = object_state.get("location")
             if isinstance(location, str):
+                explicit_target_site = isinstance(object_state.get("target_site_id"), str)
+                resolved_target_site_id: str | None = None
                 # Location can be a fixture ("mug_source_fixture") or another
                 # object ("ingredient_bowl" for slices inside a bowl).  Check
                 # object aliases first to avoid sending object names through
@@ -477,11 +578,43 @@ class TrajectoryAdapter:
                         location,
                         requested_object_state=object_context.get(location),
                     )
+                elif self._is_known_support_site(location, fixture_context):
+                    (
+                        resolved_state["location"],
+                        resolved_target_site_id,
+                    ) = self._resolve_support_site_target(
+                        location,
+                        symbolic_fixture_context=fixture_context,
+                    )
                 else:
-                    resolved_state["location"] = self._resolve_fixture_id(
+                    resolved_fixture_id = self._resolve_fixture_id(
                         location,
                         requested_fixture_state=fixture_context.get(location),
                     )
+                    (
+                        resolved_state["location"],
+                        resolved_target_site_id,
+                    ) = self._resolve_initial_fixture_location(
+                        resolved_object_id=resolved_object_id,
+                        explicit_target_site=explicit_target_site,
+                        requested_location=location,
+                        resolved_fixture_id=resolved_fixture_id,
+                        symbolic_fixture_context=fixture_context,
+                    )
+                    scene_obj_info = (self.scene.get("objects") or {}).get(
+                        resolved_object_id,
+                        {},
+                    )
+                    if (
+                        not explicit_target_site
+                        and "preserve_pose" not in resolved_state
+                        and scene_obj_info.get("location") == resolved_state["location"]
+                    ):
+                        resolved_state["preserve_pose"] = True
+                if isinstance(resolved_target_site_id, str):
+                    resolved_state["target_site_id"] = resolved_target_site_id
+                else:
+                    resolved_state.pop("target_site_id", None)
             resolved_objects[resolved_object_id] = resolved_state
 
         for agent_id, agent_state in initial_state.get("agents", {}).items():
@@ -497,6 +630,7 @@ class TrajectoryAdapter:
                 resolved_state["held_object"] = self._resolve_object_id(
                     held_object,
                     requested_object_state=object_context.get(held_object),
+                    fixture_context=fixture_context,
                 )
             resolved_agents[agent_id] = resolved_state
 
@@ -506,6 +640,168 @@ class TrajectoryAdapter:
             "fixtures": resolved_fixtures,
             "machine_state": resolved_machine_state,
         }
+
+    def _resolve_initial_fixture_location(
+        self,
+        *,
+        resolved_object_id: str,
+        explicit_target_site: bool,
+        requested_location: str,
+        resolved_fixture_id: str,
+        symbolic_fixture_context: dict[str, Any],
+    ) -> tuple[str, str | None]:
+        """Prefer a concrete support site when one can be inferred conservatively."""
+
+        # If the spec did not request a site, keep fixture-only placement.
+        # Site selection belongs in SimToolExecutor.load_initial_state where we
+        # can preserve native simulator spawn before any default-site fallback.
+        if not explicit_target_site:
+            return resolved_fixture_id, None
+
+        symbolic_fixture_state = symbolic_fixture_context.get(requested_location)
+        support_sites = (
+            symbolic_fixture_state.get("support_sites")
+            if isinstance(symbolic_fixture_state, dict)
+            else None
+        )
+        if isinstance(support_sites, dict) and len(support_sites) == 1:
+            symbolic_site_id = next(iter(support_sites))
+            if isinstance(symbolic_site_id, str):
+                return self._resolve_support_site_target(
+                    symbolic_site_id,
+                    parent_fixture_id=resolved_fixture_id,
+                    symbolic_fixture_context=symbolic_fixture_context,
+                )
+
+        if hasattr(self.executor, "_infer_object_support_site"):
+            try:
+                inferred_site_id = self.executor._infer_object_support_site(  # noqa: SLF001
+                    resolved_object_id,
+                    resolved_fixture_id,
+                )
+            except Exception:
+                inferred_site_id = None
+            if isinstance(inferred_site_id, str):
+                if hasattr(self.executor, "_normalize_target_site_id_for_placement"):
+                    try:
+                        normalized_site_id = self.executor._normalize_target_site_id_for_placement(  # noqa: SLF001
+                            resolved_fixture_id,
+                            inferred_site_id,
+                        )
+                    except Exception:
+                        normalized_site_id = inferred_site_id
+                else:
+                    normalized_site_id = inferred_site_id
+                if not isinstance(normalized_site_id, str):
+                    return resolved_fixture_id, None
+                if hasattr(self.executor, "_raw_support_site_to_external"):
+                    try:
+                        return (
+                            resolved_fixture_id,
+                            self.executor._raw_support_site_to_external(  # noqa: SLF001
+                                normalized_site_id
+                            ),
+                        )
+                    except Exception:
+                        return resolved_fixture_id, normalized_site_id
+                return resolved_fixture_id, normalized_site_id
+
+        if (
+            hasattr(self.executor, "_fixture_requires_explicit_site")
+            and hasattr(self.executor, "_default_support_site_for_unspecified_fixture")
+        ):
+            try:
+                requires_site = self.executor._fixture_requires_explicit_site(  # noqa: SLF001
+                    resolved_fixture_id
+                )
+            except Exception:
+                requires_site = False
+            if requires_site:
+                try:
+                    default_site_id = self.executor._default_support_site_for_unspecified_fixture(  # noqa: SLF001
+                        resolved_fixture_id,
+                        incoming_object_id=resolved_object_id,
+                    )
+                except Exception:
+                    default_site_id = None
+                if isinstance(default_site_id, str):
+                    return resolved_fixture_id, default_site_id
+
+        return resolved_fixture_id, None
+
+    def _resolve_support_site_target(
+        self,
+        requested_site_id: str,
+        *,
+        parent_fixture_id: str | None = None,
+        symbolic_fixture_context: dict[str, Any] | None = None,
+    ) -> tuple[str, str | None]:
+        """Resolve one support-site reference into fixture and site components."""
+
+        resolved_parent_fixture_id = parent_fixture_id
+        if resolved_parent_fixture_id is None and symbolic_fixture_context is not None:
+            for symbolic_fixture_id, fixture_state in symbolic_fixture_context.items():
+                if not isinstance(fixture_state, dict):
+                    continue
+                support_sites = fixture_state.get("support_sites")
+                if (
+                    isinstance(support_sites, dict)
+                    and requested_site_id in support_sites
+                ) or (
+                    isinstance(support_sites, list)
+                    and requested_site_id in support_sites
+                ):
+                    resolved_parent_fixture_id = self._resolve_fixture_id(
+                        symbolic_fixture_id,
+                        requested_fixture_state=fixture_state,
+                    )
+                    break
+
+        if resolved_parent_fixture_id is None:
+            resolved_parent_fixture_id = self._resolve_support_site_parent(
+                requested_site_id
+            )
+
+        if (
+            resolved_parent_fixture_id is not None
+            and hasattr(self.executor, "_resolve_fixture_site_id")
+            and hasattr(self.executor, "_raw_support_site_to_external")
+        ):
+            try:
+                raw_site_id = self.executor._resolve_fixture_site_id(  # noqa: SLF001
+                    resolved_parent_fixture_id,
+                    requested_site_id,
+                )
+            except Exception:
+                raw_site_id = None
+            if isinstance(raw_site_id, str):
+                try:
+                    return (
+                        resolved_parent_fixture_id,
+                        self.executor._raw_support_site_to_external(raw_site_id),  # noqa: SLF001
+                    )
+                except Exception:
+                    return resolved_parent_fixture_id, raw_site_id
+
+        if resolved_parent_fixture_id is not None:
+            return resolved_parent_fixture_id, requested_site_id
+
+        return requested_site_id, None
+
+    def _resolve_support_site_reference(
+        self,
+        requested_site_id: str,
+        *,
+        parent_fixture_id: str | None = None,
+        symbolic_fixture_context: dict[str, Any] | None = None,
+    ) -> str:
+        """Resolve one symbolic support site into the concrete external site name."""
+        _resolved_parent_fixture_id, resolved_site_id = self._resolve_support_site_target(
+            requested_site_id,
+            parent_fixture_id=parent_fixture_id,
+            symbolic_fixture_context=symbolic_fixture_context,
+        )
+        return resolved_site_id if isinstance(resolved_site_id, str) else requested_site_id
 
     def _adapt_step(
         self,
@@ -615,6 +911,18 @@ class TrajectoryAdapter:
                         ),
                     )
             elif arg_name in {"source_id", "support_id"}:
+                if arg_name == "source_id" and (
+                    value in self._object_aliases
+                    or value in resolved_initial_state.get("objects", {})
+                    or value in self.scene.get("objects", {})
+                ):
+                    resolved_args[arg_name] = self._resolve_object_id(
+                        value,
+                        requested_object_state=(
+                            resolved_initial_state.get("objects", {}).get(value) or None
+                        ),
+                    )
+                    continue
                 if value in self._fixture_aliases or value in self.scene.get("fixtures", {}):
                     resolved_args[arg_name] = self._resolve_fixture_id(
                         value,
@@ -635,7 +943,16 @@ class TrajectoryAdapter:
                         for fixture_state in initial_fixtures.values()
                     )
                     if is_known_support_site:
-                        resolved_args[arg_name] = value
+                        if arg_name == "source_id":
+                            parent_fixture_id, site_id = self._resolve_support_site_target(
+                                value,
+                                symbolic_fixture_context=initial_fixtures,
+                            )
+                            resolved_args[arg_name] = parent_fixture_id
+                            if isinstance(site_id, str):
+                                resolved_args.setdefault("source_site_id", site_id)
+                        else:
+                            resolved_args[arg_name] = value
                         continue
 
                 resolved_args[arg_name] = value
@@ -663,8 +980,56 @@ class TrajectoryAdapter:
                     or value in self._fixture_aliases
                 ):
                     resolved_args[arg_name] = self._resolve_fixture_id(value)
+                elif self._is_known_support_site(
+                    value,
+                    resolved_initial_state.get("fixtures", {}),
+                ):
+                    resolved_args[arg_name] = self._resolve_support_site_reference(
+                        value,
+                        symbolic_fixture_context=resolved_initial_state.get("fixtures", {}),
+                    )
                 else:
                     resolved_args[arg_name] = self._resolve_object_id(value)
+            elif arg_name in {"target_site_id", "source_site_id"}:
+                parent_fixture_id = None
+                for fixture_arg_name in (
+                    "target_id",
+                    "support_id",
+                    "source_id",
+                    "fixture_id",
+                    "reference_fixture_id",
+                ):
+                    fixture_arg_value = resolved_args.get(fixture_arg_name)
+                    if not isinstance(fixture_arg_value, str):
+                        continue
+                    if fixture_arg_value in self.scene.get("fixtures", {}):
+                        parent_fixture_id = fixture_arg_value
+                        break
+                    if (
+                        fixture_arg_value in self._fixture_aliases
+                        or fixture_arg_value in self._fixture_aliases.values()
+                    ):
+                        parent_fixture_id = self._resolve_fixture_id(fixture_arg_value)
+                        break
+                if parent_fixture_id is not None:
+                    requested_fixture_id = None
+                    if value in self.scene.get("fixtures", {}) or value in self._fixture_aliases:
+                        requested_fixture_id = self._resolve_fixture_id(value)
+                    elif value in resolved_initial_state.get("fixtures", {}):
+                        requested_fixture_id = self._resolve_fixture_id(
+                            value,
+                            requested_fixture_state=(
+                                resolved_initial_state.get("fixtures", {}).get(value) or None
+                            ),
+                        )
+                    if requested_fixture_id == parent_fixture_id:
+                        resolved_args[arg_name] = None
+                        continue
+                resolved_args[arg_name] = self._resolve_support_site_reference(
+                    value,
+                    parent_fixture_id=parent_fixture_id,
+                    symbolic_fixture_context=resolved_initial_state.get("fixtures", {}),
+                )
             elif arg_name == "part_id":
                 fixture_key = resolved_args.get("target_id")
                 resolved_args[arg_name] = self._normalize_part_id(
@@ -676,6 +1041,38 @@ class TrajectoryAdapter:
                         .get(value, {})
                     ),
                 )
+        if tool_name == "place_in_receptacle" and not isinstance(
+            resolved_args.get("target_site_id"),
+            str,
+        ):
+            receptacle_value = resolved_args.get("target_id") or resolved_args.get(
+                "receptacle_id"
+            )
+            if isinstance(receptacle_value, str) and receptacle_value in self.scene.get(
+                "fixtures",
+                {},
+            ):
+                incoming_object_id = resolved_args.get("object_id")
+                if (
+                    hasattr(self.executor, "_fixture_requires_explicit_site")
+                    and hasattr(
+                        self.executor,
+                        "_default_support_site_for_unspecified_fixture",
+                    )
+                    and self.executor._fixture_requires_explicit_site(  # noqa: SLF001
+                        receptacle_value
+                    )
+                ):
+                    default_site_id = self.executor._default_support_site_for_unspecified_fixture(  # noqa: SLF001
+                        receptacle_value,
+                        incoming_object_id=(
+                            incoming_object_id
+                            if isinstance(incoming_object_id, str)
+                            else None
+                        ),
+                    )
+                    if isinstance(default_site_id, str):
+                        resolved_args["target_site_id"] = default_site_id
         return resolved_args
 
     def _resolve_output_path(
@@ -746,6 +1143,7 @@ class TrajectoryAdapter:
         self,
         requested_id: str,
         requested_object_state: dict[str, Any] | None = None,
+        fixture_context: dict[str, Any] | None = None,
     ) -> str:
         if requested_id in self._object_aliases:
             return self._object_aliases[requested_id]
@@ -757,6 +1155,52 @@ class TrajectoryAdapter:
         if requested_object_state is not None:
             object_type = requested_object_state.get("object_type")
         candidate_ids = self._object_candidates_for_type(object_type)
+        candidate_ids = self._filter_object_candidates_by_location_hint(
+            candidate_ids,
+            requested_object_state,
+            fixture_context=fixture_context,
+        )
+        candidate_ids = self._filter_distinct_object_candidates(
+            candidate_ids,
+            requested_id=requested_id,
+        )
+        if not candidate_ids:
+            all_location_fallback_candidates = self._object_candidates_for_location_hint(
+                requested_object_state,
+                fixture_context=fixture_context,
+            )
+            zero_based_ordinal = self._extract_ordinal(requested_id)
+            if (
+                zero_based_ordinal is not None
+                and 0 <= zero_based_ordinal < len(all_location_fallback_candidates)
+            ):
+                fallback_id = all_location_fallback_candidates[zero_based_ordinal]
+                reserved_ids = {
+                    resolved_id
+                    for symbol, resolved_id in self._object_aliases.items()
+                    if symbol != requested_id
+                }
+                if fallback_id not in reserved_ids:
+                    self._object_aliases[requested_id] = fallback_id
+                    self._resolution_log.append(
+                        ResolutionRecord(
+                            entity_type="object",
+                            requested_id=requested_id,
+                            resolved_id=fallback_id,
+                            method="location_ordinal_fallback",
+                            confidence=0.4,
+                            reason=(
+                                f"Location fallback for {requested_id!r} at "
+                                f"{requested_object_state.get('location')!r}"
+                            ),
+                        )
+                    )
+                    return fallback_id
+            location_fallback_candidates = self._filter_distinct_object_candidates(
+                all_location_fallback_candidates,
+                requested_id=requested_id,
+            )
+            candidate_ids = location_fallback_candidates
         resolved_id, method, confidence, reason = self._choose_candidate(
             requested_id=requested_id,
             candidate_ids=candidate_ids,
@@ -798,9 +1242,332 @@ class TrajectoryAdapter:
         matches = []
         for object_id, object_info in objects.items():
             actual_type = str(object_info.get("object_type", "")).lower()
-            if actual_type == object_type or object_type in actual_type:
+            if self._object_type_matches(object_type, actual_type):
                 matches.append(object_id)
         return sorted(matches)
+
+    def _broader_object_fallback_candidates(
+        self,
+        requested_id: str,
+        type_hint: str,
+    ) -> list[str]:
+        scene_objects = self.scene.get("objects", {})
+        reserved_ids = set(self._object_aliases.values())
+        requested_type = str(type_hint).lower()
+        semantic_tokens = {
+            token
+            for token in self._base_token(requested_id).split("_")
+            if token
+        }
+        semantic_tokens.update(
+            token for token in self._base_token(requested_type).split("_") if token
+        )
+        semantic_tokens.update(OBJECT_TYPE_FAMILIES.get(requested_type, set()))
+        semantic_tokens.update(OBJECT_TYPE_ALIASES.get(requested_type, ()))
+
+        candidate_ids: list[str] = []
+        for object_id, object_info in scene_objects.items():
+            if object_id in reserved_ids:
+                continue
+            actual_type = str(object_info.get("object_type", "")).lower()
+            actual_tokens = {
+                token for token in self._base_token(object_id).split("_") if token
+            }
+            actual_tokens.update(
+                token for token in self._base_token(actual_type).split("_") if token
+            )
+            if semantic_tokens.intersection(actual_tokens):
+                candidate_ids.append(object_id)
+        return sorted(candidate_ids)
+
+    def _object_type_matches(
+        self,
+        requested_type: str,
+        actual_type: str,
+    ) -> bool:
+        return object_type_matches(requested_type, actual_type)
+
+    def _implicit_container_candidate_for_symbol(
+        self,
+        requested_id: str,
+        *,
+        requested_object_state: dict[str, Any] | None,
+        object_context: dict[str, Any] | None,
+    ) -> str | None:
+        """Resolve symbolic containers created by RoboCasa try_to_place_in.
+
+        Native tasks often define only a child object, e.g. ``obj`` with
+        ``try_to_place_in="pan"``. RoboCasa exposes the pan as ``obj_container``.
+        TaskSpecs should still be able to say high-level ``steak`` and ``pan``.
+        """
+
+        if not isinstance(requested_object_state, dict) or not isinstance(
+            object_context,
+            dict,
+        ):
+            return None
+        requested_type = requested_object_state.get("object_type")
+        if not isinstance(requested_type, str):
+            return None
+
+        scene_objects = self.scene.get("objects", {})
+        assigned_ids = set(self._object_aliases.values())
+        candidates: list[str] = []
+        for child_symbol, child_state in object_context.items():
+            if child_symbol == requested_id or not isinstance(child_state, dict):
+                continue
+            if child_state.get("location") != requested_id:
+                continue
+            resolved_child_id = self._object_aliases.get(child_symbol)
+            if not isinstance(resolved_child_id, str):
+                continue
+            for container_id in (
+                f"{resolved_child_id}_container",
+                f"{resolved_child_id}_container_0",
+            ):
+                if container_id in assigned_ids:
+                    continue
+                container_info = scene_objects.get(container_id)
+                if not isinstance(container_info, dict):
+                    continue
+                actual_type = str(container_info.get("object_type", "")).lower()
+                if self._object_type_matches(str(requested_type).lower(), actual_type):
+                    candidates.append(container_id)
+
+        if len(candidates) == 1:
+            return candidates[0]
+        return None
+
+    def _resolve_requested_location_hint(
+        self,
+        requested_location: Any,
+    ) -> str | None:
+        if not isinstance(requested_location, str):
+            return None
+        if requested_location in self._fixture_aliases:
+            return self._fixture_aliases[requested_location]
+        if requested_location in self._object_aliases:
+            return self._object_aliases[requested_location]
+        if requested_location in self.scene.get("fixtures", {}):
+            return requested_location
+        if requested_location in self.scene.get("objects", {}):
+            return requested_location
+        return self._resolve_support_site_parent(requested_location)
+
+    def _resolve_support_site_parent(self, requested_site_id: str) -> str | None:
+        if not hasattr(self.executor, "get_support_sites"):
+            return None
+        matches: list[str] = []
+        for fixture_id in self.scene.get("fixtures", {}):
+            try:
+                support_sites = self.executor.get_support_sites(fixture_id)
+            except Exception:
+                continue
+            if requested_site_id in set(support_sites or ()):
+                matches.append(fixture_id)
+        if len(matches) == 1:
+            return matches[0]
+        return None
+
+    def _is_known_support_site(
+        self,
+        requested_location: str,
+        fixture_context: dict[str, Any],
+    ) -> bool:
+        for fixture_state in fixture_context.values():
+            if not isinstance(fixture_state, dict):
+                continue
+            support_sites = fixture_state.get("support_sites")
+            if isinstance(support_sites, dict) and requested_location in support_sites:
+                return True
+            if isinstance(support_sites, list) and requested_location in support_sites:
+                return True
+        return False
+
+    def _filter_distinct_object_candidates(
+        self,
+        candidate_ids: list[str],
+        *,
+        requested_id: str,
+    ) -> list[str]:
+        if not candidate_ids:
+            return candidate_ids
+        assigned_ids = {
+            resolved_id
+            for symbol, resolved_id in self._object_aliases.items()
+            if symbol != requested_id
+        }
+        distinct_candidates = [
+            candidate_id
+            for candidate_id in candidate_ids
+            if candidate_id not in assigned_ids
+        ]
+        if distinct_candidates:
+            return distinct_candidates
+        raise ValueError(
+            f"Unable to resolve distinct object_id {requested_id!r}; "
+            f"all candidates are already assigned: {candidate_ids}"
+        )
+
+    def _select_distinct_object_candidate(
+        self,
+        requested_id: str,
+        *,
+        requested_object_state: dict[str, Any],
+        env_object_ids: set[str],
+        fixture_context: dict[str, Any] | None = None,
+    ) -> str | None:
+        object_type = str(requested_object_state.get("object_type", ""))
+        reserved_ids = set(self._object_aliases.values())
+
+        if requested_id in env_object_ids and requested_id not in reserved_ids:
+            return requested_id
+        if object_type in env_object_ids and object_type not in reserved_ids:
+            return object_type
+
+        candidate_ids = self._object_candidates_for_type(object_type)
+        candidate_ids = self._filter_object_candidates_by_location_hint(
+            candidate_ids,
+            requested_object_state,
+            fixture_context=fixture_context,
+        )
+        candidate_ids = self._filter_distinct_object_candidates(
+            candidate_ids,
+            requested_id=requested_id,
+        )
+        if not candidate_ids:
+            all_location_fallback_candidates = self._object_candidates_for_location_hint(
+                requested_object_state,
+                fixture_context=fixture_context,
+            )
+            zero_based_ordinal = self._extract_ordinal(requested_id)
+            if (
+                zero_based_ordinal is not None
+                and 0 <= zero_based_ordinal < len(all_location_fallback_candidates)
+            ):
+                fallback_id = all_location_fallback_candidates[zero_based_ordinal]
+                reserved_ids = {
+                    resolved_id
+                    for symbol, resolved_id in self._object_aliases.items()
+                    if symbol != requested_id
+                }
+                if fallback_id not in reserved_ids:
+                    log.warning(
+                        "Falling back from missing object type hint %r for %r to %s via location %r",
+                        object_type,
+                        requested_id,
+                        fallback_id,
+                        requested_object_state.get("location"),
+                    )
+                    return fallback_id
+            location_fallback_candidates = self._filter_distinct_object_candidates(
+                all_location_fallback_candidates,
+                requested_id=requested_id,
+            )
+            candidate_ids = location_fallback_candidates
+        resolved_id, _method, _confidence, _reason = self._choose_candidate(
+            requested_id=requested_id,
+            candidate_ids=candidate_ids,
+            entity_type="object",
+            type_hint=object_type,
+        )
+        return resolved_id
+
+    def _filter_object_candidates_by_location_hint(
+        self,
+        candidate_ids: list[str],
+        requested_object_state: dict[str, Any] | None,
+        fixture_context: dict[str, Any] | None = None,
+    ) -> list[str]:
+        if not candidate_ids or not isinstance(requested_object_state, dict):
+            return candidate_ids
+
+        requested_location = requested_object_state.get("location")
+        resolved_location = self._resolve_requested_location_hint(requested_location)
+        if isinstance(resolved_location, str):
+            scene_objects = self.scene.get("objects", {})
+            matching_candidates = [
+                candidate_id
+                for candidate_id in candidate_ids
+                if (scene_objects.get(candidate_id, {}) or {}).get("location") == resolved_location
+            ]
+            if matching_candidates:
+                return matching_candidates
+
+        if not isinstance(requested_location, str) or not isinstance(fixture_context, dict):
+            return candidate_ids
+
+        requested_fixture_state = fixture_context.get(requested_location)
+        if not isinstance(requested_fixture_state, dict):
+            return candidate_ids
+        requested_fixture_type = requested_fixture_state.get("fixture_type")
+        if not isinstance(requested_fixture_type, str):
+            return candidate_ids
+
+        scene_objects = self.scene.get("objects", {})
+        scene_fixtures = self.scene.get("fixtures", {})
+        matching_candidates = []
+        for candidate_id in candidate_ids:
+            candidate_location = (scene_objects.get(candidate_id, {}) or {}).get("location")
+            if not isinstance(candidate_location, str):
+                continue
+            candidate_fixture_type = (
+                (scene_fixtures.get(candidate_location, {}) or {}).get("fixture_type")
+            )
+            if not isinstance(candidate_fixture_type, str):
+                continue
+            if self._fixture_type_matches(
+                str(requested_fixture_type).lower(),
+                str(candidate_fixture_type).lower(),
+            ):
+                matching_candidates.append(candidate_id)
+        return matching_candidates or candidate_ids
+
+    def _object_candidates_for_location_hint(
+        self,
+        requested_object_state: dict[str, Any] | None,
+        *,
+        fixture_context: dict[str, Any] | None = None,
+    ) -> list[str]:
+        if not isinstance(requested_object_state, dict):
+            return []
+
+        requested_location = requested_object_state.get("location")
+        resolved_location = self._resolve_requested_location_hint(requested_location)
+        scene_objects = self.scene.get("objects", {})
+        if isinstance(resolved_location, str):
+            return sorted(
+                object_id
+                for object_id, object_info in scene_objects.items()
+                if (object_info or {}).get("location") == resolved_location
+            )
+
+        if not isinstance(requested_location, str) or not isinstance(fixture_context, dict):
+            return []
+        requested_fixture_state = fixture_context.get(requested_location)
+        if not isinstance(requested_fixture_state, dict):
+            return []
+        requested_fixture_type = requested_fixture_state.get("fixture_type")
+        if not isinstance(requested_fixture_type, str):
+            return []
+
+        scene_fixtures = self.scene.get("fixtures", {})
+        matching_candidates: list[str] = []
+        for object_id, object_info in scene_objects.items():
+            candidate_location = (object_info or {}).get("location")
+            if not isinstance(candidate_location, str):
+                continue
+            candidate_fixture_type = (
+                (scene_fixtures.get(candidate_location, {}) or {}).get("fixture_type")
+            )
+            if not isinstance(candidate_fixture_type, str):
+                continue
+            if self._fixture_type_matches(
+                str(requested_fixture_type).lower(),
+                str(candidate_fixture_type).lower(),
+            ):
+                matching_candidates.append(object_id)
+        return sorted(matching_candidates)
 
     def _choose_candidate(
         self,
@@ -810,6 +1577,25 @@ class TrajectoryAdapter:
         type_hint: str | None,
     ) -> tuple[str, str, float, str]:
         if not candidate_ids:
+            if entity_type == "object" and isinstance(type_hint, str):
+                fallback_candidates = self._broader_object_fallback_candidates(
+                    requested_id,
+                    type_hint,
+                )
+                if len(fallback_candidates) == 1:
+                    fallback_id = fallback_candidates[0]
+                    log.warning(
+                        "Falling back from missing object type hint %r for %r to %s",
+                        type_hint,
+                        requested_id,
+                        fallback_id,
+                    )
+                    return (
+                        fallback_id,
+                        "broader_family_fallback",
+                        0.45,
+                        f"Broader family fallback for type hint {type_hint!r}",
+                    )
             raise ValueError(
                 f"Unable to resolve {entity_type}_id {requested_id!r} with type hint {type_hint!r}"
             )
@@ -875,6 +1661,8 @@ class TrajectoryAdapter:
         lowered = part_id.lower()
         if lowered in {"door", "lid"}:
             return "hinged"
+        if any(token in lowered for token in ("drawer", "slide", "sliding")):
+            return "sliding"
         return part_id
 
     def _base_token(self, token: str) -> str:

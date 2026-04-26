@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import unittest
 
+from data_generation.task_level.pipeline.few_shot import load_few_shot_examples
 from data_generation.task_level.tasks import get_task_definition
 from data_generation.task_level.tasks.specs import load_all_task_specs, load_task_spec
 
@@ -65,3 +67,13 @@ class TaskSpecTests(unittest.TestCase):
         )
         self.assertTrue(spec.grounding["symbols"])
         self.assertTrue(spec.example_trajectory["steps"])
+
+    def test_phase1_few_shot_examples_load(self):
+        examples = load_few_shot_examples()
+
+        self.assertEqual(3, len(examples))
+        for example in examples:
+            self.assertTrue(example.source_python)
+            spec_payload = json.loads(example.spec_json)
+            self.assertEqual(example.task_name, spec_payload["composite_task"])
+            self.assertTrue(spec_payload["example_trajectory"]["steps"])

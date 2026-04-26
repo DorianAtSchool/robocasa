@@ -57,11 +57,7 @@ class PlateStoreDinner(Kitchen):
                 obj_groups="steak",
                 graspable=True,
                 placement=dict(
-                    fixture=self.stove,
-                    ensure_object_boundary_in_range=False,
-                    size=(0.2, 0.2),
-                    pos=("ref", -1.0),
-                    try_to_place_in="pan",
+                    object="meat1_container",
                 ),
             )
         )

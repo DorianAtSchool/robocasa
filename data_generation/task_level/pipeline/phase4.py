@@ -10,6 +10,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from data_generation.task_level.runtime.render_env import normalize_mujoco_render_env
+
 
 @dataclass
 class Phase4TaskResult:
@@ -56,6 +58,14 @@ def _load_json_object(path: Path) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _normalize_task_selector(task_name: str) -> str:
+    normalized = "".join(
+        character.lower() if character.isalnum() else "_"
+        for character in str(task_name)
+    )
+    return "_".join(part for part in normalized.split("_") if part)
+
+
 def _load_phase3_results(
     output_dir: Path,
     *,
@@ -69,13 +79,13 @@ def _load_phase3_results(
     payload = json.loads(results_path.read_text(encoding="utf-8"))
     if not isinstance(payload, list):
         raise ValueError("phase3/results.json was not a JSON list")
-    wanted = set(task_names or [])
+    wanted = {_normalize_task_selector(task_name) for task_name in (task_names or [])}
     selected: list[dict[str, Any]] = []
     for entry in payload:
         if not isinstance(entry, dict):
             continue
         task_name = entry.get("task_name")
-        if wanted and task_name not in wanted:
+        if wanted and _normalize_task_selector(str(task_name)) not in wanted:
             continue
         selected.append(entry)
     return selected
@@ -191,10 +201,7 @@ def _run_sweep(
             error="DRY RUN: " + " ".join(command),
         )
 
-    child_env = os.environ.copy()
-    current_gl = child_env.get("MUJOCO_GL", "").strip().lower()
-    if sys.platform == "darwin" and current_gl in {"", "osmesa", "egl"}:
-        child_env["MUJOCO_GL"] = "cgl"
+    child_env = normalize_mujoco_render_env(os.environ.copy())
 
     completed_process = subprocess.run(
         command,

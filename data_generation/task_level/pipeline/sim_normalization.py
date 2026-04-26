@@ -29,10 +29,14 @@ _TOKEN_RE = re.compile(r"[a-z0-9]+")
 _TOKEN_ALIASES = {
     "back": ("rear",),
     "faucet": ("handle",),
+    "timer": ("time",),
     "temperature": ("temp",),
+    "function": ("mode",),
+    "doneness": ("toast",),
+    "browning": ("toast",),
 }
 _TOKEN_STOPWORDS_BY_KIND = {
-    "control": frozenset({"control", "joint"}),
+    "control": frozenset({"control", "joint", "knob", "button", "lever"}),
     "part": frozenset({"part", "joint"}),
     "support_site": frozenset(
         {"support", "site", "surface", "region", "placement", "place", "burner"}
@@ -50,6 +54,14 @@ class FixtureSimulationMetadata:
     part_ids: tuple[str, ...]
     control_ids: tuple[str, ...]
     support_site_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class SimulationReferenceMetadata:
+    """Simulator-derived lookup tables reused by validation and normalization."""
+
+    fixture_metadata_by_symbol: dict[str, FixtureSimulationMetadata]
+    location_aliases: dict[str, str]
 
 
 @lru_cache(maxsize=None)
@@ -139,7 +151,11 @@ def _iter_support_site_distances(
 
     distances: list[tuple[float, str]] = []
     for support_site_id in support_site_ids:
-        region = reset_regions.get(support_site_id)
+        try:
+            raw_site_id = executor._resolve_fixture_site_id(fixture_id, support_site_id)
+        except Exception:
+            raw_site_id = support_site_id
+        region = reset_regions.get(raw_site_id)
         if not isinstance(region, dict):
             continue
         offset = region.get("offset", (0.0, 0.0, 0.0))
@@ -768,6 +784,7 @@ def _iter_symbolic_location_tokens(payload: dict[str, Any]) -> tuple[str, ...]:
             "allowed_support_ids",
             "allowed_source_ids",
             "allowed_receptacle_ids",
+            "allowed_target_site_ids",
         ):
             for value in tool_spec.get(location_key) or []:
                 _append_token(value)
@@ -791,7 +808,14 @@ def _iter_symbolic_location_tokens(payload: dict[str, Any]) -> tuple[str, ...]:
             continue
         effect_args = effect.get("args") or {}
         if isinstance(effect_args, dict):
-            for arg_name in ("source_id", "support_id", "receptacle_id"):
+            for arg_name in (
+                "source_id",
+                "support_id",
+                "receptacle_id",
+                "target_id",
+                "target_site_id",
+                "reference_id",
+            ):
                 _append_token(effect_args.get(arg_name))
         for requirement in effect.get("required_object_locations") or []:
             if isinstance(requirement, dict):
@@ -805,7 +829,14 @@ def _iter_symbolic_location_tokens(payload: dict[str, Any]) -> tuple[str, ...]:
             args = step.get("args") or {}
             if not isinstance(args, dict):
                 continue
-            for arg_name in ("source_id", "support_id", "receptacle_id"):
+            for arg_name in (
+                "source_id",
+                "support_id",
+                "receptacle_id",
+                "target_id",
+                "target_site_id",
+                "reference_id",
+            ):
                 _append_token(args.get(arg_name))
 
     return tuple(tokens)
@@ -1134,6 +1165,7 @@ def _normalize_allowed_tool_specs(
             "allowed_support_ids",
             "allowed_source_ids",
             "allowed_receptacle_ids",
+            "allowed_target_site_ids",
         ):
             if isinstance(tool_spec.get(location_key), list):
                 normalized_location_ids: list[Any] = []
@@ -1205,7 +1237,14 @@ def _normalize_task_effects_and_trajectory(
                 errors=errors,
                 context=context,
             )
-        for arg_name in ("source_id", "support_id", "receptacle_id"):
+        for arg_name in (
+            "source_id",
+            "support_id",
+            "receptacle_id",
+            "target_id",
+            "target_site_id",
+            "reference_id",
+        ):
             if arg_name in args:
                 args[arg_name] = _normalize_location_value(
                     args.get(arg_name),
@@ -1320,7 +1359,14 @@ def _collect_referenced_support_sites_by_fixture(
             continue
         effect_args = effect.get("args") or {}
         if isinstance(effect_args, dict):
-            for arg_name in ("source_id", "support_id", "receptacle_id"):
+            for arg_name in (
+                "source_id",
+                "support_id",
+                "receptacle_id",
+                "target_id",
+                "target_site_id",
+                "reference_id",
+            ):
                 _record(effect_args.get(arg_name))
         for requirement in effect.get("required_object_locations") or []:
             if isinstance(requirement, dict):
@@ -1334,7 +1380,14 @@ def _collect_referenced_support_sites_by_fixture(
             args = step.get("args") or {}
             if not isinstance(args, dict):
                 continue
-            for arg_name in ("source_id", "support_id", "receptacle_id"):
+            for arg_name in (
+                "source_id",
+                "support_id",
+                "receptacle_id",
+                "target_id",
+                "target_site_id",
+                "reference_id",
+            ):
                 _record(args.get(arg_name))
 
     return referenced_support_sites_by_fixture
@@ -1908,38 +1961,17 @@ def normalize_spec_payload_against_simulation(
     """Rewrite simulator-facing IDs to the names exposed by RoboCasa."""
 
     normalized_payload = deepcopy(payload)
-    source_python_module = (
-        str(normalized_payload.get("source_python_module"))
-        if normalized_payload.get("source_python_module")
-        else None
-    )
-    snapshot = _load_task_simulation_snapshot(
-        task_name,
-        _infer_robot_count(normalized_payload),
-        source_python_module,
-    )
-    object_aliases = _resolve_symbolic_object_aliases(
-        payload=normalized_payload,
-        scene=snapshot["scene"],
-    )
-    location_aliases = _build_location_aliases(
-        payload=normalized_payload,
-        snapshot=snapshot,
-        object_aliases=object_aliases,
-    )
-    fixture_metadata_by_symbol = _resolve_symbolic_fixture_metadata(
+    reference_metadata = collect_simulation_reference_metadata(
+        normalized_payload,
         task_name=task_name,
-        payload=normalized_payload,
-        snapshot=snapshot,
-        object_aliases=object_aliases,
-        source_python_module=source_python_module,
     )
+    fixture_metadata_by_symbol = reference_metadata.fixture_metadata_by_symbol
     location_aliases = {
-        **location_aliases,
+        **reference_metadata.location_aliases,
         **_build_sim_support_site_aliases(
             payload=normalized_payload,
             fixture_metadata_by_symbol=fixture_metadata_by_symbol,
-            location_aliases=location_aliases,
+            location_aliases=reference_metadata.location_aliases,
         ),
     }
     errors: list[str] = []
@@ -1978,6 +2010,45 @@ def normalize_spec_payload_against_simulation(
     )
     _normalize_toaster_slot_targets(payload=normalized_payload)
     return normalized_payload, errors
+
+
+def collect_simulation_reference_metadata(
+    payload: dict[str, Any],
+    *,
+    task_name: str,
+) -> SimulationReferenceMetadata:
+    """Return fixture/site lookup tables without mutating the payload."""
+
+    source_python_module = (
+        str(payload.get("source_python_module"))
+        if payload.get("source_python_module")
+        else None
+    )
+    snapshot = _load_task_simulation_snapshot(
+        task_name,
+        _infer_robot_count(payload),
+        source_python_module,
+    )
+    object_aliases = _resolve_symbolic_object_aliases(
+        payload=payload,
+        scene=snapshot["scene"],
+    )
+    fixture_metadata_by_symbol = _resolve_symbolic_fixture_metadata(
+        task_name=task_name,
+        payload=payload,
+        snapshot=snapshot,
+        object_aliases=object_aliases,
+        source_python_module=source_python_module,
+    )
+    location_aliases = _build_location_aliases(
+        payload=payload,
+        snapshot=snapshot,
+        object_aliases=object_aliases,
+    )
+    return SimulationReferenceMetadata(
+        fixture_metadata_by_symbol=fixture_metadata_by_symbol,
+        location_aliases=location_aliases,
+    )
 
 
 def _collect_normalization_diffs(

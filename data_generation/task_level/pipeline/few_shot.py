@@ -1,20 +1,19 @@
 """Few-shot example loader for Phase 1 spec generation.
 
 Selects a small set of existing manually-built TaskSpec JSONs together with
-their source Python files. The goal is to expose the LLM to the variety of
-patterns it will need to handle: a single-fixture parallel task, a
-multi-fixture flexible-assignment task, and a multi-fixture task with a
-hinged-part dependency and a machine-flag effect.
+their source Python files. The goal is to expose the LLM to a few distinct
+patterns it will need to handle: a simple retrieval-and-placement task, a
+multi-fixture cooperative staging task, and a machine-trigger task with a
+hinged-part dependency.
 """
 
 from __future__ import annotations
 
 import importlib
 import json
-from dataclasses import dataclass
-from pathlib import Path
+from dataclasses import asdict, dataclass
 
-from data_generation.task_level.tasks import specs as specs_pkg
+from data_generation.task_level.tasks.specs import load_task_spec
 
 
 @dataclass(frozen=True)
@@ -33,38 +32,51 @@ class FewShotExample:
 # Curated examples covering distinct patterns. Order matters: the prompt
 # always shows them in this order so the model anchors on the simplest
 # pattern first and generalizes outward.
-_CURATED_EXAMPLES: tuple[tuple[str, str], ...] = (
-    # (composite_task, spec_json_filename)
-    ("MeatSkewerAssembly", "meatskewerassembly.json"),
-    ("SetBowlsForSoup", "setbowlsforsoup.json"),
-    ("GarnishCupcake", "garnishcupcake.json"),
+_CURATED_EXAMPLES: tuple[str, ...] = (
+    "PrepareSausageCheese",
+    "PrepareSandwichStation",
+    "PrepareCoffee",
 )
 
 
-_SPECS_DIR = Path(specs_pkg.__file__).resolve().parent
-
-
-def _resolve_source_python_path(spec_payload: dict) -> Path:
+def _resolve_source_python_path(module_name: str):
     """Find the source .py file referenced by a spec's source_python_module."""
 
-    module_name = spec_payload["source_python_module"]
     spec = importlib.util.find_spec(module_name)
     if spec is None or not spec.origin:
         raise FileNotFoundError(
             f"Could not locate source module {module_name!r} "
             f"for few-shot example."
         )
-    return Path(spec.origin)
+    return spec.origin
 
 
-def _load_one_example(spec_filename: str) -> FewShotExample:
-    spec_path = _SPECS_DIR / spec_filename
-    spec_text = spec_path.read_text(encoding="utf-8")
-    spec_payload = json.loads(spec_text)
-    source_path = _resolve_source_python_path(spec_payload)
-    source_text = source_path.read_text(encoding="utf-8")
+def _load_one_example(task_name: str) -> FewShotExample:
+    spec_payload = load_task_spec(task_name)
+    source_path = _resolve_source_python_path(spec_payload.source_python_module)
+    with open(source_path, "r", encoding="utf-8") as handle:
+        source_text = handle.read()
+    spec_dict = asdict(spec_payload)
+    allowed_tool_specs = spec_dict.get("allowed_tool_specs")
+    if isinstance(allowed_tool_specs, dict):
+        for tool_name, tool_spec in list(allowed_tool_specs.items()):
+            if not isinstance(tool_spec, dict):
+                continue
+            allowed_tool_specs[tool_name] = {
+                key: value
+                for key, value in tool_spec.items()
+                if key
+                not in {
+                    "description",
+                    "tool_args",
+                    "optional_tool_args",
+                    "tool_arg_types",
+                    "tool_arg_any_of",
+                }
+            }
+    spec_text = json.dumps(spec_dict, indent=2)
     return FewShotExample(
-        task_name=str(spec_payload["composite_task"]),
+        task_name=spec_payload.composite_task,
         source_python=source_text,
         spec_json=spec_text,
     )
@@ -78,4 +90,4 @@ def load_few_shot_examples() -> tuple[FewShotExample, ...]:
     context windows. Returns a tuple so it is safe to cache.
     """
 
-    return tuple(_load_one_example(filename) for _, filename in _CURATED_EXAMPLES)
+    return tuple(_load_one_example(task_name) for task_name in _CURATED_EXAMPLES)

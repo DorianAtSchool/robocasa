@@ -42,6 +42,10 @@ def _iter_declared_tool_arg_names(tool_spec: dict[str, Any]) -> tuple[str, ...]:
 
     ordered_field_names: list[str] = []
     _append_unique_field_names(ordered_field_names, tool_spec.get("tool_args", ()))
+    _append_unique_field_names(
+        ordered_field_names,
+        tool_spec.get("optional_tool_args", ()),
+    )
     for arg_group in tool_spec.get("tool_arg_any_of", ()):
         if not isinstance(arg_group, (list, tuple)):
             raise ValueError("tool_arg_any_of entries must be lists or tuples.")

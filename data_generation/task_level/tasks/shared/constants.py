@@ -26,6 +26,7 @@ INTERACTION_TOOL_NAMES = frozenset(
     {"press_button", "press_lever", "set_rotary_control"}
 )
 PLACE_LOCATION_ARG_NAMES = (
+    "target_id",
     "support_id",
     "receptacle_id",
     "support_object_id",

@@ -117,13 +117,13 @@
       "description": "Place an object adjacent to a reference object or nearby fixture on the same support surface.",
       "tool_args": [
         "object_id",
-        "reference_object_id"
+        "reference_fixture_id"
       ],
       "allowed_object_ids": [
         "ingredient_bowl",
         "baguette"
       ],
-      "allowed_reference_object_ids": [
+      "allowed_reference_fixture_ids": [
         "toaster_oven"
       ]
     },
@@ -141,7 +141,7 @@
   "task_goal": "retrieve ingredient_bowl and baguette from ingredient_source_fixture, then place both next to toaster_oven on staging_surface to stage them near the toaster oven.",
   "extra_execution_rules": [
     "Pick up ingredient_bowl and baguette from ingredient_source_fixture before staging them on staging_surface.",
-    "Use place_next_to with reference_object_id toaster_oven so both items end up on staging_surface near the toaster oven.",
+    "Use place_next_to with reference_fixture_id toaster_oven so both items end up on staging_surface near the toaster oven.",
     "Keep tomato_slice, pickle_slice, and turkey_slice inside ingredient_bowl throughout the trajectory."
   ],
   "initial_public_state": {
@@ -211,7 +211,7 @@
       "tool": "place_next_to",
       "args": {
         "object_id": "ingredient_bowl",
-        "reference_object_id": "toaster_oven"
+        "reference_fixture_id": "toaster_oven"
       },
       "machine_path": [
         "prepare_sandwich_station",
@@ -224,7 +224,7 @@
       "tool": "place_next_to",
       "args": {
         "object_id": "baguette",
-        "reference_object_id": "toaster_oven"
+        "reference_fixture_id": "toaster_oven"
       },
       "machine_path": [
         "prepare_sandwich_station",
@@ -375,7 +375,7 @@
         "tool": "place_next_to",
         "args": {
           "object_id": "ingredient_bowl",
-          "reference_object_id": "toaster_oven"
+          "reference_fixture_id": "toaster_oven"
         },
         "reasoning": "I am placing the ingredient_bowl next to the toaster_oven as required."
       },
@@ -423,7 +423,7 @@
         "tool": "place_next_to",
         "args": {
           "object_id": "baguette",
-          "reference_object_id": "toaster_oven"
+          "reference_fixture_id": "toaster_oven"
         },
         "reasoning": "I am placing the baguette next to the toaster_oven to complete the task."
       }

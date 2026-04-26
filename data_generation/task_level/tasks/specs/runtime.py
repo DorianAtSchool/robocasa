@@ -120,6 +120,38 @@ class SpecDrivenTaskValidator(FiniteStateTaskValidator):
                     if machine_value is not None:
                         runtime_state.public_state[public_key] = machine_value
 
+    def _object_location_matches(
+        self,
+        *,
+        runtime_state: TaskRuntimeState,
+        object_id: str,
+        required_location: str,
+    ) -> bool:
+        actual_location = runtime_state.objects[object_id]["location"]
+        if actual_location == required_location:
+            return True
+
+        resolved_actual = self._resolve_reference_location(
+            reference_id=object_id,
+            runtime_state=runtime_state,
+        )
+        if resolved_actual == required_location:
+            return True
+
+        required_fixture_id = self._resolve_fixture_for_location(
+            location_id=required_location,
+            runtime_state=runtime_state,
+        )
+        actual_fixture_id = self._resolve_fixture_for_location(
+            location_id=resolved_actual if isinstance(resolved_actual, str) else actual_location,
+            runtime_state=runtime_state,
+        )
+        return (
+            isinstance(required_fixture_id, str)
+            and isinstance(actual_fixture_id, str)
+            and required_fixture_id == actual_fixture_id
+        )
+
     def validate_task_preconditions(
         self,
         step: dict[str, Any],
@@ -131,7 +163,11 @@ class SpecDrivenTaskValidator(FiniteStateTaskValidator):
                 object_id = condition["object_id"]
                 required_location = condition["location"]
                 actual_location = runtime_state.objects[object_id]["location"]
-                if actual_location != required_location:
+                if not self._object_location_matches(
+                    runtime_state=runtime_state,
+                    object_id=object_id,
+                    required_location=required_location,
+                ):
                     raise TaskPreconditionSemanticValidationError(
                         condition["message"],
                         details={
@@ -198,7 +234,11 @@ class SpecDrivenTaskValidator(FiniteStateTaskValidator):
                     ):
                         continue
                 actual_location = runtime_state.objects[condition["object_id"]]["location"]
-                if actual_location != condition["required_location"]:
+                if not self._object_location_matches(
+                    runtime_state=runtime_state,
+                    object_id=condition["object_id"],
+                    required_location=condition["required_location"],
+                ):
                     raise TaskPreconditionSemanticValidationError(
                         condition["message"],
                         details={
@@ -232,10 +272,15 @@ class SpecDrivenTaskValidator(FiniteStateTaskValidator):
                 continue
             required_object_locations = effect.get("required_object_locations") or []
             if any(
-                runtime_state.objects.get(requirement.get("object_id"), {}).get("location")
-                != requirement.get("location")
+                not self._object_location_matches(
+                    runtime_state=runtime_state,
+                    object_id=requirement["object_id"],
+                    required_location=requirement["location"],
+                )
                 for requirement in required_object_locations
                 if isinstance(requirement, dict)
+                and isinstance(requirement.get("object_id"), str)
+                and isinstance(requirement.get("location"), str)
             ):
                 continue
             required_machine_values = effect.get("required_machine_values") or []
@@ -365,7 +410,13 @@ def build_task_definition_from_spec(task_spec: TaskSpec) -> TaskDefinition:
             key: deepcopy(value)
             for key, value in tool_spec.items()
             if key
-            not in {"description", "tool_args", "tool_arg_types", "tool_arg_any_of"}
+            not in {
+                "description",
+                "tool_args",
+                "optional_tool_args",
+                "tool_arg_types",
+                "tool_arg_any_of",
+            }
         }
         if tool_override:
             overrides[tool_name] = tool_override
@@ -397,6 +448,7 @@ def build_task_definition_from_spec(task_spec: TaskSpec) -> TaskDefinition:
         allowed_tool_specs=allowed_tool_specs,
         non_communicate_tool_names=non_communicate_tool_names,
         task_preconditions=task_spec.task_preconditions,
+        task_effects=task_spec.task_effects,
         extra_execution_rules=task_spec.extra_execution_rules,
     )
     build_trajectory_record = make_symbolic_trajectory_record_builder(

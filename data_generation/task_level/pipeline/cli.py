@@ -16,7 +16,8 @@ DEFAULT_OUTPUT_DIR = (
     Path(__file__).resolve().parents[1] / "data" / "pipeline_runs"
 )
 
-VALID_PHASES = ("0a", "0b", "1", "2", "2.5", "3", "4", "5", "all")
+PIPELINE_PHASE_ORDER = ("0a", "0b", "1", "2", "2.5", "3", "4", "5")
+VALID_PHASES = PIPELINE_PHASE_ORDER + ("all",)
 VALID_BATCHES = ("batch1", "batch2", "batch3", "all")
 VALID_RATING_THRESHOLDS = ("LOW", "MEDIUM", "HIGH")
 DEFAULT_PHASE2_REPAIR_RETRIES = 2
@@ -30,8 +31,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--phase",
         choices=VALID_PHASES,
-        default="all",
-        help="Which pipeline phase to run (default: all).",
+        nargs="+",
+        default=["all"],
+        metavar="PHASE",
+        help=(
+            "Which pipeline phases to run. Use `all` or provide one or more "
+            "phase ids, for example `--phase 1 3 4` (default: all)."
+        ),
     )
     parser.add_argument(
         "--batch",
@@ -117,11 +123,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Record per-camera MP4 videos during Phase 4 sweep runs.",
     )
     parser.add_argument(
+        "--phase1-sim-normalization",
+        action="store_true",
+        help=(
+            "Opt in to live simulator normalization during Phase 1 spec generation. "
+            "Disabled by default for faster iteration."
+        ),
+    )
+    parser.add_argument(
+        "--phase2-sim-alignment",
+        action="store_true",
+        help=(
+            "Opt in to live simulator alignment checks during Phase 2. "
+            "Disabled by default for faster manual spec iteration."
+        ),
+    )
+    parser.add_argument(
         "--phase2-repair-retries",
         type=int,
         default=DEFAULT_PHASE2_REPAIR_RETRIES,
         help=(
-            "When running `--phase all`, retry Phase 2-failing specs with "
+            "When running Phase 2, retry Phase 2-failing specs with "
             "validation feedback this many times (default: 2)."
         ),
     )
@@ -130,7 +152,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=DEFAULT_PHASE2_5_REPAIR_RETRIES,
         help=(
-            "When running `--phase all`, retry Phase 2.5-rejected specs with "
+            "When running Phase 2.5, retry Phase 2.5-rejected specs with "
             "review feedback this many times (default: 2)."
         ),
     )
@@ -145,7 +167,30 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Override output directory.",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    args.phase = _normalize_requested_phases(args.phase, parser=parser)
+    return args
+
+
+def _normalize_requested_phases(
+    requested_phases: list[str],
+    *,
+    parser: argparse.ArgumentParser,
+) -> tuple[str, ...]:
+    """Return a deduplicated phase selection in canonical pipeline order."""
+
+    unique_phases = tuple(dict.fromkeys(requested_phases))
+    if "all" in unique_phases:
+        if len(unique_phases) > 1:
+            parser.error("`all` cannot be combined with explicit phase ids.")
+        return PIPELINE_PHASE_ORDER
+
+    requested_phase_set = set(unique_phases)
+    return tuple(
+        phase
+        for phase in PIPELINE_PHASE_ORDER
+        if phase in requested_phase_set
+    )
 
 
 def _resolve_run_dir(args: argparse.Namespace) -> Path:
@@ -172,11 +217,18 @@ def _apply_selection_filters(
 ) -> list[TaskAnalysis]:
     """Narrow a candidate list by batch label and explicit task allowlist."""
 
+    def _selector_key(task_name: str) -> str:
+        normalized = "".join(
+            character.lower() if character.isalnum() else "_"
+            for character in str(task_name)
+        )
+        return "_".join(part for part in normalized.split("_") if part)
+
     if batch != "all":
         candidates = [c for c in candidates if c.batch == batch]
     if task_names:
-        task_set = set(task_names)
-        candidates = [c for c in candidates if c.task_name in task_set]
+        task_set = {_selector_key(task_name) for task_name in task_names}
+        candidates = [c for c in candidates if _selector_key(c.task_name) in task_set]
     return candidates
 
 
@@ -187,7 +239,7 @@ def _load_phase0a_candidates(run_dir: Path) -> list[TaskAnalysis]:
     if not candidates_path.exists():
         print(
             f"Error: Phase 0a output not found at {candidates_path}. "
-            f"Run `--phase 0a` first or use `--phase all`.",
+            "Run `--phase 0a` first or include it in `--phase ...`.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -202,13 +254,58 @@ def _load_phase0b_filtered(run_dir: Path) -> list[TaskAnalysis]:
     if not filtered_path.exists():
         print(
             f"Error: Phase 0b output not found at {filtered_path}. "
-            f"Run `--phase 0b` first or use `--phase all`.",
+            "Run `--phase 0b` first or include it in `--phase ...`.",
             file=sys.stderr,
         )
         sys.exit(1)
     payload = json.loads(filtered_path.read_text(encoding="utf-8"))
     # Entries are merged dicts; TaskAnalysis.from_dict ignores extra rating keys.
     return [TaskAnalysis.from_dict(entry) for entry in payload]
+
+
+def _load_best_available_candidates(
+    run_dir: Path,
+    *,
+    batch: str,
+    task_names: list[str] | None,
+) -> list[TaskAnalysis]:
+    """Load candidates from the best available upstream phase.
+
+    Preference order:
+    1. Phase 0b filtered output
+    2. Phase 0a candidate output
+    """
+
+    phase0b_path = run_dir / "phase0b" / "filtered.json"
+    if phase0b_path.exists():
+        loaded = _load_phase0b_filtered(run_dir)
+        return _apply_selection_filters(
+            loaded,
+            batch=batch,
+            task_names=task_names,
+        )
+
+    phase0a_path = run_dir / "phase0a" / "candidates.json"
+    if phase0a_path.exists():
+        loaded = _load_phase0a_candidates(run_dir)
+        return _apply_selection_filters(
+            loaded,
+            batch=batch,
+            task_names=task_names,
+        )
+
+    from .phase0a import analyze_all_tasks
+
+    print(
+        "  No persisted Phase 0 candidate list found. "
+        "Rebuilding task analysis from source files."
+    )
+    rebuilt_candidates, _excluded = analyze_all_tasks()
+    return _apply_selection_filters(
+        rebuilt_candidates,
+        batch=batch,
+        task_names=task_names,
+    )
 
 
 def _ensure_selected_candidates(
@@ -222,9 +319,8 @@ def _ensure_selected_candidates(
 
     if selected_candidates is not None:
         return selected_candidates
-    loaded = _load_phase0b_filtered(run_dir)
-    return _apply_selection_filters(
-        loaded,
+    return _load_best_available_candidates(
+        run_dir,
         batch=batch,
         task_names=task_names,
     )
@@ -371,6 +467,23 @@ def _run_phase1(
     def _progress(completed: int, total: int, task_name: str) -> None:
         print(f"  [{completed}/{total}] {progress_verb} {task_name}")
 
+    def _heartbeat(
+        completed: int,
+        total: int,
+        pending_status: list[tuple[str, float]],
+        pending_count: int,
+    ) -> None:
+        pending_text = ", ".join(
+            f"{task_name} ({int(elapsed_sec)}s)"
+            for task_name, elapsed_sec in pending_status
+        )
+        if pending_count > len(pending_status):
+            pending_text += f", ... (+{pending_count - len(pending_status)} more)"
+        print(
+            f"  Waiting on {pending_count} specs after {completed}/{total}: "
+            f"{pending_text}"
+        )
+
     results = run_phase1(
         candidates,
         output_dir=run_dir,
@@ -380,10 +493,12 @@ def _run_phase1(
         location=args.location or "global",
         dry_run=args.dry_run,
         progress_callback=_progress,
+        heartbeat_callback=_heartbeat,
         generation_timeout_sec=(
             None if args.generation_timeout_sec == 0 else args.generation_timeout_sec
         ),
         repair_feedback_by_task=repair_feedback_by_task,
+        sim_normalization=args.phase1_sim_normalization,
     )
 
     if args.dry_run:
@@ -412,7 +527,7 @@ def _load_phase1_spec_paths(
     if not specs_dir.exists():
         print(
             f"Error: Phase 1 specs directory not found at {specs_dir}. "
-            f"Run `--phase 1` first or use `--phase all`.",
+            "Run `--phase 1` first or include it in `--phase ...`.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -448,7 +563,7 @@ def _load_phase2_passed_spec_paths(
     if not validation_path.exists():
         print(
             f"Error: Phase 2 validation output not found at {validation_path}. "
-            f"Run `--phase 2` first or use `--phase all`.",
+            "Run `--phase 2` first or include it in `--phase ...`.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -461,7 +576,14 @@ def _load_phase2_passed_spec_paths(
         )
         sys.exit(1)
 
-    wanted_tasks = set(task_names or [])
+    def _selector_key(task_name: str) -> str:
+        normalized = "".join(
+            character.lower() if character.isalnum() else "_"
+            for character in str(task_name)
+        )
+        return "_".join(part for part in normalized.split("_") if part)
+
+    wanted_tasks = {_selector_key(task_name) for task_name in (task_names or [])}
     spec_paths: list[Path] = []
     for entry in payload:
         if not isinstance(entry, dict):
@@ -469,7 +591,7 @@ def _load_phase2_passed_spec_paths(
         if not entry.get("passed", False):
             continue
         task_name = str(entry.get("task_name") or "")
-        if wanted_tasks and task_name not in wanted_tasks:
+        if wanted_tasks and _selector_key(task_name) not in wanted_tasks:
             continue
         recorded_path = entry.get("spec_path")
         if not isinstance(recorded_path, str):
@@ -497,7 +619,14 @@ def _load_phase2_5_approved_spec_paths(
         )
         sys.exit(1)
 
-    wanted_tasks = set(task_names or [])
+    def _selector_key(task_name: str) -> str:
+        normalized = "".join(
+            character.lower() if character.isalnum() else "_"
+            for character in str(task_name)
+        )
+        return "_".join(part for part in normalized.split("_") if part)
+
+    wanted_tasks = {_selector_key(task_name) for task_name in (task_names or [])}
     spec_paths: list[Path] = []
     for entry in payload:
         if not isinstance(entry, dict):
@@ -505,13 +634,37 @@ def _load_phase2_5_approved_spec_paths(
         if entry.get("approved") is not True:
             continue
         task_name = str(entry.get("task_name") or "")
-        if wanted_tasks and task_name not in wanted_tasks:
+        if wanted_tasks and _selector_key(task_name) not in wanted_tasks:
             continue
         recorded_path = entry.get("spec_path")
         if not isinstance(recorded_path, str):
             continue
         spec_paths.append(_resolve_recorded_spec_path(run_dir, recorded_path))
     return spec_paths
+
+
+def _load_best_available_phase3_spec_paths(
+    run_dir: Path,
+    *,
+    task_names: list[str] | None,
+) -> list[Path]:
+    """Load Phase 3 input specs from the best available upstream phase.
+
+    Preference order:
+    1. Phase 2.5 approved specs, when review output exists
+    2. Phase 2 passed specs, when validation output exists
+    3. Phase 1 generated specs
+    """
+
+    phase2_5_path = run_dir / "phase2_5" / "review_results.json"
+    if phase2_5_path.exists():
+        return _load_phase2_5_approved_spec_paths(run_dir, task_names=task_names)
+
+    phase2_path = run_dir / "phase2" / "validation_results.json"
+    if phase2_path.exists():
+        return _load_phase2_passed_spec_paths(run_dir, task_names=task_names)
+
+    return _load_phase1_spec_paths(run_dir, task_names=task_names)
 
 
 def _load_phase1_spec_payload(
@@ -556,7 +709,10 @@ def _build_phase2_feedback_lines(result: Any) -> tuple[str, ...]:
         lines.append(
             "Revise the example_trajectory so every non-communication action is "
             "preceded by navigate_to_fixture for the exact fixture that action "
-            "operates at, including reference_fixture_id targets."
+            "operates at, including reference_fixture_id targets. Do not navigate "
+            "to a fixture only to call give_space there; give_space is only valid "
+            "when that agent is already at the fixture and another agent needs "
+            "that area cleared."
         )
     lines.append(
         "Return a corrected complete TaskSpec JSON. Preserve valid content and "
@@ -795,7 +951,11 @@ def _run_phase2(
         return []
 
     state.mark_phase_started("2")
-    results = run_phase2(output_dir=run_dir, spec_paths=spec_paths)
+    results = run_phase2(
+        output_dir=run_dir,
+        spec_paths=spec_paths,
+        enable_sim_alignment=args.phase2_sim_alignment,
+    )
 
     passed = sum(1 for r in results if r.passed)
     failed = len(results) - passed
@@ -894,25 +1054,45 @@ def _run_phase3(
     args: argparse.Namespace,
     state: PipelineState,
 ) -> None:
-    """Run Phase 3 trajectory generation on Phase 2-passing specs."""
+    """Run Phase 3 trajectory generation on the best available spec set."""
 
     from .phase3 import run_phase3
 
-    spec_paths = _load_phase2_5_approved_spec_paths(run_dir, task_names=args.tasks)
+    spec_paths = _load_best_available_phase3_spec_paths(
+        run_dir,
+        task_names=args.tasks,
+    )
     print(
         f"{'[DRY RUN] ' if args.dry_run else ''}"
-        f"Phase 3: Trajectory generation ({len(spec_paths)} approved specs, "
+        f"Phase 3: Trajectory generation ({len(spec_paths)} input specs, "
         f"num_runs={args.num_runs})..."
     )
 
     if not spec_paths:
-        print("  No Phase 2-passing specs to generate. Skipping.")
+        print("  No input specs to generate trajectories from. Skipping.")
         return
 
     state.mark_phase_started("3")
 
     def _progress(completed: int, total: int, task_name: str) -> None:
         print(f"  [{completed}/{total}] generated trajectories for {task_name}")
+
+    def _heartbeat(
+        completed: int,
+        total: int,
+        pending_status: list[tuple[str, float]],
+        pending_count: int,
+    ) -> None:
+        pending_text = ", ".join(
+            f"{task_name} ({int(elapsed_sec)}s)"
+            for task_name, elapsed_sec in pending_status
+        )
+        if pending_count > len(pending_status):
+            pending_text += f", ... (+{pending_count - len(pending_status)} more)"
+        print(
+            f"  Waiting on {pending_count} trajectory tasks after {completed}/{total}: "
+            f"{pending_text}"
+        )
 
     results = run_phase3(
         output_dir=run_dir,
@@ -925,6 +1105,7 @@ def _run_phase3(
         location=args.location or "global",
         dry_run=args.dry_run,
         progress_callback=_progress,
+        heartbeat_callback=_heartbeat,
         generation_timeout_sec=(
             None if args.generation_timeout_sec == 0 else args.generation_timeout_sec
         ),
@@ -1028,6 +1209,7 @@ def main(argv: list[str] | None = None) -> None:
     state = PipelineState(
         run_dir,
         config={
+            "phases": list(args.phase),
             "batch": args.batch,
             "model": args.model,
             "max_retries": args.max_retries,
@@ -1039,24 +1221,21 @@ def main(argv: list[str] | None = None) -> None:
         },
     )
 
-    phase = args.phase
-    should_run_all = phase == "all"
+    requested_phases = set(args.phase)
     phase2_results: list[Any] = []
     phase2_5_results: list[Any] = []
 
     # Phase 0a: Static candidate filtering.
     selected_candidates: list[TaskAnalysis] | None = None
-    if phase in ("0a", "all"):
+    if "0a" in requested_phases:
         selected_candidates = _run_phase0a(
             run_dir=run_dir,
             args=args,
             state=state,
         )
-        if phase == "0a":
-            return
 
     # Phase 0b: LLM transferability rating.
-    if phase in ("0b", "all"):
+    if "0b" in requested_phases:
         if selected_candidates is None:
             loaded = _load_phase0a_candidates(run_dir)
             selected_candidates = _apply_selection_filters(
@@ -1070,15 +1249,12 @@ def main(argv: list[str] | None = None) -> None:
             state=state,
             candidates=selected_candidates,
         )
-        if phase == "0b":
-            return
 
     # Phase 1: LLM spec generation.
-    if phase in ("1", "all"):
+    if "1" in requested_phases:
         if selected_candidates is None:
-            loaded = _load_phase0b_filtered(run_dir)
-            selected_candidates = _apply_selection_filters(
-                loaded,
+            selected_candidates = _load_best_available_candidates(
+                run_dir,
                 batch=args.batch,
                 task_names=args.tasks,
             )
@@ -1088,11 +1264,9 @@ def main(argv: list[str] | None = None) -> None:
             state=state,
             candidates=selected_candidates,
         )
-        if phase == "1":
-            return
 
     # Phase 2: Static spec validation.
-    if phase in ("2", "all"):
+    if "2" in requested_phases:
         selected_candidates = _ensure_selected_candidates(
             run_dir=run_dir,
             batch=args.batch,
@@ -1112,10 +1286,8 @@ def main(argv: list[str] | None = None) -> None:
                 candidates=selected_candidates,
                 validation_results=phase2_results,
             )
-        if phase == "2":
-            return
 
-    if phase in ("2.5", "all"):
+    if "2.5" in requested_phases:
         selected_candidates = _ensure_selected_candidates(
             run_dir=run_dir,
             batch=args.batch,
@@ -1137,35 +1309,27 @@ def main(argv: list[str] | None = None) -> None:
             )
             if repaired_phase2_results:
                 phase2_results = repaired_phase2_results
-        if phase == "2.5":
-            return
 
-    if phase in ("3", "all"):
+    if "3" in requested_phases:
         _run_phase3(
             run_dir=run_dir,
             args=args,
             state=state,
         )
-        if phase == "3":
-            return
 
-    if phase in ("4", "all"):
+    if "4" in requested_phases:
         _run_phase4(
             run_dir=run_dir,
             args=args,
             state=state,
         )
-        if phase == "4":
-            return
 
-    if phase in ("5", "all"):
+    if "5" in requested_phases:
         _run_phase5(
             run_dir=run_dir,
             args=args,
             state=state,
         )
-        if phase == "5":
-            return
 
 
 if __name__ == "__main__":

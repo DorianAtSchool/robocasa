@@ -406,12 +406,25 @@ def draw_grid_map(ax, runner, clean_labels=True):
     (strip ``_group``, ``_main``, dedupe).  Set False for raw fixture ids.
     """
     grid = runner._occupancy_grid
+    occupied_count = 0
+    enclosed_count = 0
+    free_count = 0
 
     for r in range(grid._rows):
         for c in range(grid._cols):
             xy = grid._grid_to_world(r, c)
             half = grid.cell_size / 2
-            color = "#444444" if grid._grid[r, c] else "#f0f0f0"
+            if grid._grid[r, c]:
+                color = "#444444"  # hard occupied
+                occupied_count += 1
+            else:
+                # Free in occupancy, but still not standable (tight corner pocket).
+                if not grid.is_standable(xy):
+                    color = "#d9923b"  # enclosed / corner-unplaceable
+                    enclosed_count += 1
+                else:
+                    color = "#f0f0f0"  # standable free
+                    free_count += 1
             rect = patches.Rectangle(
                 (xy[0] - half, xy[1] - half),
                 grid.cell_size, grid.cell_size,
@@ -434,7 +447,7 @@ def draw_grid_map(ax, runner, clean_labels=True):
     ax.set_ylabel("Y (m)")
     ax.set_title(
         f"Grid — {grid._rows}x{grid._cols} @ {grid.cell_size}m | "
-        f"occupied={int(grid._grid.sum())}/{grid._grid.size}"
+        f"occ={occupied_count}, enclosed={enclosed_count}, free={free_count}"
     )
 
 

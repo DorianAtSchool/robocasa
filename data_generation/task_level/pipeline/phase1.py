@@ -12,12 +12,16 @@ from collections import Counter, defaultdict
 import json
 import re
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from data_generation.task_level.subatomic_tool_specs import build_allowed_tool_specs
+from data_generation.task_level.subatomic_tool_specs import (
+    TASK_LEVEL_ALLOWED_TOOL_SPECS,
+    build_allowed_tool_specs,
+)
 from data_generation.task_level.runtime.client import (
     DEFAULT_GENERATION_TIMEOUT_SEC,
     DEFAULT_LOCATION,
@@ -71,7 +75,9 @@ _SHARED_TOOL_METADATA_KEYS = frozenset(
 _PART_STATE_VALUES = frozenset({"open", "closed", "pulled_out", "pushed_in"})
 _PART_STATE_ALIASES = {"pulled_out": "open", "pushed_in": "closed"}
 _DIRECT_PLACEMENT_LOCATION_ARG_NAMES = (
+    "target_site_id",
     "support_id",
+    "target_id",
     "receptacle_id",
     "support_object_id",
 )
@@ -86,6 +92,42 @@ _EFFECT_CARRYING_TOOL_NAMES = frozenset(
     | OPEN_PART_TOOL_NAMES
     | CLOSE_PART_TOOL_NAMES
 )
+_HEARTBEAT_STATUS_SAMPLE_SIZE = 5
+_DEFAULT_HEARTBEAT_INTERVAL_SEC = 30.0
+
+
+class _ThreadLocalGenerationClient(BaseGenerationClient):
+    """Lazy per-thread client wrapper for SDKs with uncertain thread-safety."""
+
+    def __init__(self, client_factory: Any):
+        self._client_factory = client_factory
+        self._local = threading.local()
+
+    def _get_client(self) -> BaseGenerationClient:
+        client = getattr(self._local, "client", None)
+        if client is None:
+            client = self._client_factory()
+            self._local.client = client
+        return client
+
+    def generate(
+        self,
+        *,
+        model: str,
+        prompt: str,
+        response_schema: dict[str, Any] | None,
+        temperature: float,
+        thinking_level: str | None = None,
+        thinking_budget: int | None = None,
+    ) -> Any:
+        return self._get_client().generate(
+            model=model,
+            prompt=prompt,
+            response_schema=response_schema,
+            temperature=temperature,
+            thinking_level=thinking_level,
+            thinking_budget=thinking_budget,
+        )
 
 
 def _load_task_source(candidate: TaskAnalysis) -> str:
@@ -163,6 +205,14 @@ def _canonicalize_allowed_tool_specs(spec_payload: dict[str, Any]) -> dict[str, 
         if not isinstance(tool_name, str) or not tool_name.strip():
             raise ValueError("allowed_tool_specs keys must be non-empty strings.")
         normalized_name = tool_name.strip()
+        if (
+            normalized_name.startswith("allowed_")
+            and normalized_name not in TASK_LEVEL_ALLOWED_TOOL_SPECS
+        ):
+            # Some models put task-local allowlist fields directly under
+            # allowed_tool_specs. Those fields are not tools; real tool names
+            # are recovered from the trajectory below.
+            continue
         if normalized_name not in requested_tool_names:
             requested_tool_names.append(normalized_name)
 
@@ -208,10 +258,326 @@ def _canonicalize_allowed_tool_specs(spec_payload: dict[str, Any]) -> dict[str, 
         raise ValueError(str(exc)) from exc
 
 
+def _coerce_id_keyed_mapping(value: Any, *, field_name: str) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, list):
+        raise ValueError(f"{field_name} must be a JSON object or list of objects.")
+    keyed: dict[str, Any] = {}
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            raise ValueError(f"{field_name}[{index}] must be a JSON object.")
+        fallback_id = None
+        if field_name.endswith(".objects"):
+            fallback_id = item.get("object_type")
+        elif field_name.endswith(".fixtures"):
+            fallback_id = item.get("fixture_type")
+        item_id = (
+            item.get("id")
+            or item.get("object_id")
+            or item.get("fixture_id")
+            or item.get("name")
+            or item.get("role")
+            or fallback_id
+        )
+        if not isinstance(item_id, str) or not item_id.strip():
+            raise ValueError(
+                f"{field_name}[{index}] must include id, object_id, fixture_id, name, role, object_type, or fixture_type."
+            )
+        item_id = item_id.strip()
+        if item_id in keyed:
+            suffix = 2
+            base_id = item_id
+            while f"{base_id}_{suffix}" in keyed:
+                suffix += 1
+            item_id = f"{base_id}_{suffix}"
+        normalized_item = dict(item)
+        for key in ("id", "object_id", "fixture_id", "name", "role"):
+            if normalized_item.get(key) == item_id:
+                normalized_item.pop(key, None)
+        keyed[item_id] = normalized_item
+    return keyed
+
+
+def _coerce_agent_mapping(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, list):
+        raise ValueError("initial_state.agents must be a JSON object or list of objects.")
+    keyed: dict[str, Any] = {}
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            raise ValueError(f"initial_state.agents[{index}] must be a JSON object.")
+        agent_id = (
+            item.get("agent")
+            or item.get("agent_id")
+            or item.get("id")
+            or item.get("name")
+            or f"agent_{index}"
+        )
+        if not isinstance(agent_id, str) or not agent_id.strip():
+            agent_id = f"agent_{index}"
+        normalized_item = dict(item)
+        for key in ("agent", "agent_id", "id", "name"):
+            if normalized_item.get(key) == agent_id:
+                normalized_item.pop(key, None)
+        keyed[agent_id.strip()] = normalized_item
+    return keyed
+
+
+def _coerce_fixture_child_mapping(
+    value: Any,
+    *,
+    field_name: str,
+    id_keys: tuple[str, ...],
+) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, list):
+        raise ValueError(f"{field_name} must be a JSON object or list of objects.")
+    keyed: dict[str, Any] = {}
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            raise ValueError(f"{field_name}[{index}] must be a JSON object.")
+        item_id = None
+        for key in id_keys:
+            raw_id = item.get(key)
+            if isinstance(raw_id, str) and raw_id.strip():
+                item_id = raw_id.strip()
+                break
+        if item_id is None:
+            item_id = f"item_{index}"
+        normalized_item = dict(item)
+        for key in id_keys:
+            if normalized_item.get(key) == item_id:
+                normalized_item.pop(key, None)
+        keyed[item_id] = normalized_item
+    return keyed
+
+
+def _coerce_public_state(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        return {"summary": text} if text else {}
+    if isinstance(value, list):
+        return {
+            "items": [
+                item if isinstance(item, str) else json.dumps(item, sort_keys=True)
+                for item in value
+            ]
+        }
+    return {"value": str(value)}
+
+
+def _coerce_string_sequence(value: Any, *, field_name: str) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        normalized = " ".join(value.strip().split())
+        return [normalized] if normalized else []
+    if not isinstance(value, list):
+        raise ValueError(f"{field_name} must be a string or list of strings.")
+    normalized_values: list[str] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, str):
+            raise ValueError(f"{field_name}[{index}] must be a string.")
+        normalized = " ".join(item.strip().split())
+        if normalized:
+            normalized_values.append(normalized)
+    return normalized_values
+
+
+def _coerce_grounding(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {"legacy_symbol_aliases": {}, "symbols": {}}
+    if isinstance(value, dict):
+        value.setdefault("legacy_symbol_aliases", {})
+        value.setdefault("symbols", {})
+        if not isinstance(value.get("legacy_symbol_aliases"), dict):
+            value["legacy_symbol_aliases"] = {}
+        if not isinstance(value.get("symbols"), dict):
+            value["symbols"] = {}
+        return value
+    if not isinstance(value, list):
+        raise ValueError("grounding must be a JSON object or list of grounding entries.")
+
+    symbols: dict[str, Any] = {}
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            continue
+        symbol_id = (
+            item.get("id")
+            or item.get("symbol")
+            or item.get("arg")
+            or item.get("name")
+            or item.get("role")
+        )
+        if not isinstance(symbol_id, str) or not symbol_id.strip():
+            continue
+        symbol_id = symbol_id.strip()
+        symbol_spec = dict(item)
+        for key in ("id", "symbol", "arg", "name"):
+            if symbol_spec.get(key) == symbol_id:
+                symbol_spec.pop(key, None)
+        method = symbol_spec.pop("method", None)
+        if isinstance(method, str) and "resolver" not in symbol_spec:
+            symbol_spec["resolver"] = method
+        if "entity_type" not in symbol_spec:
+            resolver = symbol_spec.get("resolver")
+            if isinstance(resolver, str) and "fixture" in resolver:
+                symbol_spec["entity_type"] = "fixture"
+            elif "object_type" in symbol_spec or "object_id" in symbol_spec:
+                symbol_spec["entity_type"] = "object"
+            elif "fixture_type" in symbol_spec or "fixture_id" in symbol_spec:
+                symbol_spec["entity_type"] = "fixture"
+        symbols[symbol_id] = symbol_spec
+    return {"legacy_symbol_aliases": {}, "symbols": symbols}
+
+
+def _normalize_trajectory_step_agent_fields(trajectory: Any) -> None:
+    if not isinstance(trajectory, dict):
+        return
+    steps = trajectory.get("steps")
+    if not isinstance(steps, list):
+        return
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        if "agent" not in step and isinstance(step.get("agent_id"), str):
+            step["agent"] = step["agent_id"]
+        step.pop("agent_id", None)
+
+
 def _normalize_part_state_value(value: Any) -> Any:
     if not isinstance(value, str):
         return value
     return _PART_STATE_ALIASES.get(value, value)
+
+
+_GENERIC_HINGED_PART_IDS = frozenset(
+    {
+        "door",
+        "left_door",
+        "right_door",
+        "door_left",
+        "door_right",
+        "hinged",
+        "fridge_door",
+        "freezer_door",
+    }
+)
+_GENERIC_SLIDING_PART_IDS = frozenset(
+    {
+        "drawer",
+        "slide",
+        "sliding",
+    }
+)
+
+
+def _canonicalize_generic_part_id(part_id: Any) -> Any:
+    if not isinstance(part_id, str):
+        return part_id
+    normalized = "_".join(part for part in part_id.strip().lower().split("_") if part)
+    if not normalized:
+        return part_id
+    if "hinge" in normalized or "joint" in normalized:
+        return part_id
+    if (
+        normalized in _GENERIC_HINGED_PART_IDS
+        or normalized.endswith("_door")
+        or normalized.startswith("door_")
+    ):
+        return "hinged"
+    if (
+        normalized in _GENERIC_SLIDING_PART_IDS
+        or normalized.endswith("_drawer")
+        or normalized.endswith("_slide")
+        or normalized.startswith("drawer_")
+    ):
+        return "sliding"
+    return part_id
+
+
+def _canonicalize_generic_part_references(payload: dict[str, Any]) -> None:
+    initial_state = payload.get("initial_state")
+    if isinstance(initial_state, dict):
+        fixtures_by_id = initial_state.get("fixtures") or {}
+        if isinstance(fixtures_by_id, dict):
+            for fixture_state in fixtures_by_id.values():
+                if not isinstance(fixture_state, dict):
+                    continue
+                fixture_parts = fixture_state.get("parts")
+                if isinstance(fixture_parts, list):
+                    fixture_parts = _coerce_fixture_child_mapping(
+                        fixture_parts,
+                        field_name="initial_state.fixtures[*].parts",
+                        id_keys=("part_id", "id", "name"),
+                    )
+                if isinstance(fixture_parts, dict):
+                    rewritten_parts: dict[str, Any] = {}
+                    for part_id, part_state in fixture_parts.items():
+                        if not isinstance(part_id, str):
+                            continue
+                        canonical_part_id = _canonicalize_generic_part_id(part_id)
+                        if not isinstance(canonical_part_id, str):
+                            canonical_part_id = part_id
+                        if canonical_part_id not in rewritten_parts:
+                            rewritten_parts[canonical_part_id] = (
+                                dict(part_state) if isinstance(part_state, dict) else part_state
+                            )
+                            continue
+                        existing_state = rewritten_parts[canonical_part_id]
+                        if isinstance(existing_state, dict) and isinstance(part_state, dict):
+                            for key, value in part_state.items():
+                                existing_state.setdefault(key, value)
+                    fixture_state["parts"] = rewritten_parts
+
+    allowed_tool_specs = payload.get("allowed_tool_specs")
+    if isinstance(allowed_tool_specs, dict):
+        for tool_spec in allowed_tool_specs.values():
+            if not isinstance(tool_spec, dict):
+                continue
+            allowed_part_ids = tool_spec.get("allowed_part_ids")
+            if not isinstance(allowed_part_ids, list):
+                continue
+            canonical_part_ids: list[str] = []
+            for part_id in allowed_part_ids:
+                canonical_part_id = _canonicalize_generic_part_id(part_id)
+                if not isinstance(canonical_part_id, str):
+                    continue
+                if canonical_part_id not in canonical_part_ids:
+                    canonical_part_ids.append(canonical_part_id)
+            tool_spec["allowed_part_ids"] = canonical_part_ids
+
+    def _rewrite_part_fields(value: Any) -> None:
+        if isinstance(value, dict):
+            if "part_id" in value:
+                value["part_id"] = _canonicalize_generic_part_id(value.get("part_id"))
+            for nested_value in value.values():
+                _rewrite_part_fields(nested_value)
+            return
+        if isinstance(value, list):
+            for item in value:
+                _rewrite_part_fields(item)
+
+    for section_name in (
+        "goal_conditions",
+        "task_preconditions",
+        "task_effects",
+        "example_trajectory",
+    ):
+        _rewrite_part_fields(payload.get(section_name))
 
 
 def _normalize_rotary_goal_value(value: Any) -> Any:
@@ -623,6 +989,187 @@ def _resolve_step_destination(
         if isinstance(adjacent_location_id, str):
             return adjacent_location_id
     return reference_fixture_id
+
+
+def _resolve_location_to_fixture(
+    location_id: str | None,
+    *,
+    object_locations: dict[str, str],
+    fixture_ids: set[str],
+) -> str | None:
+    if not isinstance(location_id, str):
+        return None
+    current = location_id
+    seen: set[str] = set()
+    for _ in range(len(object_locations) + 1):
+        if current in fixture_ids:
+            return current
+        if current in seen:
+            return None
+        seen.add(current)
+        parent = object_locations.get(current)
+        if not isinstance(parent, str):
+            return None
+        current = parent
+    return None
+
+
+def _step_interaction_fixture(
+    step: dict[str, Any],
+    *,
+    object_locations: dict[str, str],
+    fixture_ids: set[str],
+    machine_state: dict[str, Any] | None,
+) -> str | None:
+    args = step.get("args")
+    if not isinstance(args, dict):
+        return None
+    tool_name = step.get("tool")
+    if tool_name == "navigate_to_fixture":
+        fixture_id = args.get("fixture_id")
+        return fixture_id if isinstance(fixture_id, str) else None
+    if tool_name == "give_space":
+        fixture_id = args.get("fixture_id")
+        return fixture_id if isinstance(fixture_id, str) else None
+    if tool_name in OPEN_PART_TOOL_NAMES | CLOSE_PART_TOOL_NAMES:
+        target_id = args.get("target_id")
+        return target_id if isinstance(target_id, str) else None
+    if tool_name in INTERACTION_TOOL_NAMES:
+        target_id = args.get("target_id")
+        return target_id if isinstance(target_id, str) else None
+
+    source_id = args.get("source_id")
+    if isinstance(source_id, str):
+        return _resolve_location_to_fixture(
+            source_id,
+            object_locations=object_locations,
+            fixture_ids=fixture_ids,
+        )
+
+    destination = _resolve_step_destination(step, object_locations, machine_state)
+    return _resolve_location_to_fixture(
+        destination,
+        object_locations=object_locations,
+        fixture_ids=fixture_ids,
+    )
+
+
+def _update_symbolic_locations_for_step(
+    step: dict[str, Any],
+    *,
+    agent_locations: dict[str, str | None],
+    object_locations: dict[str, str],
+    machine_state: dict[str, Any] | None,
+) -> None:
+    agent_id = step.get("agent")
+    args = step.get("args")
+    if not isinstance(agent_id, str) or not isinstance(args, dict):
+        return
+    tool_name = step.get("tool")
+    if tool_name == "navigate_to_fixture":
+        fixture_id = args.get("fixture_id")
+        if isinstance(fixture_id, str):
+            agent_locations[agent_id] = fixture_id
+        return
+    if tool_name == "give_space":
+        agent_locations[agent_id] = None
+        return
+
+    destination = _resolve_step_destination(step, object_locations, machine_state)
+    object_id = args.get("object_id")
+    if isinstance(object_id, str) and isinstance(destination, str):
+        object_locations[object_id] = destination
+
+
+def _insert_give_space_for_occupied_shared_fixtures(
+    *,
+    initial_state: dict[str, Any] | None,
+    trajectory: Any,
+    machine_state: dict[str, Any] | None,
+) -> None:
+    if not isinstance(initial_state, dict) or not isinstance(trajectory, dict):
+        return
+    steps = trajectory.get("steps") or []
+    if not isinstance(steps, list):
+        return
+
+    fixture_ids = {
+        fixture_id
+        for fixture_id in (initial_state.get("fixtures") or {})
+        if isinstance(fixture_id, str)
+    }
+    object_locations = {
+        object_id: object_state.get("location")
+        for object_id, object_state in (initial_state.get("objects") or {}).items()
+        if isinstance(object_id, str)
+        and isinstance(object_state, dict)
+        and isinstance(object_state.get("location"), str)
+    }
+    agent_locations: dict[str, str | None] = {
+        agent_id: agent_state.get("location")
+        for agent_id, agent_state in (initial_state.get("agents") or {}).items()
+        if isinstance(agent_id, str) and isinstance(agent_state, dict)
+    }
+
+    normalized_steps: list[dict[str, Any]] = []
+    for raw_step in steps:
+        if not isinstance(raw_step, dict):
+            continue
+        step = dict(raw_step)
+        agent_id = step.get("agent")
+        interaction_fixture = _step_interaction_fixture(
+            step,
+            object_locations=object_locations,
+            fixture_ids=fixture_ids,
+            machine_state=machine_state,
+        )
+        if (
+            step.get("tool") != "give_space"
+            and isinstance(agent_id, str)
+            and isinstance(interaction_fixture, str)
+        ):
+            blockers = [
+                other_agent_id
+                for other_agent_id, other_location in agent_locations.items()
+                if other_agent_id != agent_id and other_location == interaction_fixture
+            ]
+            for blocker_id in blockers:
+                previous_step = normalized_steps[-1] if normalized_steps else None
+                previous_args = (
+                    previous_step.get("args") if isinstance(previous_step, dict) else None
+                )
+                if (
+                    isinstance(previous_step, dict)
+                    and previous_step.get("tool") == "give_space"
+                    and previous_step.get("agent") == blocker_id
+                    and isinstance(previous_args, dict)
+                    and previous_args.get("fixture_id") == interaction_fixture
+                ):
+                    continue
+                normalized_steps.append(
+                    {
+                        "step": -1,
+                        "agent": blocker_id,
+                        "tool": "give_space",
+                        "args": {"fixture_id": interaction_fixture},
+                        "reasoning": (
+                            "Clearing a shared fixture already occupied by this "
+                            "agent before the other agent uses it."
+                        ),
+                    }
+                )
+                agent_locations[blocker_id] = None
+        normalized_steps.append(step)
+        _update_symbolic_locations_for_step(
+            step,
+            agent_locations=agent_locations,
+            object_locations=object_locations,
+            machine_state=machine_state,
+        )
+
+    for index, step in enumerate(normalized_steps):
+        step["step"] = index
+    trajectory["steps"] = normalized_steps
 
 
 def _rewrite_shared_location_pool_goals(
@@ -2271,6 +2818,51 @@ def _rewrite_fixture_object_goals_to_support_sites(
     return normalized_goal_conditions
 
 
+def _rewrite_contradictory_source_location_goals(
+    *,
+    initial_state: dict[str, Any] | None,
+    goal_conditions: list[dict[str, Any]],
+    final_object_locations: dict[str, str],
+) -> list[dict[str, Any]]:
+    """Rewrite clearly contradictory source-location goals to trajectory finals.
+
+    This keeps legitimate return-to-source tasks intact because those trajectories
+    end with the source location, so no rewrite is applied.
+    """
+
+    if not isinstance(initial_state, dict):
+        return goal_conditions
+    initial_object_locations = {
+        object_id: object_state.get("location")
+        for object_id, object_state in (initial_state.get("objects") or {}).items()
+        if isinstance(object_id, str) and isinstance(object_state, dict)
+    }
+    rewritten_goal_conditions: list[dict[str, Any]] = []
+    for condition in goal_conditions:
+        if (
+            isinstance(condition, dict)
+            and condition.get("kind") == "object_at_location"
+            and isinstance(condition.get("object_id"), str)
+            and isinstance(condition.get("location"), str)
+        ):
+            object_id = condition["object_id"]
+            initial_location = initial_object_locations.get(object_id)
+            final_location = final_object_locations.get(object_id)
+            if (
+                isinstance(initial_location, str)
+                and isinstance(final_location, str)
+                and final_location != initial_location
+                and condition["location"] == initial_location
+                and not final_location.startswith("held_by_")
+            ):
+                rewritten_condition = dict(condition)
+                rewritten_condition["location"] = final_location
+                rewritten_goal_conditions.append(rewritten_condition)
+                continue
+        rewritten_goal_conditions.append(condition)
+    return rewritten_goal_conditions
+
+
 def _add_zero_count_goals_for_either_or_rules(
     *,
     initial_state: dict[str, Any] | None,
@@ -2584,6 +3176,7 @@ def _postprocess_spec_payload(spec_payload: dict[str, Any]) -> dict[str, Any]:
     """Normalize model JSON into the canonical TaskSpec payload shape."""
 
     normalized_payload = dict(spec_payload)
+    _canonicalize_generic_part_references(normalized_payload)
     normalized_payload["allowed_tool_specs"] = _canonicalize_allowed_tool_specs(
         normalized_payload
     )
@@ -2592,15 +3185,29 @@ def _postprocess_spec_payload(spec_payload: dict[str, Any]) -> dict[str, Any]:
     fixture_ids = set()
     fixtures_by_id: dict[str, Any] = {}
     if isinstance(initial_state, dict):
-        object_ids = set((initial_state.get("objects") or {}).keys())
-        fixture_ids = set((initial_state.get("fixtures") or {}).keys())
-        fixtures_by_id = dict(initial_state.get("fixtures") or {})
+        initial_state["agents"] = _coerce_agent_mapping(initial_state.get("agents"))
+        initial_state["objects"] = _coerce_id_keyed_mapping(
+            initial_state.get("objects"),
+            field_name="initial_state.objects",
+        )
+        initial_state["fixtures"] = _coerce_id_keyed_mapping(
+            initial_state.get("fixtures"),
+            field_name="initial_state.fixtures",
+        )
+        object_ids = set(initial_state["objects"].keys())
+        fixture_ids = set(initial_state["fixtures"].keys())
+        fixtures_by_id = dict(initial_state["fixtures"])
+
         for fixture_state in fixtures_by_id.values():
             if not isinstance(fixture_state, dict):
                 continue
             fixture_parts = fixture_state.get("parts") or {}
-            if not isinstance(fixture_parts, dict):
-                fixture_parts = {}
+            fixture_parts = _coerce_fixture_child_mapping(
+                fixture_parts,
+                field_name="initial_state.fixtures[*].parts",
+                id_keys=("part_id", "id", "name"),
+            )
+            fixture_state["parts"] = fixture_parts
             for part_state in fixture_parts.values():
                 if not isinstance(part_state, dict):
                     continue
@@ -2608,13 +3215,18 @@ def _postprocess_spec_payload(spec_payload: dict[str, Any]) -> dict[str, Any]:
                 if isinstance(normalized_state, str):
                     part_state["state"] = normalized_state
             fixture_controls = fixture_state.get("controls") or {}
-            if isinstance(fixture_controls, dict):
-                for control_state in fixture_controls.values():
-                    if not isinstance(control_state, dict):
-                        continue
-                    control_type = control_state.get("control_type")
-                    if control_type in _CONTROL_TOOL_TYPES:
-                        control_state["control_type"] = _CONTROL_TOOL_TYPES[control_type]
+            fixture_controls = _coerce_fixture_child_mapping(
+                fixture_controls,
+                field_name="initial_state.fixtures[*].controls",
+                id_keys=("control_id", "id", "name"),
+            )
+            fixture_state["controls"] = fixture_controls
+            for control_state in fixture_controls.values():
+                if not isinstance(control_state, dict):
+                    continue
+                control_type = control_state.get("control_type")
+                if control_type in _CONTROL_TOOL_TYPES:
+                    control_state["control_type"] = _CONTROL_TOOL_TYPES[control_type]
             raw_support_sites = fixture_state.get("support_sites")
             if isinstance(raw_support_sites, list):
                 fixture_state["support_sites"] = {
@@ -2632,6 +3244,21 @@ def _postprocess_spec_payload(spec_payload: dict[str, Any]) -> dict[str, Any]:
                     for support_site_id, support_site_state in raw_support_sites.items()
                     if isinstance(support_site_id, str)
                 }
+
+    normalized_payload["initial_public_state"] = _coerce_public_state(
+        normalized_payload.get("initial_public_state")
+    )
+    normalized_payload["extra_execution_rules"] = _coerce_string_sequence(
+        normalized_payload.get("extra_execution_rules"),
+        field_name="extra_execution_rules",
+    )
+    normalized_payload["notes"] = _coerce_string_sequence(
+        normalized_payload.get("notes"),
+        field_name="notes",
+    )
+    normalized_payload["grounding"] = _coerce_grounding(
+        normalized_payload.get("grounding")
+    )
 
     place_next_to_spec = normalized_payload["allowed_tool_specs"].get("place_next_to")
     if isinstance(place_next_to_spec, dict):
@@ -2672,11 +3299,8 @@ def _postprocess_spec_payload(spec_payload: dict[str, Any]) -> dict[str, Any]:
         else {}
     )
     trajectory = normalized_payload.get("example_trajectory")
+    _normalize_trajectory_step_agent_fields(trajectory)
     if isinstance(trajectory, dict):
-        _insert_missing_navigation_before_give_space(
-            initial_state=initial_state if isinstance(initial_state, dict) else None,
-            trajectory=trajectory,
-        )
         for step in trajectory.get("steps") or []:
             if not isinstance(step, dict):
                 continue
@@ -2686,6 +3310,11 @@ def _postprocess_spec_payload(spec_payload: dict[str, Any]) -> dict[str, Any]:
                 args = step.get("args")
                 if isinstance(args, dict):
                     args["goal"] = _normalize_rotary_goal_value(args.get("goal"))
+        _insert_give_space_for_occupied_shared_fixtures(
+            initial_state=initial_state if isinstance(initial_state, dict) else None,
+            trajectory=trajectory,
+            machine_state=machine_state if isinstance(machine_state, dict) else None,
+        )
         inverse_adjacent_fixture_ids = {
             fixture_state.get("adjacent_location_id"): fixture_id
             for fixture_id, fixture_state in (machine_state if isinstance(machine_state, dict) else {}).items()
@@ -3086,6 +3715,11 @@ def _postprocess_spec_payload(spec_payload: dict[str, Any]) -> dict[str, Any]:
             goal_conditions=normalized_goal_conditions,
             task_effects=task_effects,
         )
+        normalized_goal_conditions = _rewrite_contradictory_source_location_goals(
+            initial_state=initial_state if isinstance(initial_state, dict) else None,
+            goal_conditions=normalized_goal_conditions,
+            final_object_locations=final_object_locations,
+        )
         normalized_goal_conditions = _add_location_goals_for_proxy_placement_effects(
             goal_conditions=normalized_goal_conditions,
             task_effects=task_effects,
@@ -3274,6 +3908,8 @@ def generate_specs(
     temperature: float = 0.2,
     workers: int = 4,
     progress_callback: Any = None,
+    heartbeat_callback: Any = None,
+    heartbeat_interval_sec: float = _DEFAULT_HEARTBEAT_INTERVAL_SEC,
     repair_feedback_by_task: dict[str, SpecRepairContext] | None = None,
 ) -> list[SpecGenerationResult]:
     """Generate specs for candidates in parallel, preserving input order."""
@@ -3319,14 +3955,44 @@ def generate_specs(
             ): index
             for index, candidate in enumerate(candidates)
         }
-        for future in as_completed(future_to_index):
-            index = future_to_index[future]
-            results[index] = future.result()
-            with lock:
-                completed += 1
-                current = completed
-            if progress_callback is not None:
-                progress_callback(current, total, candidates[index].task_name)
+        future_started_at = {
+            future: time.monotonic() for future in future_to_index
+        }
+        pending = set(future_to_index)
+
+        while pending:
+            done, pending = wait(
+                pending,
+                timeout=heartbeat_interval_sec,
+                return_when=FIRST_COMPLETED,
+            )
+            if not done:
+                if heartbeat_callback is not None and pending:
+                    now = time.monotonic()
+                    pending_status = [
+                        (
+                            candidates[future_to_index[future]].task_name,
+                            now - future_started_at[future],
+                        )
+                        for future in pending
+                    ]
+                    pending_status.sort(key=lambda item: item[1], reverse=True)
+                    heartbeat_callback(
+                        completed,
+                        total,
+                        pending_status[:_HEARTBEAT_STATUS_SAMPLE_SIZE],
+                        len(pending),
+                    )
+                continue
+
+            for future in done:
+                index = future_to_index[future]
+                results[index] = future.result()
+                with lock:
+                    completed += 1
+                    current = completed
+                if progress_callback is not None:
+                    progress_callback(current, total, candidates[index].task_name)
 
     return [r for r in results if r is not None]
 
@@ -3364,8 +4030,10 @@ def run_phase1(
     dry_run: bool = False,
     client: BaseGenerationClient | None = None,
     progress_callback: Any = None,
+    heartbeat_callback: Any = None,
     generation_timeout_sec: int | None = DEFAULT_GENERATION_TIMEOUT_SEC,
     repair_feedback_by_task: dict[str, SpecRepairContext] | None = None,
+    sim_normalization: bool = False,
 ) -> list[SpecGenerationResult]:
     """Execute Phase 1 and persist per-task spec JSONs under `phase1/`."""
 
@@ -3377,11 +4045,13 @@ def run_phase1(
     examples = load_few_shot_examples()
 
     if client is None:
-        client = build_generation_client(
-            sdk=sdk,
-            project=project,
-            location=location,
-            timeout_sec=generation_timeout_sec,
+        client = _ThreadLocalGenerationClient(
+            lambda: build_generation_client(
+                sdk=sdk,
+                project=project,
+                location=location,
+                timeout_sec=generation_timeout_sec,
+            )
         )
 
     results = generate_specs(
@@ -3392,6 +4062,7 @@ def run_phase1(
         temperature=temperature,
         workers=workers,
         progress_callback=progress_callback,
+        heartbeat_callback=heartbeat_callback,
         repair_feedback_by_task=repair_feedback_by_task,
     )
 
@@ -3425,7 +4096,7 @@ def run_phase1(
             "error": result.error,
             "spec_path": None,
         }
-        if result.spec_payload is not None:
+        if result.spec_payload is not None and sim_normalization:
             try:
                 normalized_payload, sim_errors = normalize_spec_payload_against_simulation(
                     result.spec_payload,

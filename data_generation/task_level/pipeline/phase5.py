@@ -132,6 +132,7 @@ def _phase3_section(output_dir: Path, *, task_names: list[str] | None) -> dict[s
 def _phase4_section(output_dir: Path, *, task_names: list[str] | None) -> dict[str, Any] | None:
     results_payload = _load_json(output_dir / "phase4" / "results.json")
     summary_payload = _load_json(output_dir / "phase4" / "summary.json")
+    sweep_summary_payload = _load_json(output_dir / "phase4" / "sweeps" / "sweep_summary.json")
     if not isinstance(results_payload, dict):
         return None
     pre_image_results = results_payload.get("pre_image_results")
@@ -155,6 +156,26 @@ def _phase4_section(output_dir: Path, *, task_names: list[str] | None) -> dict[s
         ],
         "sweep": results_payload.get("sweep"),
     }
+    if isinstance(sweep_summary_payload, dict):
+        sweep_results = sweep_summary_payload.get("results")
+        failed_results = []
+        if isinstance(sweep_results, list):
+            failed_results = [
+                entry for entry in sweep_results
+                if isinstance(entry, dict) and entry.get("status") != "ok"
+            ]
+        section["sweep_summary"] = {
+            "total": int(sweep_summary_payload.get("total", 0) or 0),
+            "succeeded": int(sweep_summary_payload.get("succeeded", 0) or 0),
+            "failed": int(sweep_summary_payload.get("failed", 0) or 0),
+            "distinct_errors": _count_strings(
+                [
+                    str(entry.get("error"))
+                    for entry in failed_results
+                    if isinstance(entry.get("error"), str) and entry.get("error")
+                ]
+            ),
+        }
     if isinstance(summary_payload, dict):
         section["summary"] = summary_payload
     return section
@@ -175,9 +196,14 @@ def _recommendations(report: dict[str, Any]) -> list[str]:
             "Phase 3 has incomplete tasks. Use the aggregated error types to prioritize raw-generation fixes."
         )
     sweep = phase4.get("sweep") if isinstance(phase4, dict) else None
+    sweep_summary = phase4.get("sweep_summary") if isinstance(phase4, dict) else None
     if isinstance(sweep, dict) and sweep.get("completed") is not True:
         recommendations.append(
             "Phase 4 sweep is incomplete. Fix simulator-grounding or runtime failures before publishing data."
+        )
+    if isinstance(sweep_summary, dict) and int(sweep_summary.get("failed", 0) or 0) > 0:
+        recommendations.append(
+            "Phase 4 sweep produced failing trajectories. Fix simulator grounding and execution mismatches before publishing data."
         )
     if not recommendations:
         recommendations.append(

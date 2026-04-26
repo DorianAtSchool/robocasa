@@ -492,7 +492,11 @@ class FiniteStateTaskValidator:
             object_id = tool_args["object_id"]
             source_id = tool_args["source_id"]
             object_location = runtime_state.objects.get(object_id, {}).get("location")
-            if object_location != source_id:
+            if not self._object_location_matches_source(
+                object_location=object_location,
+                source_id=source_id,
+                runtime_state=runtime_state,
+            ):
                 raise ObjectStateSemanticValidationError(
                     f"pick_up_object requires {object_id} to start at {source_id}.",
                     details={
@@ -585,6 +589,15 @@ class FiniteStateTaskValidator:
         tool_args = step["args"]
 
         for arg_name in tool_spec.get("tool_args", ()):
+            self._validate_task_local_tool_arg(
+                step=step,
+                tool_spec=tool_spec,
+                arg_name=arg_name,
+            )
+
+        for arg_name in tool_spec.get("optional_tool_args", ()):
+            if tool_args.get(arg_name) is None:
+                continue
             self._validate_task_local_tool_arg(
                 step=step,
                 tool_spec=tool_spec,
@@ -806,10 +819,28 @@ class FiniteStateTaskValidator:
         """Resolves where a released object should live after placement."""
 
         tool_args = step["args"]
+        target_site_id = tool_args.get("target_site_id")
+        if (
+            step["tool"] in {"place_in_receptacle", "place_on_surface", "place_under"}
+            and isinstance(target_site_id, str)
+        ):
+            return target_site_id
+
         for arg_name in PLACE_LOCATION_ARG_NAMES:
             location_id = tool_args.get(arg_name)
             if isinstance(location_id, str):
                 return location_id
+
+        reference_id = tool_args.get("reference_id")
+        if isinstance(reference_id, str):
+            reference_location = self._resolve_reference_location(
+                reference_id=reference_id,
+                runtime_state=runtime_state,
+            )
+            if isinstance(reference_location, str):
+                return reference_location
+            if reference_id in runtime_state.fixtures:
+                return reference_id
 
         reference_object_id = tool_args.get("reference_object_id")
         if isinstance(reference_object_id, str):
@@ -845,19 +876,65 @@ class FiniteStateTaskValidator:
                         "reference_location": adjacent_location_id,
                     },
                 )
-            # Prefer a fixture's symbolic dispenser output when the task state exposes one.
-            fixture_machine_state = runtime_state.machine_state.get(
-                reference_fixture_id, {}
+            inferred_site_id = self._infer_fixture_release_site(
+                fixture_id=reference_fixture_id,
+                runtime_state=runtime_state,
+                tool_name=step["tool"],
             )
-            if isinstance(fixture_machine_state, dict):
-                dispenser_id = fixture_machine_state.get("dispenser_id")
-                if isinstance(dispenser_id, str):
-                    return dispenser_id
+            if isinstance(inferred_site_id, str):
+                return inferred_site_id
             return reference_fixture_id
 
         raise PlacementDestinationSemanticValidationError(
             "Placement tools must include a symbolic destination."
         )
+
+    def _infer_fixture_release_site(
+        self,
+        *,
+        fixture_id: str,
+        runtime_state: TaskRuntimeState,
+        tool_name: str,
+    ) -> str | None:
+        """Infer a symbolic support site when the placement tool implies one."""
+
+        fixture_machine_state = runtime_state.machine_state.get(fixture_id, {})
+        if isinstance(fixture_machine_state, dict):
+            dispenser_id = fixture_machine_state.get("dispenser_id")
+            if isinstance(dispenser_id, str):
+                return dispenser_id
+
+        fixture_state = runtime_state.fixtures.get(fixture_id, {})
+        if not isinstance(fixture_state, dict):
+            return None
+        support_sites = fixture_state.get("support_sites", {})
+        if isinstance(support_sites, dict):
+            support_site_ids = [
+                support_site_id
+                for support_site_id in support_sites
+                if isinstance(support_site_id, str)
+            ]
+        elif isinstance(support_sites, list):
+            support_site_ids = [
+                support_site_id
+                for support_site_id in support_sites
+                if isinstance(support_site_id, str)
+            ]
+        else:
+            support_site_ids = []
+
+        preferred_tokens_by_tool = {
+            "place_under": ("dispenser", "basin"),
+        }
+        preferred_tokens = preferred_tokens_by_tool.get(tool_name, ())
+        for support_site_id in support_site_ids:
+            lowered_support_site_id = support_site_id.lower()
+            if any(token in lowered_support_site_id for token in preferred_tokens):
+                return support_site_id
+
+        if len(support_site_ids) == 1:
+            return support_site_ids[0]
+        return None
 
     def _resolve_reference_location(
         self,
@@ -1043,6 +1120,7 @@ class FiniteStateTaskValidator:
             "fixture_id",
             "target_id",
             "source_id",
+            "reference_id",
             "support_id",
             "receptacle_id",
             "reference_fixture_id",
@@ -1052,23 +1130,41 @@ class FiniteStateTaskValidator:
             value = tool_args.get(arg_name)
             if not isinstance(value, str):
                 continue
-            if arg_name in {"fixture_id", "target_id", "reference_fixture_id"}:
+            if arg_name == "fixture_id":
+                return value
+            if arg_name == "reference_fixture_id":
+                if step["tool"] == "place_next_to":
+                    reference_location = self._resolve_reference_location(
+                        reference_id=value,
+                        runtime_state=runtime_state,
+                    )
+                    resolved_fixture_id = self._resolve_fixture_for_location(
+                        location_id=reference_location,
+                        runtime_state=runtime_state,
+                    )
+                    if isinstance(resolved_fixture_id, str):
+                        return resolved_fixture_id
+                return value
+            if value in runtime_state.fixtures and arg_name in {
+                "target_id",
+                "source_id",
+                "support_id",
+                "receptacle_id",
+            }:
                 return value
             # If the value is an object, resolve to the fixture it sits on.
             resolved = self._resolve_reference_location(
                 reference_id=value,
                 runtime_state=runtime_state,
             )
-            if isinstance(resolved, str):
-                enclosing_fixture_id = self._resolve_enclosing_fixture_id(
-                    reference_id=resolved,
-                    runtime_state=runtime_state,
-                )
-                if isinstance(enclosing_fixture_id, str):
-                    return enclosing_fixture_id
-                return resolved
-            enclosing_fixture_id = self._resolve_enclosing_fixture_id(
-                reference_id=value,
+            resolved_fixture_id = self._resolve_fixture_for_location(
+                location_id=resolved,
+                runtime_state=runtime_state,
+            )
+            if isinstance(resolved_fixture_id, str):
+                return resolved_fixture_id
+            enclosing_fixture_id = self._resolve_fixture_for_location(
+                location_id=value,
                 runtime_state=runtime_state,
             )
             if isinstance(enclosing_fixture_id, str):
@@ -1076,6 +1172,67 @@ class FiniteStateTaskValidator:
             # Otherwise treat it as a fixture ID directly.
             return value
         return None
+
+    def _resolve_fixture_for_location(
+        self,
+        *,
+        location_id: str | None,
+        runtime_state: TaskRuntimeState,
+    ) -> str | None:
+        """Map an object location token back to the fixture an agent must stand at."""
+
+        if not isinstance(location_id, str):
+            return None
+        if location_id.startswith("held_by_"):
+            holder_agent_id = location_id.removeprefix("held_by_")
+            holder_state = runtime_state.agents.get(holder_agent_id)
+            holder_location = (
+                holder_state.location
+                if holder_state is not None
+                else None
+            )
+            if isinstance(holder_location, str):
+                return holder_location
+            return None
+        if location_id in runtime_state.fixtures:
+            return location_id
+        enclosing_fixture_id = self._resolve_enclosing_fixture_id(
+            reference_id=location_id,
+            runtime_state=runtime_state,
+        )
+        if isinstance(enclosing_fixture_id, str):
+            return enclosing_fixture_id
+        return location_id
+
+    def _object_location_matches_source(
+        self,
+        *,
+        object_location: Any,
+        source_id: str,
+        runtime_state: TaskRuntimeState,
+    ) -> bool:
+        if object_location == source_id:
+            return True
+        if not isinstance(object_location, str):
+            return False
+
+        location_fixture_id = self._resolve_fixture_for_location(
+            location_id=object_location,
+            runtime_state=runtime_state,
+        )
+        source_fixture_id = self._resolve_fixture_for_location(
+            location_id=source_id,
+            runtime_state=runtime_state,
+        )
+        if location_fixture_id == source_id:
+            return True
+        if source_fixture_id == object_location:
+            return True
+        return (
+            isinstance(location_fixture_id, str)
+            and isinstance(source_fixture_id, str)
+            and location_fixture_id == source_fixture_id
+        )
 
     def _resolve_enclosing_fixture_id(
         self,

@@ -1,0 +1,313 @@
+{
+  "spec_version": 1,
+  "composite_task": "PrepareCoffee",
+  "source_python_module": "robocasa.environments.kitchen.composite.brewing.prepare_coffee",
+  "agent_ids": [
+    "agent_0",
+    "agent_1"
+  ],
+  "max_reasoning_chars": 200,
+  "validator_checks": [
+    "initial_communication",
+    "allowed_tools",
+    "navigation_preconditions",
+    "manipulation_preconditions",
+    "effects",
+    "final_success"
+  ],
+  "preflight_token_estimate": {
+    "prompt_tokens": 3000,
+    "output_tokens": 3500,
+    "reasoning_tokens": 0
+  },
+  "initial_state": {
+    "agents": {
+      "agent_0": {
+        "location": "cab",
+        "held_object": null
+      },
+      "agent_1": {
+        "location": "coffee_machine",
+        "held_object": null
+      }
+    },
+    "objects": {
+      "mug": {
+        "object_type": "mug",
+        "location": "cab"
+      }
+    },
+    "fixtures": {
+      "cab": {
+        "fixture_type": "cabinet",
+        "parts": {
+          "hinged": {
+            "part_type": "hinged_part",
+            "state": "open"
+          }
+        },
+        "controls": {}
+      },
+      "coffee_machine": {
+        "fixture_type": "coffee_machine",
+        "controls": {
+          "start_button": {
+            "control_type": "button",
+            "state": "off"
+          }
+        },
+        "parts": {}
+      }
+    },
+    "machine_state": {
+      "coffee_machine": {
+        "turned_on": false
+      },
+      "prepare_coffee": {}
+    }
+  },
+  "allowed_tool_specs": {
+    "communicate": {
+      "description": "Send a short coordination message to the other agent in the scene. args.to must be that agent's exact ID.",
+      "tool_args": [
+        "to",
+        "message"
+      ]
+    },
+    "navigate_to_fixture": {
+      "description": "Move the robot base to the working pose of a fixture.",
+      "tool_args": [
+        "fixture_id"
+      ],
+      "allowed_fixture_ids": [
+        "cab",
+        "coffee_machine"
+      ]
+    },
+    "pick_up_object": {
+      "description": "Grasp and lift an object from a symbolic source region.",
+      "tool_args": [
+        "object_id",
+        "source_id"
+      ],
+      "optional_tool_args": [
+        "source_site_id"
+      ],
+      "allowed_object_ids": [
+        "mug"
+      ],
+      "allowed_source_ids": [
+        "cab"
+      ]
+    },
+    "place_under": {
+      "description": "Place an object directly beneath a reference fixture. For dispensers (e.g. coffee machine nozzle, sink faucet) the object is positioned at the dispenser output site; for other fixtures (e.g. wall cabinet) the object is placed on the nearest surface below.",
+      "tool_args": [
+        "object_id"
+      ],
+      "tool_arg_any_of": [
+        [
+          "target_id",
+          "reference_fixture_id"
+        ]
+      ],
+      "optional_tool_args": [
+        "target_id",
+        "reference_fixture_id",
+        "target_site_id"
+      ],
+      "allowed_object_ids": [
+        "mug"
+      ],
+      "allowed_reference_fixture_ids": [
+        "coffee_machine"
+      ]
+    },
+    "press_button": {
+      "description": "Activate a discrete button-like control on a fixture.",
+      "tool_args": [
+        "target_id",
+        "control_id"
+      ],
+      "allowed_target_ids": [
+        "coffee_machine"
+      ],
+      "allowed_control_ids": [
+        "start_button"
+      ]
+    },
+    "give_space": {
+      "description": "Yield working room at a fixture so the other agent can complete an action there.",
+      "tool_args": [
+        "fixture_id"
+      ],
+      "allowed_fixture_ids": [
+        "cab",
+        "coffee_machine"
+      ]
+    }
+  },
+  "task_goal": "Pick the mug from the cabinet, place it under the coffee machine dispenser, and press the start button.",
+  "extra_execution_rules": [
+    "The coffee machine only turns on if the mug is placed under the dispenser before pressing the button."
+  ],
+  "initial_public_state": {
+    "mug_location": "cab",
+    "coffee_machine_status": "off",
+    "turned_on": false
+  },
+  "task_preconditions": [
+    {
+      "kind": "fixture_part_state_required_for_pickup",
+      "tool": "pick_up_object",
+      "source_id": "cab",
+      "fixture_id": "cab",
+      "part_id": "hinged",
+      "required_state": "open"
+    }
+  ],
+  "goal_conditions": [
+    {
+      "kind": "machine_flag_true",
+      "machine_path": [
+        "coffee_machine",
+        "turned_on"
+      ]
+    }
+  ],
+  "task_effects": [
+    {
+      "kind": "set_machine_flag_on_action",
+      "tool": "press_button",
+      "args": {
+        "target_id": "coffee_machine",
+        "control_id": "start_button"
+      },
+      "machine_path": [
+        "coffee_machine",
+        "turned_on"
+      ],
+      "value": true
+    }
+  ],
+  "grounding": {
+    "legacy_symbol_aliases": {},
+    "symbols": {
+      "mug": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "object_type": "mug"
+      },
+      "cab": {
+        "entity_type": "fixture",
+        "resolver": "unique_fixture_type",
+        "object_id": "mug",
+        "fixture_type": "cabinet"
+      },
+      "coffee_machine": {
+        "entity_type": "fixture",
+        "resolver": "unique_fixture_type",
+        "fixture_type": "coffee_machine"
+      }
+    }
+  },
+  "example_trajectory": {
+    "agents": [
+      {
+        "agent": "agent_0"
+      },
+      {
+        "agent": "agent_1"
+      }
+    ],
+    "steps": [
+      {
+        "step": 0,
+        "agent": "agent_0",
+        "tool": "communicate",
+        "args": {
+          "to": "agent_1",
+          "message": "I will get the mug from the cabinet."
+        },
+        "reasoning": "Coordinating the first step of the task."
+      },
+      {
+        "step": 1,
+        "agent": "agent_1",
+        "tool": "communicate",
+        "args": {
+          "to": "agent_0",
+          "message": "I will wait at the coffee machine to press the button."
+        },
+        "reasoning": "Acknowledging the plan and positioning for the final step."
+      },
+      {
+        "step": 2,
+        "agent": "agent_0",
+        "tool": "pick_up_object",
+        "args": {
+          "object_id": "mug",
+          "source_id": "cab"
+        },
+        "reasoning": "Picking up the mug from the open cabinet."
+      },
+      {
+        "step": 3,
+        "agent": "agent_1",
+        "tool": "give_space",
+        "args": {
+          "fixture_id": "coffee_machine"
+        },
+        "reasoning": "Clearing a shared fixture already occupied by this agent before the other agent uses it."
+      },
+      {
+        "step": 4,
+        "agent": "agent_0",
+        "tool": "navigate_to_fixture",
+        "args": {
+          "fixture_id": "coffee_machine"
+        },
+        "reasoning": "Moving to the coffee machine to place the mug."
+      },
+      {
+        "step": 5,
+        "agent": "agent_0",
+        "tool": "place_under",
+        "args": {
+          "object_id": "mug",
+          "reference_fixture_id": "coffee_machine"
+        },
+        "reasoning": "Placing the mug under the dispenser."
+      },
+      {
+        "step": 6,
+        "agent": "agent_0",
+        "tool": "give_space",
+        "args": {
+          "fixture_id": "coffee_machine"
+        },
+        "reasoning": "Clearing the area so agent_1 can reach the button."
+      },
+      {
+        "step": 7,
+        "agent": "agent_1",
+        "tool": "navigate_to_fixture",
+        "args": {
+          "fixture_id": "coffee_machine"
+        },
+        "reasoning": "Moving to the coffee machine now that the mug is in place."
+      },
+      {
+        "step": 8,
+        "agent": "agent_1",
+        "tool": "press_button",
+        "args": {
+          "target_id": "coffee_machine",
+          "control_id": "start_button"
+        },
+        "reasoning": "Pressing the start button to brew coffee."
+      }
+    ]
+  },
+  "notes": []
+}

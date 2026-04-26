@@ -1,0 +1,370 @@
+{
+  "spec_version": 1,
+  "composite_task": "ServeSteak",
+  "source_python_module": "robocasa.environments.kitchen.composite.serving_food.serve_steak",
+  "agent_ids": [
+    "agent_0",
+    "agent_1"
+  ],
+  "max_reasoning_chars": 200,
+  "validator_checks": [
+    "initial_communication",
+    "allowed_tools",
+    "navigation_preconditions",
+    "manipulation_preconditions",
+    "effects",
+    "final_success"
+  ],
+  "preflight_token_estimate": {
+    "prompt_tokens": 3500,
+    "output_tokens": 4000,
+    "reasoning_tokens": 0
+  },
+  "initial_state": {
+    "agents": {
+      "agent_0": {
+        "location": "stove",
+        "held_object": null
+      },
+      "agent_1": {
+        "location": "stove",
+        "held_object": null
+      }
+    },
+    "objects": {
+      "pan": {
+        "object_type": "pan",
+        "location": "stove"
+      },
+      "steak": {
+        "object_type": "steak",
+        "location": "pan"
+      },
+      "plate": {
+        "object_type": "plate",
+        "location": "dining_table"
+      },
+      "decoration": {
+        "object_type": "mug",
+        "location": "dining_table"
+      }
+    },
+    "fixtures": {
+      "stove": {
+        "fixture_type": "stove"
+      },
+      "dining_table": {
+        "fixture_type": "counter"
+      }
+    },
+    "machine_state": {
+      "serve_steak": {}
+    }
+  },
+  "allowed_tool_specs": {
+    "communicate": {
+      "description": "Send a short coordination message to the other agent in the scene. args.to must be that agent's exact ID.",
+      "tool_args": [
+        "to",
+        "message"
+      ]
+    },
+    "navigate_to_fixture": {
+      "description": "Move the robot base to the working pose of a fixture.",
+      "tool_args": [
+        "fixture_id"
+      ],
+      "allowed_fixture_ids": [
+        "stove",
+        "dining_table"
+      ]
+    },
+    "pick_up_object": {
+      "description": "Grasp and lift an object from a symbolic source region.",
+      "tool_args": [
+        "object_id",
+        "source_id"
+      ],
+      "optional_tool_args": [
+        "source_site_id"
+      ],
+      "allowed_object_ids": [
+        "pan",
+        "steak"
+      ],
+      "allowed_source_ids": [
+        "stove",
+        "pan",
+        "dining_table"
+      ]
+    },
+    "place_on_surface": {
+      "description": "Place an object onto an exposed support surface or attachment seat. Keep the fixture id in support_id or target_id and put the exact burner, rack, or other sub-location in target_site_id.",
+      "tool_args": [
+        "object_id"
+      ],
+      "tool_arg_any_of": [
+        [
+          "target_id",
+          "support_id"
+        ]
+      ],
+      "optional_tool_args": [
+        "target_id",
+        "support_id",
+        "target_site_id",
+        "relative_position"
+      ],
+      "allowed_object_ids": [
+        "pan"
+      ],
+      "allowed_support_ids": [
+        "dining_table"
+      ]
+    },
+    "place_on_object": {
+      "description": "Place an object on top of another movable support object such as a plate or cutting_board.",
+      "tool_args": [
+        "object_id"
+      ],
+      "tool_arg_any_of": [
+        [
+          "target_id",
+          "support_object_id"
+        ]
+      ],
+      "optional_tool_args": [
+        "target_id",
+        "relative_position"
+      ],
+      "allowed_object_ids": [
+        "steak"
+      ],
+      "allowed_support_object_ids": [
+        "plate"
+      ]
+    },
+    "give_space": {
+      "description": "Yield working room at a fixture so the other agent can complete an action there.",
+      "tool_args": [
+        "fixture_id"
+      ],
+      "allowed_fixture_ids": [
+        "stove",
+        "dining_table"
+      ]
+    }
+  },
+  "task_goal": "move the pan containing the steak from the stove to the dining table, then place the steak onto the plate.",
+  "extra_execution_rules": [
+    "The steak must be inside the pan when the pan is moved to the dining table.",
+    "The plate is not graspable and must remain on the dining table.",
+    "Do not move the decoration (mug/cup) on the dining table."
+  ],
+  "initial_public_state": {
+    "pan_location": "stove",
+    "steak_location": "pan",
+    "plate_location": "dining_table"
+  },
+  "task_preconditions": [
+    {
+      "kind": "object_must_remain_at_location",
+      "object_id": "plate",
+      "location": "dining_table",
+      "message": "The plate must remain on the dining table throughout the task."
+    },
+    {
+      "kind": "object_location_required_for_action",
+      "tool": "pick_up_object",
+      "object_id": "steak",
+      "required_location": "pan",
+      "message": "The steak must be in the pan before it is served."
+    }
+  ],
+  "goal_conditions": [
+    {
+      "kind": "object_at_location",
+      "object_id": "pan",
+      "location": "dining_table"
+    },
+    {
+      "kind": "object_at_location",
+      "object_id": "steak",
+      "location": "plate"
+    }
+  ],
+  "task_effects": [],
+  "grounding": {
+    "legacy_symbol_aliases": {
+      "obj_1": "steak",
+      "obj_container_1": "pan",
+      "plate_1": "plate",
+      "stove_1": "stove",
+      "dining_table_1": "dining_table"
+    },
+    "symbols": {
+      "steak": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "role": "steak",
+        "preferred_fixture_types": [
+          "stove"
+        ],
+        "object_type": "steak"
+      },
+      "pan": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "role": "pan",
+        "preferred_fixture_types": [
+          "stove"
+        ],
+        "object_type": "pan"
+      },
+      "plate": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "role": "plate",
+        "preferred_fixture_types": [
+          "counter"
+        ],
+        "object_type": "plate"
+      },
+      "decoration": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "role": "decoration",
+        "preferred_fixture_types": [
+          "counter"
+        ],
+        "object_type": "mug"
+      },
+      "stove": {
+        "entity_type": "fixture",
+        "resolver": "unique_fixture_type",
+        "role": "stove",
+        "preferred_fixture_types": [
+          "stove"
+        ],
+        "fixture_type": "stove"
+      },
+      "dining_table": {
+        "entity_type": "fixture",
+        "resolver": "unique_fixture_type",
+        "role": "dining_table",
+        "preferred_fixture_types": [
+          "counter"
+        ],
+        "fixture_type": "counter"
+      }
+    }
+  },
+  "example_trajectory": {
+    "agents": [
+      {
+        "agent": "agent_0"
+      },
+      {
+        "agent": "agent_1"
+      }
+    ],
+    "steps": [
+      {
+        "step": 0,
+        "agent": "agent_0",
+        "tool": "communicate",
+        "args": {
+          "to": "agent_1",
+          "message": "I will move the pan with the steak to the dining table."
+        },
+        "reasoning": "Agent 0 takes the first subtask of transporting the container."
+      },
+      {
+        "step": 1,
+        "agent": "agent_1",
+        "tool": "communicate",
+        "args": {
+          "to": "agent_0",
+          "message": "I will wait at the dining table to plate the steak once the pan arrives."
+        },
+        "reasoning": "Agent 1 coordinates to handle the final plating step."
+      },
+      {
+        "step": 2,
+        "agent": "agent_0",
+        "tool": "pick_up_object",
+        "args": {
+          "object_id": "pan",
+          "source_id": "stove"
+        },
+        "reasoning": "Agent 0 is already at the stove and picks up the pan containing the steak."
+      },
+      {
+        "step": 3,
+        "agent": "agent_1",
+        "tool": "navigate_to_fixture",
+        "args": {
+          "fixture_id": "dining_table"
+        },
+        "reasoning": "Agent 1 moves to the destination to prepare for plating."
+      },
+      {
+        "step": 4,
+        "agent": "agent_0",
+        "tool": "navigate_to_fixture",
+        "args": {
+          "fixture_id": "dining_table"
+        },
+        "reasoning": "Agent 0 brings the pan to the dining table."
+      },
+      {
+        "step": 5,
+        "agent": "agent_0",
+        "tool": "place_on_surface",
+        "args": {
+          "object_id": "pan",
+          "support_id": "dining_table"
+        },
+        "reasoning": "The pan is placed on the table so the steak can be accessed."
+      },
+      {
+        "step": 6,
+        "agent": "agent_0",
+        "tool": "give_space",
+        "args": {
+          "fixture_id": "dining_table"
+        },
+        "reasoning": "Agent 0 moves away so Agent 1 can reach the pan and plate."
+      },
+      {
+        "step": 7,
+        "agent": "agent_1",
+        "tool": "navigate_to_fixture",
+        "args": {
+          "fixture_id": "dining_table"
+        },
+        "reasoning": "Agent 1 approaches the table after Agent 0 yields space."
+      },
+      {
+        "step": 8,
+        "agent": "agent_1",
+        "tool": "pick_up_object",
+        "args": {
+          "object_id": "steak",
+          "source_id": "pan"
+        },
+        "reasoning": "Agent 1 retrieves the steak from the pan."
+      },
+      {
+        "step": 9,
+        "agent": "agent_1",
+        "tool": "place_on_object",
+        "args": {
+          "object_id": "steak",
+          "support_object_id": "plate"
+        },
+        "reasoning": "Placing the steak on the plate completes the serving task."
+      }
+    ]
+  }
+}
