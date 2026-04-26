@@ -757,6 +757,71 @@ def _ensure_machine_flag_effect(
     task_effects.append(synthesized_effect)
 
 
+def _normalize_machine_paths_against_initial_state(
+    *,
+    initial_state: dict[str, Any] | None,
+    goal_conditions: list[dict[str, Any]],
+    task_effects: list[dict[str, Any]],
+) -> None:
+    """Collapse invalid deep machine paths when initial_state stores a scalar leaf.
+
+    Example:
+      machine_state = {"shaker_near_steak": false}
+      machine_path  = ["shaker_near_steak", "flag"]
+    becomes:
+      machine_path  = ["shaker_near_steak"]
+
+    This keeps generation robust when phase2 is skipped and prevents runtime
+    crashes from writing through scalar leaves.
+    """
+
+    machine_state = (
+        initial_state.get("machine_state")
+        if isinstance(initial_state, dict)
+        else None
+    )
+    if not isinstance(machine_state, dict):
+        return
+
+    def _normalize_path(path: Any) -> Any:
+        if not isinstance(path, list) or not path or not all(
+            isinstance(part, str) for part in path
+        ):
+            return path
+        current: Any = machine_state
+        normalized: list[str] = []
+        for idx, part in enumerate(path):
+            if not isinstance(current, dict):
+                break
+            if part not in current:
+                normalized.extend(path[idx:])
+                return normalized
+            normalized.append(part)
+            current = current.get(part)
+            if not isinstance(current, dict):
+                return normalized
+        return normalized
+
+    for condition in goal_conditions:
+        if not isinstance(condition, dict):
+            continue
+        condition["machine_path"] = _normalize_path(condition.get("machine_path"))
+
+    for effect in task_effects:
+        if not isinstance(effect, dict):
+            continue
+        effect["machine_path"] = _normalize_path(effect.get("machine_path"))
+        required_machine_values = effect.get("required_machine_values")
+        if not isinstance(required_machine_values, list):
+            continue
+        for requirement in required_machine_values:
+            if not isinstance(requirement, dict):
+                continue
+            requirement["machine_path"] = _normalize_path(
+                requirement.get("machine_path")
+            )
+
+
 def _goal_has_location_constraint(
     goal_conditions: list[dict[str, Any]],
     *,
@@ -2818,6 +2883,93 @@ def _rewrite_fixture_object_goals_to_support_sites(
     return normalized_goal_conditions
 
 
+def _rewrite_place_next_to_object_goals_to_surface(
+    *,
+    initial_state: dict[str, Any] | None,
+    trajectory: Any,
+    goal_conditions: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Rewrite object-on-object goals to surface goals for place_next_to outputs."""
+
+    if not isinstance(initial_state, dict) or not isinstance(trajectory, dict):
+        return goal_conditions
+    objects_by_id = initial_state.get("objects") or {}
+    if not isinstance(objects_by_id, dict):
+        return goal_conditions
+
+    place_next_to_object_ids: set[str] = set()
+    explicit_object_support_targets: dict[str, set[str]] = defaultdict(set)
+
+    for step in trajectory.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        args = step.get("args")
+        if not isinstance(args, dict):
+            continue
+        object_id = args.get("object_id")
+        if not isinstance(object_id, str):
+            continue
+        tool = step.get("tool")
+        if tool == "place_next_to":
+            place_next_to_object_ids.add(object_id)
+            continue
+        if tool == "place_on_object":
+            support_object_id = args.get("support_object_id")
+            if isinstance(support_object_id, str):
+                explicit_object_support_targets[object_id].add(support_object_id)
+            continue
+        if tool == "place_in_receptacle":
+            receptacle_id = args.get("receptacle_id")
+            if isinstance(receptacle_id, str):
+                explicit_object_support_targets[object_id].add(receptacle_id)
+
+    def _resolve_underlying_location(location: str) -> str:
+        current_location = location
+        visited: set[str] = set()
+        while current_location in objects_by_id and current_location not in visited:
+            visited.add(current_location)
+            object_state = objects_by_id.get(current_location)
+            if not isinstance(object_state, dict):
+                break
+            next_location = object_state.get("location")
+            if not isinstance(next_location, str):
+                break
+            current_location = next_location
+        return current_location
+
+    rewritten_goal_conditions: list[dict[str, Any]] = []
+    for condition in goal_conditions:
+        if (
+            not isinstance(condition, dict)
+            or condition.get("kind") != "object_at_location"
+            or not isinstance(condition.get("object_id"), str)
+            or not isinstance(condition.get("location"), str)
+        ):
+            rewritten_goal_conditions.append(condition)
+            continue
+
+        object_id = condition["object_id"]
+        location = condition["location"]
+        if (
+            object_id not in place_next_to_object_ids
+            or location not in objects_by_id
+            or location in explicit_object_support_targets.get(object_id, set())
+        ):
+            rewritten_goal_conditions.append(condition)
+            continue
+
+        resolved_location = _resolve_underlying_location(location)
+        if resolved_location == location:
+            rewritten_goal_conditions.append(condition)
+            continue
+
+        rewritten_condition = dict(condition)
+        rewritten_condition["location"] = resolved_location
+        rewritten_goal_conditions.append(rewritten_condition)
+
+    return rewritten_goal_conditions
+
+
 def _rewrite_contradictory_source_location_goals(
     *,
     initial_state: dict[str, Any] | None,
@@ -3172,7 +3324,102 @@ def _add_upright_machine_flags_from_rules(
     return normalized_goal_conditions
 
 
-def _postprocess_spec_payload(spec_payload: dict[str, Any]) -> dict[str, Any]:
+def _enforce_try_to_place_in_preferences(
+    *,
+    initial_state: dict[str, Any] | None,
+    grounding: dict[str, Any] | None,
+    source_metadata: dict[str, Any] | None,
+) -> None:
+    """Preserve source `try_to_place_in` semantics in initial_state."""
+
+    if not isinstance(initial_state, dict) or not isinstance(source_metadata, dict):
+        return
+    objects_by_id = initial_state.get("objects") or {}
+    fixtures_by_id = initial_state.get("fixtures") or {}
+    if not isinstance(objects_by_id, dict) or not isinstance(fixtures_by_id, dict):
+        return
+
+    grounding_symbols = (
+        (grounding.get("symbols") or {}) if isinstance(grounding, dict) else {}
+    )
+    if not isinstance(grounding_symbols, dict):
+        grounding_symbols = {}
+
+    def _find_existing_container_id(
+        *,
+        container_type: str,
+        fixture_location: str,
+    ) -> str | None:
+        matches = [
+            object_id
+            for object_id, object_state in objects_by_id.items()
+            if isinstance(object_id, str)
+            and isinstance(object_state, dict)
+            and object_state.get("object_type") == container_type
+            and object_state.get("location") == fixture_location
+        ]
+        if not matches:
+            return None
+        return sorted(matches)[0]
+
+    def _next_container_id(base_object_id: str, container_type: str) -> str:
+        base_id = f"{base_object_id}_{container_type}".replace("-", "_")
+        candidate_id = base_id
+        suffix = 2
+        while candidate_id in objects_by_id:
+            candidate_id = f"{base_id}_{suffix}"
+            suffix += 1
+        return candidate_id
+
+    for raw_cfg in source_metadata.get("obj_configs") or []:
+        if not isinstance(raw_cfg, dict):
+            continue
+        if raw_cfg.get("is_distractor"):
+            continue
+        if not raw_cfg.get("has_try_to_place_in") and not raw_cfg.get("try_to_place_in"):
+            continue
+
+        object_id = raw_cfg.get("name")
+        container_type = raw_cfg.get("try_to_place_in")
+        if not isinstance(object_id, str) or not isinstance(container_type, str):
+            continue
+        object_state = objects_by_id.get(object_id)
+        if not isinstance(object_state, dict):
+            continue
+        object_location = object_state.get("location")
+        if not isinstance(object_location, str):
+            continue
+        if object_location in objects_by_id:
+            continue
+        if object_location not in fixtures_by_id:
+            continue
+
+        container_id = _find_existing_container_id(
+            container_type=container_type,
+            fixture_location=object_location,
+        )
+        if not isinstance(container_id, str):
+            container_id = _next_container_id(object_id, container_type)
+            objects_by_id[container_id] = {
+                "object_type": container_type,
+                "location": object_location,
+            }
+            grounding_symbols.setdefault(
+                container_id,
+                {
+                    "entity_type": "object",
+                    "resolver": "object_by_type",
+                    "object_type": container_type,
+                },
+            )
+        object_state["location"] = container_id
+
+
+def _postprocess_spec_payload(
+    spec_payload: dict[str, Any],
+    *,
+    source_metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Normalize model JSON into the canonical TaskSpec payload shape."""
 
     normalized_payload = dict(spec_payload)
@@ -3193,6 +3440,15 @@ def _postprocess_spec_payload(spec_payload: dict[str, Any]) -> dict[str, Any]:
         initial_state["fixtures"] = _coerce_id_keyed_mapping(
             initial_state.get("fixtures"),
             field_name="initial_state.fixtures",
+        )
+        _enforce_try_to_place_in_preferences(
+            initial_state=initial_state,
+            grounding=(
+                normalized_payload.get("grounding")
+                if isinstance(normalized_payload.get("grounding"), dict)
+                else None
+            ),
+            source_metadata=source_metadata,
         )
         object_ids = set(initial_state["objects"].keys())
         fixture_ids = set(initial_state["fixtures"].keys())
@@ -3281,6 +3537,29 @@ def _postprocess_spec_payload(spec_payload: dict[str, Any]) -> dict[str, Any]:
                     allowed_reference_fixture_ids
                 )
 
+    def _normalize_site_allowlists(tool_spec: Any) -> None:
+        if not isinstance(tool_spec, dict):
+            return
+        for allowlist_name in (
+            "allowed_source_site_ids",
+            "allowed_target_site_ids",
+        ):
+            raw_allowlist = tool_spec.get(allowlist_name)
+            if not isinstance(raw_allowlist, list):
+                continue
+            normalized_allowlist = [
+                value
+                for value in raw_allowlist
+                if isinstance(value, str) and value not in fixture_ids
+            ]
+            if normalized_allowlist:
+                tool_spec[allowlist_name] = normalized_allowlist
+            else:
+                tool_spec.pop(allowlist_name, None)
+
+    for tool_spec in normalized_payload["allowed_tool_specs"].values():
+        _normalize_site_allowlists(tool_spec)
+
     def _normalize_place_next_to_args(args: Any) -> None:
         if not isinstance(args, dict):
             return
@@ -3292,6 +3571,10 @@ def _postprocess_spec_payload(spec_payload: dict[str, Any]) -> dict[str, Any]:
         ):
             args["reference_fixture_id"] = reference_object_id
             args.pop("reference_object_id", None)
+        for site_arg_name in ("source_site_id", "target_site_id"):
+            site_arg_value = args.get(site_arg_name)
+            if isinstance(site_arg_value, str) and site_arg_value in fixture_ids:
+                args.pop(site_arg_name, None)
 
     machine_state = (
         initial_state.setdefault("machine_state", {})
@@ -3730,6 +4013,11 @@ def _postprocess_spec_payload(spec_payload: dict[str, Any]) -> dict[str, Any]:
             goal_conditions=normalized_goal_conditions,
             final_object_locations=final_object_locations,
         )
+        normalized_goal_conditions = _rewrite_place_next_to_object_goals_to_surface(
+            initial_state=initial_state if isinstance(initial_state, dict) else None,
+            trajectory=trajectory,
+            goal_conditions=normalized_goal_conditions,
+        )
         normalized_goal_conditions = _add_zero_count_goals_for_either_or_rules(
             initial_state=initial_state if isinstance(initial_state, dict) else None,
             goal_conditions=normalized_goal_conditions,
@@ -3808,6 +4096,11 @@ def _postprocess_spec_payload(spec_payload: dict[str, Any]) -> dict[str, Any]:
         normalized_goal_conditions = _drop_redundant_water_off_goals(
             normalized_goal_conditions
         )
+        _normalize_machine_paths_against_initial_state(
+            initial_state=initial_state if isinstance(initial_state, dict) else None,
+            goal_conditions=normalized_goal_conditions,
+            task_effects=task_effects,
+        )
         _prioritize_guarded_effects(task_effects)
         normalized_payload["goal_conditions"] = normalized_goal_conditions
     return normalized_payload
@@ -3876,7 +4169,10 @@ def _generate_one_spec(
         try:
             previous_payload_json: str | None = None
             for _ in range(2):
-                spec_payload = _postprocess_spec_payload(spec_payload)
+                spec_payload = _postprocess_spec_payload(
+                    spec_payload,
+                    source_metadata=candidate.to_dict(),
+                )
                 current_payload_json = json.dumps(spec_payload, sort_keys=True)
                 if current_payload_json == previous_payload_json:
                     break

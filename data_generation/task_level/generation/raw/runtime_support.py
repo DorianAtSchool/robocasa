@@ -610,6 +610,9 @@ def _validate_candidate_references_without_sim(
     if not isinstance(fixtures_by_id, dict):
         fixtures_by_id = {}
     support_site_parent_map = _support_site_parent_by_id(initial_state)
+    fixture_ids = {
+        fixture_id for fixture_id in fixtures_by_id if isinstance(fixture_id, str)
+    }
 
     for step in steps:
         if not isinstance(step, dict):
@@ -720,6 +723,16 @@ def _validate_candidate_references_without_sim(
             site_id = args.get(site_arg_name)
             if not isinstance(site_id, str):
                 continue
+            if site_id in fixture_ids:
+                raise ToolArgumentSemanticValidationError(
+                    f"{tool_name} uses fixture id {site_id!r} as {site_arg_name}; expected a support-site id.",
+                    step=step_number,
+                    details={
+                        "tool": tool_name,
+                        "fixture_id": fixture_id,
+                        site_arg_name: site_id,
+                    },
+                )
             allowed_site_ids = tool_spec.get(f"allowed_{site_arg_name[:-3]}_ids")
             if (
                 isinstance(allowed_site_ids, list)

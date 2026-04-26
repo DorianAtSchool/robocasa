@@ -384,7 +384,11 @@ class TrajectoryAdapter:
         initial_state = trajectory.get("initial_state") or {}
         grounding_symbols = (trajectory.get("grounding_map") or {}).get("symbols") or {}
         self._apply_sim_ground_truth(initial_state, grounding_symbols)
-        resolved_initial_state = self._adapt_initial_state(initial_state)
+        preserve_pose_object_ids = self._collect_reference_only_object_ids(trajectory)
+        resolved_initial_state = self._adapt_initial_state(
+            initial_state,
+            preserve_pose_object_ids=preserve_pose_object_ids,
+        )
 
         # Build display name maps: env key → human-readable name
         # Objects: use object_type from scene (sourced from info.cat)
@@ -511,11 +515,53 @@ class TrajectoryAdapter:
 
         return metadata
 
-    def _adapt_initial_state(self, initial_state: dict[str, Any]) -> dict[str, Any]:
+    def _collect_reference_only_object_ids(self, trajectory: dict[str, Any]) -> set[str]:
+        """Collect object ids that are used only as static reference anchors."""
+
+        reference_object_ids: set[str] = set()
+        manipulated_object_ids: set[str] = set()
+        for step in trajectory.get("steps", []) or []:
+            if not isinstance(step, dict):
+                continue
+            args = step.get("args")
+            if not isinstance(args, dict):
+                continue
+            reference_object_id = args.get("reference_object_id")
+            if isinstance(reference_object_id, str):
+                reference_object_ids.add(reference_object_id)
+            reference_id = args.get("reference_id")
+            if isinstance(reference_id, str):
+                reference_object_ids.add(reference_id)
+            object_id = args.get("object_id")
+            if not isinstance(object_id, str):
+                continue
+            if step.get("tool") in {
+                "pick_up_object",
+                "place_on_surface",
+                "place_in_receptacle",
+                "place_on_object",
+                "place_next_to",
+                "place_under",
+            }:
+                manipulated_object_ids.add(object_id)
+
+        return {
+            object_id
+            for object_id in reference_object_ids
+            if object_id not in manipulated_object_ids
+        }
+
+    def _adapt_initial_state(
+        self,
+        initial_state: dict[str, Any],
+        *,
+        preserve_pose_object_ids: set[str] | None = None,
+    ) -> dict[str, Any]:
         resolved_fixtures = {}
         resolved_objects = {}
         resolved_agents = {}
         resolved_machine_state = {}
+        preserve_pose_object_ids = preserve_pose_object_ids or set()
 
         fixture_context = initial_state.get("fixtures", {})
         object_context = initial_state.get("objects", {})
@@ -608,7 +654,10 @@ class TrajectoryAdapter:
                     if (
                         not explicit_target_site
                         and "preserve_pose" not in resolved_state
-                        and scene_obj_info.get("location") == resolved_state["location"]
+                        and (
+                            scene_obj_info.get("location") == resolved_state["location"]
+                            or resolved_object_id in preserve_pose_object_ids
+                        )
                     ):
                         resolved_state["preserve_pose"] = True
                 if isinstance(resolved_target_site_id, str):

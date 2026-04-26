@@ -6,6 +6,7 @@ import unittest
 from data_generation.task_level.pipeline.few_shot import load_few_shot_examples
 from data_generation.task_level.tasks import get_task_definition
 from data_generation.task_level.tasks.specs import load_all_task_specs, load_task_spec
+from data_generation.task_level.tasks.specs.runtime import _set_machine_path
 
 
 class TaskSpecTests(unittest.TestCase):
@@ -77,3 +78,8 @@ class TaskSpecTests(unittest.TestCase):
             spec_payload = json.loads(example.spec_json)
             self.assertEqual(example.task_name, spec_payload["composite_task"])
             self.assertTrue(spec_payload["example_trajectory"]["steps"])
+
+    def test_set_machine_path_handles_scalar_intermediate(self):
+        machine_state = {"shaker_near_steak": False}
+        _set_machine_path(machine_state, ("shaker_near_steak", "flag"), True)
+        self.assertEqual(machine_state["shaker_near_steak"], {"flag": True})

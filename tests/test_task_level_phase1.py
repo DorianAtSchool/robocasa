@@ -897,6 +897,111 @@ class Phase1GenerationTests(unittest.TestCase):
             {"kind": "object_at_location", "object_id": "bowl1", "location": "counter"},
         )
 
+    def test_postprocess_preserves_try_to_place_in_as_container_object(self):
+        payload = {
+            "allowed_tool_specs": {},
+            "grounding": {
+                "symbols": {
+                    "steak": {
+                        "entity_type": "object",
+                        "resolver": "object_by_type",
+                        "object_type": "steak",
+                    }
+                }
+            },
+            "initial_state": {
+                "agents": {
+                    "agent_0": {"location": "cabinet"},
+                    "agent_1": {"location": "dining_counter"},
+                },
+                "fixtures": {
+                    "cabinet": {"fixture_type": "cabinet"},
+                    "dining_counter": {"fixture_type": "dining_counter"},
+                },
+                "objects": {
+                    "steak": {"object_type": "steak", "location": "dining_counter"},
+                    "shaker": {"object_type": "shaker", "location": "cabinet"},
+                },
+            },
+            "goal_conditions": [],
+            "task_preconditions": [],
+            "task_effects": [],
+            "example_trajectory": {"steps": []},
+        }
+        source_metadata = {
+            "obj_configs": [
+                {
+                    "name": "steak",
+                    "is_distractor": False,
+                    "has_try_to_place_in": True,
+                    "try_to_place_in": "plate",
+                }
+            ]
+        }
+
+        normalized = _postprocess_spec_payload(
+            payload,
+            source_metadata=source_metadata,
+        )
+
+        self.assertIn("steak_plate", normalized["initial_state"]["objects"])
+        self.assertEqual(
+            normalized["initial_state"]["objects"]["steak"]["location"],
+            "steak_plate",
+        )
+        self.assertEqual(
+            normalized["initial_state"]["objects"]["steak_plate"],
+            {"object_type": "plate", "location": "dining_counter"},
+        )
+
+    def test_postprocess_rewrites_place_next_to_goal_from_container_to_surface(self):
+        payload = {
+            "allowed_tool_specs": {},
+            "initial_state": {
+                "agents": {
+                    "agent_0": {"location": "cabinet"},
+                    "agent_1": {"location": "dining_counter"},
+                },
+                "fixtures": {
+                    "cabinet": {"fixture_type": "cabinet"},
+                    "dining_counter": {"fixture_type": "dining_counter"},
+                },
+                "objects": {
+                    "shaker": {"object_type": "shaker", "location": "cabinet"},
+                    "steak": {"object_type": "steak", "location": "steak_plate"},
+                    "steak_plate": {"object_type": "plate", "location": "dining_counter"},
+                },
+            },
+            "goal_conditions": [
+                {"kind": "object_at_location", "object_id": "shaker", "location": "steak_plate"}
+            ],
+            "task_preconditions": [],
+            "task_effects": [],
+            "example_trajectory": {
+                "steps": [
+                    {
+                        "step": 0,
+                        "agent": "agent_0",
+                        "tool": "pick_up_object",
+                        "args": {"object_id": "shaker", "source_id": "cabinet"},
+                    },
+                    {
+                        "step": 1,
+                        "agent": "agent_0",
+                        "tool": "place_next_to",
+                        "args": {"object_id": "shaker", "reference_object_id": "steak"},
+                    },
+                ]
+            },
+        }
+
+        normalized = _postprocess_spec_payload(payload)
+
+        self.assertEqual(
+            normalized["goal_conditions"][0],
+            {"kind": "object_at_location", "object_id": "shaker", "location": "dining_counter"},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

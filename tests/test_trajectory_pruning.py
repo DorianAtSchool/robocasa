@@ -182,6 +182,26 @@ class TestTrajectoryPruning(unittest.TestCase):
                 required_object_types={"bowl"},
             )
         )
+
+    def test_filter_keeps_try_to_place_in_support_cfg(self):
+        filtered = filter_object_cfgs_for_trajectory(
+            [
+                {
+                    "name": "steak",
+                    "obj_groups": "steak",
+                    "placement": {"try_to_place_in": "plate"},
+                },
+                {"name": "plate_0", "obj_groups": "plate"},
+                {"name": "distractor_bowl", "obj_groups": "bowl"},
+            ],
+            required_object_specs={
+                "steak": {"object_type": "steak"},
+            },
+        )
+        self.assertEqual(
+            [cfg["name"] for cfg in filtered],
+            ["steak", "plate_0"],
+        )
         self.assertFalse(
             should_keep_object_cfg_for_trajectory(
                 {"name": "knife_auxiliary", "obj_groups": "knife"},

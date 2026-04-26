@@ -114,12 +114,79 @@ def filter_object_cfgs_for_trajectory(
         required_object_specs=required_specs,
     )
     keep_names = set(matches.values())
+    keep_names.update(
+        _expand_keep_names_with_implicit_support_cfgs(
+            cfg_copies,
+            initial_keep_names=keep_names,
+        )
+    )
 
     filtered: list[dict[str, Any]] = []
     for cfg_copy in cfg_copies:
         if str(cfg_copy.get("name", "")).strip() in keep_names:
             filtered.append(cfg_copy)
     return filtered
+
+
+def _expand_keep_names_with_implicit_support_cfgs(
+    object_cfgs: list[dict[str, Any]],
+    *,
+    initial_keep_names: set[str],
+) -> set[str]:
+    """Keep receptacle/support cfgs referenced via placement.try_to_place_in.
+
+    Example: if kept cfg `steak` has `try_to_place_in="plate"`, keep the cfg
+    that declares type `plate` as well, even if it is not explicitly named in
+    the trajectory spec.
+    """
+
+    cfg_by_name: dict[str, dict[str, Any]] = {
+        str(cfg.get("name", "")).strip(): cfg
+        for cfg in object_cfgs
+        if str(cfg.get("name", "")).strip()
+    }
+    keep_names = set(initial_keep_names)
+    changed = True
+    while changed:
+        changed = False
+        for cfg_name in tuple(sorted(keep_names)):
+            cfg = cfg_by_name.get(cfg_name)
+            if not isinstance(cfg, dict):
+                continue
+            placement = cfg.get("placement")
+            if not isinstance(placement, dict):
+                continue
+            support_type = placement.get("try_to_place_in")
+            if not isinstance(support_type, str) or not support_type.strip():
+                continue
+            support_type = support_type.strip()
+            for candidate_name, candidate_cfg in cfg_by_name.items():
+                if candidate_name in keep_names:
+                    continue
+                if _object_cfg_declares_type(candidate_cfg, support_type):
+                    keep_names.add(candidate_name)
+                    changed = True
+                    break
+    return keep_names
+
+
+def _object_cfg_declares_type(object_cfg: dict[str, Any], object_type: str) -> bool:
+    """Return whether cfg can instantiate the requested semantic object type."""
+
+    normalized_type = str(object_type).strip()
+    if not normalized_type:
+        return False
+
+    candidate_types: set[str] = set()
+    cfg_name = str(object_cfg.get("name", "")).strip()
+    if cfg_name:
+        candidate_types.add(cfg_name)
+    obj_groups = object_cfg.get("obj_groups")
+    if isinstance(obj_groups, str):
+        candidate_types.add(obj_groups)
+    elif isinstance(obj_groups, (list, tuple, set)):
+        candidate_types.update(str(group) for group in obj_groups if group)
+    return normalized_type in candidate_types
 
 
 def resolve_trajectory_object_cfg_matches(

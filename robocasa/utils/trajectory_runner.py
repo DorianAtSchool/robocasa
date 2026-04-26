@@ -186,7 +186,9 @@ class ObjectInfo:
     """Scene description of a single object."""
     object_id: str
     object_type: str
-    location: str  # fixture_id where the object currently sits
+    # Either a fixture_id or another object_id when object-on-object support is
+    # observable in the simulator state (e.g., steak on plate).
+    location: str
 
     def to_dict(self) -> dict:
         return dataclasses.asdict(self)
@@ -1399,7 +1401,12 @@ class TrajectoryRunner:
                 obj_pos = self.env.sim.data.body_xpos[
                     self.env.obj_body_id[obj_name]
                 ]
-                location = object_placements.get(obj_name) or self._find_object_fixture(obj_pos)
+                support_object = self._find_support_object(obj_name)
+                location = (
+                    support_object
+                    or object_placements.get(obj_name)
+                    or self._find_object_fixture(obj_pos)
+                )
 
                 cfg = obj_cfg_map.get(obj_name, {})
                 info = cfg.get("info", {})
@@ -1448,6 +1455,46 @@ class TrajectoryRunner:
             "robots": robots_info,
         }
         return self._scene
+
+    def _find_support_object(self, obj_name: str) -> str | None:
+        """Return the supported object id when an object is resting on another object.
+
+        This preserves object-on-object semantics in the extracted scene instead
+        of flattening everything to a fixture location.
+        """
+        if not hasattr(self.env, "objects") or obj_name not in self.env.objects:
+            return None
+        if obj_name not in self.env.obj_body_id:
+            return None
+
+        obj = self.env.objects[obj_name]
+        obj_pos = np.asarray(self.env.sim.data.body_xpos[self.env.obj_body_id[obj_name]], dtype=float)
+        candidates: list[tuple[float, str]] = []
+
+        for other_name, other_obj in self.env.objects.items():
+            if other_name == obj_name or other_name not in self.env.obj_body_id:
+                continue
+            try:
+                in_contact = bool(self.env.check_contact(obj, other_obj))
+            except Exception:
+                in_contact = False
+            if not in_contact:
+                continue
+
+            other_pos = np.asarray(
+                self.env.sim.data.body_xpos[self.env.obj_body_id[other_name]],
+                dtype=float,
+            )
+            max_xy = float(getattr(other_obj, "horizontal_radius", 0.0)) * 1.05
+            if max_xy > 0.0 and float(np.linalg.norm(obj_pos[:2] - other_pos[:2])) > max_xy:
+                continue
+            # Prefer closest supporting object in XY.
+            candidates.append((float(np.linalg.norm(obj_pos[:2] - other_pos[:2])), other_name))
+
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: item[0])
+        return candidates[0][1]
 
     def _find_object_fixture(self, obj_pos: np.ndarray) -> str:
         """Find the most plausible support fixture for an object's position."""

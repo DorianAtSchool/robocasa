@@ -642,6 +642,58 @@ class TestTrajectoryAdapter(unittest.TestCase):
 
         self.assertIsNone(adapted["tool_calls"][0]["args"]["target_site_id"])
 
+    def test_adapt_preserves_pose_for_reference_only_object(self):
+        executor = FakeExecutor()
+        executor.scene = {
+            "fixtures": {
+                "counter_main": {"fixture_type": "counter_non_dining"},
+                "cabinet_main": {"fixture_type": "cabinet"},
+            },
+            "objects": {
+                "steak_main": {"object_type": "steak", "location": "plate_main"},
+                "shaker_main": {"object_type": "shaker", "location": "cabinet_main"},
+            },
+        }
+        adapter = TrajectoryAdapter(executor=executor)
+
+        adapted = adapter.adapt(
+            {
+                "trajectory_id": "traj_ref_only_anchor",
+                "initial_state": {
+                    "agents": {"agent_0": {"location": "cabinet", "held_object": None}},
+                    "objects": {
+                        "steak": {"object_type": "steak", "location": "counter"},
+                        "shaker": {"object_type": "shaker", "location": "cabinet"},
+                    },
+                    "fixtures": {
+                        "counter": {"fixture_type": "counter"},
+                        "cabinet": {"fixture_type": "cabinet"},
+                    },
+                    "machine_state": {},
+                },
+                "steps": [
+                    {
+                        "step": 0,
+                        "agent": "agent_0",
+                        "tool": "pick_up_object",
+                        "args": {"object_id": "shaker", "source_id": "cabinet"},
+                    },
+                    {
+                        "step": 1,
+                        "agent": "agent_0",
+                        "tool": "place_next_to",
+                        "args": {
+                            "object_id": "shaker",
+                            "reference_object_id": "steak",
+                        },
+                    },
+                ],
+            }
+        )
+
+        steak_state = adapted["initial_state"]["objects"]["steak_main"]
+        self.assertTrue(steak_state.get("preserve_pose"))
+
     def test_adapt_preserves_support_site_receptacle_ids(self):
         executor = FakeExecutor()
         executor.scene = {

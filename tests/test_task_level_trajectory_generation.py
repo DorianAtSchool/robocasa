@@ -1504,6 +1504,52 @@ class DotenvLoadingTests(unittest.TestCase):
 
         self.assertIn("Unknown part/control 'left_door' for fixture 'cabinet'", str(context.exception))
 
+    def test_static_referential_validation_rejects_fixture_id_as_target_site_id(self):
+        candidate = {
+            "steps": [
+                {
+                    "step": 0,
+                    "agent": "agent_0",
+                    "tool": "place_next_to",
+                    "args": {
+                        "object_id": "shaker",
+                        "reference_object_id": "steak",
+                        "target_site_id": "dining_counter",
+                    },
+                    "reasoning": "Place shaker beside steak.",
+                }
+            ]
+        }
+        initial_state = {
+            "fixtures": {
+                "dining_counter": {
+                    "fixture_type": "counter",
+                    "support_sites": {"geom_0": {"site_type": "support"}},
+                }
+            },
+            "objects": {
+                "shaker": {"location": "dining_counter"},
+                "steak": {"location": "dining_counter"},
+            },
+        }
+        allowed_tool_specs = {
+            "place_next_to": {
+                "tool_args": ["object_id"],
+                "tool_arg_any_of": [["reference_object_id", "reference_fixture_id"]],
+                "optional_tool_args": ["target_site_id"],
+                "allowed_target_site_ids": ["dining_counter"],
+            }
+        }
+
+        with self.assertRaises(ToolArgumentSemanticValidationError) as context:
+            _validate_candidate_references_without_sim(
+                candidate,
+                initial_state=initial_state,
+                allowed_tool_specs=allowed_tool_specs,
+            )
+
+        self.assertIn("fixture id 'dining_counter' as target_site_id", str(context.exception))
+
     def test_parse_args_accepts_thinking_level_flag_and_alias(self):
         dashed_runtime_config = parse_args(["--thinking-level", "minimal"])
         underscored_runtime_config = parse_args(["--thinking_level", "high"])

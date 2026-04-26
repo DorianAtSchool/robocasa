@@ -64,7 +64,11 @@ def _set_machine_path(
 ) -> None:
     current_value = machine_state
     for path_part in machine_path[:-1]:
-        current_value = current_value.setdefault(path_part, {})
+        next_value = current_value.get(path_part)
+        if not isinstance(next_value, dict):
+            next_value = {}
+            current_value[path_part] = next_value
+        current_value = next_value
     current_value[machine_path[-1]] = value
 
 
