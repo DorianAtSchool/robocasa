@@ -713,7 +713,7 @@ class TrajectoryRunner:
 
     def _render_free_camera(self, cam_config: dict) -> np.ndarray:
         """Render a free camera with an explicit camera config."""
-        render_ctx = self.env.sim._render_context_offscreen
+        render_ctx = self._ensure_offscreen_render_context()
         if render_ctx is None:
             return np.zeros((self.render_height, self.render_width, 3), dtype=np.uint8)
 
@@ -733,6 +733,21 @@ class TrajectoryRunner:
             # after repeated sweeps. Rendering should not fail trajectory
             # execution; regular camera frames still cover the action.
             return np.zeros((self.render_height, self.render_width, 3), dtype=np.uint8)
+
+    def _ensure_offscreen_render_context(self):
+        """Ensure MuJoCo offscreen context exists; return it when available."""
+        render_ctx = getattr(self.env.sim, "_render_context_offscreen", None)
+        if render_ctx is not None:
+            return render_ctx
+        try:
+            from robosuite.utils.binding_utils import MjRenderContextOffscreen
+
+            device_id = int(getattr(self.env, "render_gpu_device_id", -1))
+            render_ctx = MjRenderContextOffscreen(self.env.sim, device_id=device_id)
+            self.env.sim.add_render_context(render_ctx)
+            return getattr(self.env.sim, "_render_context_offscreen", None)
+        except Exception:
+            return None
 
     def _render_room_view(self) -> np.ndarray:
         """Render the layout-wide room camera."""

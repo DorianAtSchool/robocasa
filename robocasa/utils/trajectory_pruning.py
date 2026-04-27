@@ -473,7 +473,16 @@ def _object_cfg_matches_spec(
     # object, not the object's own type. Binding a symbolic container such as
     # "pan" to the child steak cfg prevents Kitchen from later creating and
     # binding the native ``obj_container``.
+    #
+    # Include cfg ``name`` as a candidate semantic type. Several tasks use a
+    # coarse symbolic type (e.g. "spice", "bottle"), while ``obj_groups``
+    # enumerates concrete variants (e.g. turmeric/paprika). If we only match
+    # against ``obj_groups``, trajectory pruning can drop required task objects
+    # and fail env init.
     candidate_types: set[str] = set()
+    cfg_name = object_cfg.get("name")
+    if isinstance(cfg_name, str) and cfg_name.strip():
+        candidate_types.add(cfg_name.strip())
     obj_groups = object_cfg.get("obj_groups")
     if isinstance(obj_groups, str):
         candidate_types.add(obj_groups)

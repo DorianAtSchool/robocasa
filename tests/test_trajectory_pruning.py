@@ -210,6 +210,25 @@ class TestTrajectoryPruning(unittest.TestCase):
             )
         )
 
+    def test_matcher_uses_cfg_name_for_symbolic_types_with_variant_obj_groups(self):
+        matches = resolve_trajectory_object_cfg_matches(
+            [
+                {"name": "spice", "obj_groups": ("turmeric", "paprika")},
+                {"name": "bottle", "obj_groups": ("ketchup", "mayonnaise")},
+            ],
+            required_object_specs={
+                "spice": {"object_type": "spice"},
+                "bottle": {"object_type": "bottle"},
+            },
+        )
+        self.assertEqual(
+            matches,
+            {
+                "spice": "spice",
+                "bottle": "bottle",
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

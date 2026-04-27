@@ -120,6 +120,12 @@ def _build_fsm_prompt_rules(
             "Use give_space only at the fixture where that agent is already positioned, after the agents communicate that another agent is about to navigate there, so the yielding agent clears the space before the other agent arrives."
         )
         prompt_rules.append(
+            "Treat cabinet/drawer and its supporting counter as one shared workspace. If one agent is at either side of that workspace, the other agent must not navigate into the paired side until the first agent explicitly gives_space from that workspace."
+        )
+        prompt_rules.append(
+            "Do not use give_space while holding an object unless there is no legal way to finish the current placement first."
+        )
+        prompt_rules.append(
             "After an agent executes give_space, that agent is no longer at the fixture. "
             "Before that agent can interact there again (pick up, place, open, close, or use a control), "
             "it must navigate_to_fixture first. Similarly, the arriving agent must give_space in turn "
@@ -350,6 +356,8 @@ Important rules:
 - Keep track of what object each agent is holding and where the agent's location is at all times.
 - Keep track of all agent's locations which can only be at fixture locations. Be sure that the agent is not "teleporting" across the environment to complete tasks; the agent should navigate first via a tool call.
 - If agent_A plans to navigate to or use a fixture where agent_B is already positioned, have the agents communicate first, then have agent_B execute give_space(fixture_id) at that fixture before agent_A arrives so they avoid a location conflict. Do not navigate to a fixture only to call give_space; give_space is only for an agent already there.
+- Treat cabinet/drawer fixtures and their supporting counters as one shared workspace. If one agent is at the cabinet side or counter side, the other agent must not navigate into the other side until the first agent explicitly gives_space from that workspace.
+- Prefer finishing a held-object placement before calling give_space. Do not give_space while holding an item unless there is no legal alternative.
 - In the initial steps, the agents must coordinate through communication tool calls before any task action. Both agents must communicate during this time.
 - Throughout the trajectory, both agents should actively communicate with each other to communicate intentions, plans, and needs, not just in the initial steps.
 - Each communicate step sends a message to the other agent in the scene, so args.to must be the exact ID of that other agent.

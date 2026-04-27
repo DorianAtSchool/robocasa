@@ -624,7 +624,28 @@ class SimToolExecutor:
         if not reset_regions:
             return None
 
-        ranked_sites: list[tuple[int, float, str]] = []
+        fixture_type = (self._get_fixture_type_name(fixture_id) or "").lower()
+        prefer_bottom_for_cabinet = fixture_type.startswith("cabinet")
+        if prefer_bottom_for_cabinet:
+            # If the cabinet exposes exactly one shelf site, use it directly.
+            # This avoids ambiguous ranking and keeps repeated placements stable.
+            cabinet_shelf_sites: list[str] = []
+            for raw_site_id in reset_regions:
+                site_id = self._normalize_target_site_id_for_placement(
+                    fixture_id,
+                    raw_site_id,
+                )
+                if not isinstance(site_id, str):
+                    continue
+                site_tokens = set(self._normalize_site_signature(site_id))
+                raw_tokens = set(_SITE_TOKEN_RE.findall(raw_site_id.lower()))
+                if "shelf" in (site_tokens | raw_tokens):
+                    cabinet_shelf_sites.append(site_id)
+            unique_shelf_sites = sorted(dict.fromkeys(cabinet_shelf_sites))
+            if len(unique_shelf_sites) == 1:
+                return unique_shelf_sites[0]
+
+        ranked_sites: list[tuple[int, int, float, str]] = []
         exclude = {incoming_object_id} if isinstance(incoming_object_id, str) else set()
         for raw_site_id, region in reset_regions.items():
             site_id = self._normalize_target_site_id_for_placement(fixture_id, raw_site_id)
@@ -640,12 +661,23 @@ class SimToolExecutor:
                     exclude=exclude,
                 )
             )
-            ranked_sites.append((existing_count, -area, site_id))
+            site_tokens = set(self._normalize_site_signature(site_id))
+            raw_site_tokens = set(_SITE_TOKEN_RE.findall(raw_site_id.lower()))
+            bottom_priority = 0
+            if prefer_bottom_for_cabinet:
+                # Cabinet default when site is unspecified: bias toward bottom shelf.
+                if {"bottom", "lower", "low"} & (site_tokens | raw_site_tokens):
+                    bottom_priority = -3
+                elif "middle" in (site_tokens | raw_site_tokens):
+                    bottom_priority = -2
+                elif {"top", "upper", "up"} & (site_tokens | raw_site_tokens):
+                    bottom_priority = -1
+            ranked_sites.append((existing_count, bottom_priority, -area, site_id))
 
         if not ranked_sites:
             return None
-        ranked_sites.sort(key=lambda item: (item[0], item[1], item[2]))
-        return ranked_sites[0][2]
+        ranked_sites.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
+        return ranked_sites[0][3]
 
     def _surface_fixture_slot_positions(
         self,
@@ -1133,6 +1165,9 @@ class SimToolExecutor:
             return self.runner._render_room_view()
         if camera_name == "top_view":
             return self.runner._render_top_view()
+        # Ensure camera renders are not silently black when offscreen context
+        # was dropped between trajectories.
+        self.runner._ensure_offscreen_render_context()
         try:
             return self.env.sim.render(
                 height=self.runner.render_height,
@@ -1729,6 +1764,13 @@ class SimToolExecutor:
                         )
                     except TypeError:
                         self.runner._move_robot_near_fixture(robot_idx, location)
+                    # Apply stove-workstation facing normalization only during
+                    # initial-state spawn positioning, not during runtime
+                    # navigate_to_fixture tool calls.
+                    self._normalize_robot_facing_for_stove_workstation(
+                        robot_idx,
+                        location,
+                    )
             # Final safety: verify every robot is inside kitchen
             for i in range(self.runner._num_robots):
                 self.runner._rescue_robot_to_kitchen(i)
@@ -4592,7 +4634,12 @@ class SimToolExecutor:
                     preferred_world_positions.append(world_xy)
         return preferred_world_positions
 
-    def _find_placeable_surface_near_fixture(self, reference_fixture_id: str) -> str:
+    def _find_placeable_surface_near_fixture(
+        self,
+        reference_fixture_id: str,
+        *,
+        robot_idx: int | None = None,
+    ) -> str:
         """Find the nearest placeable surface to a reference fixture.
 
         If the reference fixture is itself placeable (e.g., a counter), returns it.
@@ -4609,7 +4656,10 @@ class SimToolExecutor:
             raise ValueError(f"Unknown fixture: {reference_fixture_id!r}")
 
         ref_fixture_type = str(ref_info.get("fixture_type") or "").lower()
-        if ref_info.get("can_place_objects", False) and ref_fixture_type != "stove":
+        is_stove_like_reference = (
+            "stove" in ref_fixture_type or "cooktop" in ref_fixture_type
+        )
+        if ref_info.get("can_place_objects", False) and not is_stove_like_reference:
             return reference_fixture_id
 
         # Use parent_fixture (containment-based) when available — this is
@@ -4617,7 +4667,11 @@ class SimToolExecutor:
         parent_id = ref_info.get("parent_fixture")
         if parent_id and parent_id in fixtures:
             parent_info = fixtures[parent_id]
-            if parent_info.get("can_place_objects", False):
+            parent_type = str(parent_info.get("fixture_type") or "").lower()
+            if parent_info.get("can_place_objects", False) and (
+                not is_stove_like_reference
+                or parent_type in _COUNTERLIKE_FIXTURE_TYPES
+            ):
                 return parent_id
 
         nearby_placeable = [
@@ -4625,6 +4679,28 @@ class SimToolExecutor:
             for fixture_id in ref_info.get("nearby_fixtures", [])
             if fixtures.get(fixture_id, {}).get("can_place_objects", False)
         ]
+        if is_stove_like_reference:
+            counter_nearby = [
+                fixture_id
+                for fixture_id in nearby_placeable
+                if fixtures.get(fixture_id, {}).get("fixture_type")
+                in _COUNTERLIKE_FIXTURE_TYPES
+            ]
+            # Deterministic grounding-first disambiguation:
+            # if a task-level fixture role "counter" is grounded and is a valid
+            # nearby counter for this stove-like reference, use it.
+            if counter_nearby:
+                scene_fixture_refs = scene.get("fixture_refs", {})
+                grounded_counter = scene_fixture_refs.get("counter")
+                if (
+                    isinstance(grounded_counter, str)
+                    and grounded_counter in counter_nearby
+                ):
+                    return grounded_counter
+            if len(counter_nearby) == 1:
+                return counter_nearby[0]
+            if counter_nearby:
+                nearby_placeable = counter_nearby
         if len(nearby_placeable) == 1:
             return nearby_placeable[0]
 
@@ -4645,7 +4721,7 @@ class SimToolExecutor:
             raise ValueError(
                 f"No placeable surface found near {reference_fixture_id!r}"
             )
-        if ref_fixture_type == "stove":
+        if is_stove_like_reference:
             counter_candidates = [
                 (dist, fixture_id)
                 for dist, fixture_id in ranked_candidates
@@ -4675,13 +4751,23 @@ class SimToolExecutor:
         if counter_close and fixtures.get(best_id, {}).get("fixture_type") == "stove":
             best_id = counter_close[0]
             close_candidates = counter_close
+        if close_candidates:
+            scene_fixture_refs = scene.get("fixture_refs", {})
+            grounded_counter = scene_fixture_refs.get("counter")
+            if (
+                isinstance(grounded_counter, str)
+                and grounded_counter in close_candidates
+                and fixtures.get(grounded_counter, {}).get("fixture_type")
+                in _COUNTERLIKE_FIXTURE_TYPES
+            ):
+                return grounded_counter
         if len(close_candidates) > 1 and all(
             fixtures.get(fixture_id, {}).get("fixture_type") in _COUNTERLIKE_FIXTURE_TYPES
             for fixture_id in close_candidates
         ):
-            raise ValueError(
-                f"Ambiguous placeable surface near {reference_fixture_id!r}: {close_candidates}"
-            )
+            # Keep deterministic behavior across runs even when still ambiguous.
+            # Grounding-first choice above handles the common intended case.
+            return sorted(close_candidates)[0]
         return best_id
 
     def _ignored_fixture_ids_for_adjacent_reference(
@@ -5531,6 +5617,90 @@ class SimToolExecutor:
             success=placed,
             details={"fixture_id": fixture_id, "robot_idx": robot_idx},
         )
+
+    def _normalize_robot_facing_for_stove_workstation(
+        self,
+        robot_idx: int,
+        fixture_id: str,
+    ) -> None:
+        """Back robot away from stove and orient toward it during init spawn only."""
+        scene_fixtures = (self.get_scene_description().get("fixtures") or {})
+        fixture_info = scene_fixtures.get(fixture_id)
+        if not isinstance(fixture_info, dict):
+            return
+        fixture_type = str(fixture_info.get("fixture_type") or "").lower()
+        if "stove" not in fixture_type:
+            return
+        focus_fixture = self.runner._fixtures.get(fixture_id)
+        setter = getattr(self.runner, "_set_robot_pose", None)
+        if focus_fixture is None or not callable(setter):
+            return
+        get_pos = getattr(self.runner, "_get_robot_position", None)
+        is_valid = getattr(self.runner, "_is_valid_robot_position", None)
+        if not callable(get_pos):
+            return
+        robot_xy = np.asarray(get_pos(robot_idx)[:2], dtype=float)
+        focus_xy = np.asarray(focus_fixture.pos[:2], dtype=float)
+
+        num_robots = len(getattr(self.env, "robots", []))
+        anchor_robot_idx = 1 if num_robots >= 2 else None
+        placed_xy = robot_xy
+
+        # Formation rule for stove init: place the non-anchor robot directly
+        # behind robot1 along the "away from stove" direction.
+        if (
+            isinstance(anchor_robot_idx, int)
+            and robot_idx != anchor_robot_idx
+            and callable(get_pos)
+        ):
+            anchor_xy = np.asarray(get_pos(anchor_robot_idx)[:2], dtype=float)
+            away = anchor_xy - focus_xy
+            if float(np.linalg.norm(away)) <= 1e-6:
+                away = robot_xy - focus_xy
+            if float(np.linalg.norm(away)) > 1e-9:
+                away = away / float(np.linalg.norm(away))
+                lateral = np.array([-away[1], away[0]], dtype=float)
+                desired_gap = 0.46
+                min_anchor_sep = 0.38
+                # Keep the primary target "directly behind", but allow tiny
+                # lateral nudges as validity fallback.
+                for lateral_offset in (0.0, 0.08, -0.08, 0.14, -0.14):
+                    candidate_xy = (
+                        anchor_xy
+                        + away * desired_gap
+                        + lateral * float(lateral_offset)
+                    )
+                    if callable(is_valid) and not bool(is_valid(candidate_xy)):
+                        continue
+                    if float(np.linalg.norm(candidate_xy - anchor_xy)) < min_anchor_sep:
+                        continue
+                    placed_xy = candidate_xy
+                    break
+        else:
+            # Single-robot fallback: move slightly away from the stove center.
+            outward = robot_xy - focus_xy
+            if float(np.linalg.norm(outward)) <= 1e-6:
+                inward_axis = np.asarray(
+                    self._fixture_inward_world_axis(fixture_id, "y")[:2],
+                    dtype=float,
+                )
+                outward = -inward_axis
+            outward_norm = float(np.linalg.norm(outward))
+            if outward_norm <= 1e-9:
+                return
+            outward = outward / outward_norm
+            for retreat in (0.34, 0.26, 0.18, 0.10, 0.06):
+                candidate_xy = robot_xy + outward * float(retreat)
+                if callable(is_valid) and not bool(is_valid(candidate_xy)):
+                    continue
+                placed_xy = candidate_xy
+                break
+
+        facing = focus_xy - placed_xy
+        if float(np.linalg.norm(facing)) <= 1e-6:
+            return
+        yaw = float(np.arctan2(facing[1], facing[0]))
+        setter(robot_idx, placed_xy, yaw)
 
     def open_hinged_part(
         self,
@@ -6581,6 +6751,19 @@ class SimToolExecutor:
                 support_fixture_id,
                 support_site_id,
             )
+            if support_site_id is None:
+                # Generic deterministic fallback for interior placements: if
+                # no explicit site was provided, bind to a default support site
+                # so we do not solve against an unconstrained multi-shelf interior.
+                default_site_id = self._default_support_site_for_unspecified_fixture(
+                    support_fixture_id,
+                    incoming_object_id=object_id,
+                )
+                if isinstance(default_site_id, str):
+                    support_site_id = self._resolve_fixture_site_id(
+                        support_fixture_id,
+                        default_site_id,
+                    )
             self._require_explicit_site_if_needed(
                 support_fixture_id,
                 support_site_id,
@@ -6752,7 +6935,10 @@ class SimToolExecutor:
             fixture = self.runner._fixtures[reference_target_id]
             ref_pos = np.asarray(fixture.pos, dtype=float)
             ref_extent_xy = self._reference_extent_xy(reference_target_id, is_fixture=True)
-            support_fixture_id = self._find_placeable_surface_near_fixture(reference_target_id)
+            support_fixture_id = self._find_placeable_surface_near_fixture(
+                reference_target_id,
+                robot_idx=robot_idx,
+            )
             reference_fixture_type = (
                 self._get_fixture_type_name(reference_target_id) or ""
             ).lower()

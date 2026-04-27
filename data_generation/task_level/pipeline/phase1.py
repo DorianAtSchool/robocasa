@@ -1119,6 +1119,51 @@ def _step_interaction_fixture(
     )
 
 
+def _fixture_workspace_cluster_id(fixture_id: str) -> str:
+    """Return a stable coarse workspace key for fixture ids."""
+    if not isinstance(fixture_id, str):
+        return ""
+    match = re.match(r"(.+_main_group)(?:_\d+)?$", fixture_id)
+    if match:
+        return match.group(1)
+    return fixture_id
+
+
+def _fixtures_share_workspace(
+    fixture_a: str,
+    fixture_b: str,
+    *,
+    fixture_states: dict[str, dict[str, Any]],
+) -> bool:
+    """Conservative shared-workspace heuristic for give_space insertion."""
+    if fixture_a == fixture_b:
+        return True
+    state_a = fixture_states.get(fixture_a) or {}
+    state_b = fixture_states.get(fixture_b) or {}
+    parent_a = state_a.get("parent_fixture")
+    parent_b = state_b.get("parent_fixture")
+    if isinstance(parent_a, str) and parent_a == fixture_b:
+        return True
+    if isinstance(parent_b, str) and parent_b == fixture_a:
+        return True
+    if isinstance(parent_a, str) and parent_a == parent_b:
+        return True
+
+    type_a = str(state_a.get("fixture_type") or "").lower()
+    type_b = str(state_b.get("fixture_type") or "").lower()
+    counterlike = {"counter", "counter_non_dining", "counter_non_corner", "dining_counter", "island"}
+    storage = {"cabinet", "cabinet_single_door", "cabinet_double_door", "cabinet_with_door", "drawer", "top_drawer", "fridge"}
+    pair_types = (type_a, type_b)
+    if (
+        (pair_types[0] in counterlike and pair_types[1] in storage)
+        or (pair_types[1] in counterlike and pair_types[0] in storage)
+    ) and (
+        _fixture_workspace_cluster_id(fixture_a) == _fixture_workspace_cluster_id(fixture_b)
+    ):
+        return True
+    return False
+
+
 def _update_symbolic_locations_for_step(
     step: dict[str, Any],
     *,
@@ -1163,6 +1208,11 @@ def _insert_give_space_for_occupied_shared_fixtures(
         for fixture_id in (initial_state.get("fixtures") or {})
         if isinstance(fixture_id, str)
     }
+    fixture_states = {
+        fixture_id: fixture_state
+        for fixture_id, fixture_state in (initial_state.get("fixtures") or {}).items()
+        if isinstance(fixture_id, str) and isinstance(fixture_state, dict)
+    }
     object_locations = {
         object_id: object_state.get("location")
         for object_id, object_state in (initial_state.get("objects") or {}).items()
@@ -1175,6 +1225,12 @@ def _insert_give_space_for_occupied_shared_fixtures(
         for agent_id, agent_state in (initial_state.get("agents") or {}).items()
         if isinstance(agent_id, str) and isinstance(agent_state, dict)
     }
+    agent_holding: dict[str, str | None] = {}
+    for agent_id, agent_state in (initial_state.get("agents") or {}).items():
+        if not isinstance(agent_id, str) or not isinstance(agent_state, dict):
+            continue
+        held_object = agent_state.get("held_object")
+        agent_holding[agent_id] = held_object if isinstance(held_object, str) else None
 
     normalized_steps: list[dict[str, Any]] = []
     for raw_step in steps:
@@ -1182,6 +1238,8 @@ def _insert_give_space_for_occupied_shared_fixtures(
             continue
         step = dict(raw_step)
         agent_id = step.get("agent")
+        args = step.get("args") if isinstance(step.get("args"), dict) else {}
+        tool_name = step.get("tool")
         interaction_fixture = _step_interaction_fixture(
             step,
             object_locations=object_locations,
@@ -1196,7 +1254,14 @@ def _insert_give_space_for_occupied_shared_fixtures(
             blockers = [
                 other_agent_id
                 for other_agent_id, other_location in agent_locations.items()
-                if other_agent_id != agent_id and other_location == interaction_fixture
+                if other_agent_id != agent_id
+                and isinstance(other_location, str)
+                and _fixtures_share_workspace(
+                    other_location,
+                    interaction_fixture,
+                    fixture_states=fixture_states,
+                )
+                and agent_holding.get(other_agent_id) is None
             ]
             for blocker_id in blockers:
                 previous_step = normalized_steps[-1] if normalized_steps else None
@@ -1225,6 +1290,15 @@ def _insert_give_space_for_occupied_shared_fixtures(
                 )
                 agent_locations[blocker_id] = None
         normalized_steps.append(step)
+        if isinstance(agent_id, str) and isinstance(args, dict):
+            if tool_name == "pick_up_object":
+                object_id = args.get("object_id")
+                if isinstance(object_id, str):
+                    agent_holding[agent_id] = object_id
+            elif tool_name in RELEASE_TOOL_NAMES:
+                object_id = args.get("object_id")
+                if isinstance(object_id, str) and agent_holding.get(agent_id) == object_id:
+                    agent_holding[agent_id] = None
         _update_symbolic_locations_for_step(
             step,
             agent_locations=agent_locations,
