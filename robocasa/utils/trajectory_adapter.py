@@ -656,6 +656,7 @@ class TrajectoryAdapter:
                         and "preserve_pose" not in resolved_state
                         and (
                             scene_obj_info.get("location") == resolved_state["location"]
+                            or requested_object_id in preserve_pose_object_ids
                             or resolved_object_id in preserve_pose_object_ids
                         )
                     ):
@@ -700,12 +701,12 @@ class TrajectoryAdapter:
         symbolic_fixture_context: dict[str, Any],
     ) -> tuple[str, str | None]:
         """Prefer a concrete support site when one can be inferred conservatively."""
-
-        # If the spec did not request a site, keep fixture-only placement.
-        # Site selection belongs in SimToolExecutor.load_initial_state where we
-        # can preserve native simulator spawn before any default-site fallback.
-        if not explicit_target_site:
-            return resolved_fixture_id, None
+        scene_obj_info = (self.scene.get("objects") or {}).get(
+            resolved_object_id,
+            {},
+        )
+        current_scene_location = scene_obj_info.get("location")
+        can_reuse_scene_site = current_scene_location == resolved_fixture_id
 
         symbolic_fixture_state = symbolic_fixture_context.get(requested_location)
         support_sites = (
@@ -713,7 +714,7 @@ class TrajectoryAdapter:
             if isinstance(symbolic_fixture_state, dict)
             else None
         )
-        if isinstance(support_sites, dict) and len(support_sites) == 1:
+        if explicit_target_site and isinstance(support_sites, dict) and len(support_sites) == 1:
             symbolic_site_id = next(iter(support_sites))
             if isinstance(symbolic_site_id, str):
                 return self._resolve_support_site_target(
@@ -722,7 +723,7 @@ class TrajectoryAdapter:
                     symbolic_fixture_context=symbolic_fixture_context,
                 )
 
-        if hasattr(self.executor, "_infer_object_support_site"):
+        if can_reuse_scene_site and hasattr(self.executor, "_infer_object_support_site"):
             try:
                 inferred_site_id = self.executor._infer_object_support_site(  # noqa: SLF001
                     resolved_object_id,
@@ -765,7 +766,7 @@ class TrajectoryAdapter:
                 )
             except Exception:
                 requires_site = False
-            if requires_site:
+            if requires_site and (explicit_target_site or can_reuse_scene_site):
                 try:
                     default_site_id = self.executor._default_support_site_for_unspecified_fixture(  # noqa: SLF001
                         resolved_fixture_id,

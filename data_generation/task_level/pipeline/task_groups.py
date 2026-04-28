@@ -9,6 +9,9 @@ from pathlib import Path
 DEFAULT_VERIFIED_SPECS_DIR = (
     Path(__file__).resolve().parents[1] / "tasks" / "specs" / "verified"
 )
+# The verified spec inventory is canonicalized to one flat JSON file per task
+# slug. Overlapping validation groups are tracked separately in this module and
+# mirrored for humans in tasks/specs/verified/README.md.
 
 # Batch 1 groups intentionally overlap. They are meant for systematic
 # validation by behavior/fixture family rather than for partitioning the batch.
@@ -296,6 +299,37 @@ def tasks_for_group(group_name: str, *, batch: str = "batch1") -> tuple[str, ...
         ) from exc
 
 
+def groups_for_task(
+    task_name: str,
+    *,
+    batch: str | None = "batch1",
+) -> tuple[str, ...]:
+    """Return group names that include one task slug.
+
+    When ``batch`` is ``None``, all configured batches are searched in their
+    declaration order.
+    """
+
+    task_slug = str(task_name)
+    if batch is None:
+        batches = tuple(TASK_GROUPS_BY_BATCH)
+    else:
+        if batch not in TASK_GROUPS_BY_BATCH:
+            known_batches = ", ".join(sorted(TASK_GROUPS_BY_BATCH))
+            raise KeyError(f"Unknown task batch {batch!r}; known: {known_batches}")
+        batches = (batch,)
+
+    matched_groups: list[str] = []
+    seen: set[str] = set()
+    for batch_name in batches:
+        for group_name, tasks in TASK_GROUPS_BY_BATCH[batch_name].items():
+            if task_slug not in tasks or group_name in seen:
+                continue
+            seen.add(group_name)
+            matched_groups.append(group_name)
+    return tuple(matched_groups)
+
+
 def tasks_for_groups(
     group_names: str | list[str] | tuple[str, ...],
     *,
@@ -370,6 +404,9 @@ def count_unique_task_specs(
 
     Uniqueness is determined by JSON filename stem (task slug), so duplicated
     specs across group folders are counted once in `unique_task_count`.
+
+    The default verified inventory is now flat and canonicalized, but this
+    helper remains useful for auditing older nested trees and ad-hoc exports.
     """
 
     root = Path(specs_dir).expanduser().resolve()

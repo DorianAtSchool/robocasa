@@ -23,6 +23,7 @@ from data_generation.task_level.generation.raw.config import (
     INTERRUPTED_MESSAGE,
     RuntimeConfig,
     THINKING_LEVEL_CHOICES,
+    VERIFIED_COMPOSITE_TASKS_OPTION,
     _validate_runtime_config,
 )
 from data_generation.task_level.generation.raw.orchestrator import generate_trajectories
@@ -430,7 +431,9 @@ def parse_args(argv: list[str] | None = None) -> RuntimeConfig:
         dest="composite_tasks",
         help=(
             "Task names to generate. Use "
-            f"`{ALL_COMPOSITE_TASKS_OPTION}` for every task. Available tasks: "
+            f"`{ALL_COMPOSITE_TASKS_OPTION}` for every task or "
+            f"`{VERIFIED_COMPOSITE_TASKS_OPTION}` for the canonical verified set. "
+            "Available tasks: "
             f"{supported_tasks}. --num-runs applies to each selected task."
         ),
     )

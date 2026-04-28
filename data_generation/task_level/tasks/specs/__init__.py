@@ -115,41 +115,89 @@ class TaskSpec:
 
 
 SPEC_DIRECTORY = Path(__file__).resolve().parent
+VERIFIED_SPEC_DIRECTORY = SPEC_DIRECTORY / "verified"
 TASK_SPEC_DIRECTORY_OVERRIDE_ENV_VAR = "ROBOCASA_TASK_SPEC_DIR"
 
 
-def _resolve_spec_directory() -> Path:
+def _default_spec_directories() -> tuple[Path, ...]:
+    """Choose the checked-in spec inventories used when no override is configured."""
+
+    directories: list[Path] = []
+    if any(SPEC_DIRECTORY.glob("*.json")):
+        directories.append(SPEC_DIRECTORY)
+    if VERIFIED_SPEC_DIRECTORY.is_dir():
+        directories.append(VERIFIED_SPEC_DIRECTORY)
+    if not directories:
+        directories.append(SPEC_DIRECTORY)
+    return tuple(directories)
+
+
+def _resolve_spec_directories() -> tuple[Path, ...]:
     override_directory = os.environ.get(TASK_SPEC_DIRECTORY_OVERRIDE_ENV_VAR)
-    if not override_directory:
-        return SPEC_DIRECTORY
-    return Path(override_directory).expanduser().resolve()
+    if override_directory:
+        return (Path(override_directory).expanduser().resolve(),)
+    return _default_spec_directories()
 
 
-def _task_spec_path(task_name: str) -> Path:
-    """Resolve the JSON file path for one composite task name."""
+def _normalized_task_spec_filename(task_name: str) -> str:
+    """Build the normalized JSON filename for one composite task name."""
 
     normalized_name = "".join(
         character.lower() if character.isalnum() else "_" for character in task_name
     )
     collapsed_name = "_".join(part for part in normalized_name.split("_") if part)
-    return _resolve_spec_directory() / f"{collapsed_name}.json"
+    return f"{collapsed_name}.json"
+
+
+def _task_spec_paths(task_name: str) -> tuple[Path, ...]:
+    """Resolve candidate JSON file paths for one composite task name."""
+
+    filename = _normalized_task_spec_filename(task_name)
+    return tuple(directory / filename for directory in _resolve_spec_directories())
 
 
 def load_task_spec(task_name: str) -> TaskSpec:
     """Load one JSON-backed task spec by composite task name."""
 
-    spec_path = _task_spec_path(task_name)
-    if not spec_path.exists():
-        raise FileNotFoundError(f"Unknown task spec {task_name!r}: {spec_path}")
-    with spec_path.open("r", encoding="utf-8") as handle:
-        return TaskSpec.from_dict(json.load(handle))
+    candidate_paths = _task_spec_paths(task_name)
+    for spec_path in candidate_paths:
+        if not spec_path.exists():
+            continue
+        with spec_path.open("r", encoding="utf-8") as handle:
+            return TaskSpec.from_dict(json.load(handle))
+    raise FileNotFoundError(
+        f"Unknown task spec {task_name!r}: {candidate_paths[0]}"
+    )
 
 
 def load_all_task_specs() -> tuple[TaskSpec, ...]:
     """Load every JSON-backed task spec shipped in this package."""
 
     specs: list[TaskSpec] = []
-    for spec_path in sorted(_resolve_spec_directory().glob("*.json")):
+    seen_filenames: set[str] = set()
+    for directory in _resolve_spec_directories():
+        for spec_path in sorted(directory.glob("*.json")):
+            if spec_path.name in seen_filenames:
+                continue
+            seen_filenames.add(spec_path.name)
+            with spec_path.open("r", encoding="utf-8") as handle:
+                specs.append(TaskSpec.from_dict(json.load(handle)))
+    return tuple(specs)
+
+
+def load_verified_task_specs() -> tuple[TaskSpec, ...]:
+    """Load the canonical flat verified JSON-backed task specs."""
+
+    if not VERIFIED_SPEC_DIRECTORY.is_dir():
+        return ()
+    specs: list[TaskSpec] = []
+    for spec_path in sorted(VERIFIED_SPEC_DIRECTORY.glob("*.json")):
         with spec_path.open("r", encoding="utf-8") as handle:
             specs.append(TaskSpec.from_dict(json.load(handle)))
     return tuple(specs)
+
+
+def supported_verified_task_names() -> tuple[str, ...]:
+    """Return the canonical verified composite task names in sorted order."""
+
+    return tuple(sorted(task_spec.composite_task for task_spec in load_verified_task_specs()))

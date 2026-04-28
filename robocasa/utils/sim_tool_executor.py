@@ -40,6 +40,14 @@ from robocasa.utils.placement import (
     get_front_alignment_metrics,
     get_fixture_aabb,
 )
+from robocasa.utils.sim_tool_executor_execution import SimToolExecutorExecutionMixin
+from robocasa.utils.sim_tool_executor_inspection import (
+    SimToolExecutorInspectionMixin,
+)
+from robocasa.utils.sim_tool_executor_planning import SimToolExecutorPlanningMixin
+from robocasa.utils.sim_tool_executor_state_loading import (
+    SimToolExecutorStateLoadingMixin,
+)
 from robocasa.utils.sim_tool_specs import SIM_TOOL_SPEC_BY_NAME
 from robocasa.utils.trajectory_runner import TrajectoryRunner
 
@@ -297,12 +305,18 @@ def _sim_tool_debug_enabled() -> bool:
 
 def _is_approach_center(fixture) -> bool:
     """Return True if the robot should approach the fixture center, not an object inside it."""
-    return any(fixture_is_type(fixture, ft) for ft in _APPROACH_CENTER_TYPES)
+    try:
+        return any(fixture_is_type(fixture, ft) for ft in _APPROACH_CENTER_TYPES)
+    except Exception:
+        return False
 
 
 def _require_front(fixture) -> bool:
     """Return True if the robot must approach from the fixture's front face."""
-    return any(fixture_is_type(fixture, ft) for ft in _REQUIRE_FRONT_TYPES)
+    try:
+        return any(fixture_is_type(fixture, ft) for ft in _REQUIRE_FRONT_TYPES)
+    except Exception:
+        return False
 
 
 @dataclass
@@ -312,7 +326,12 @@ class ToolResult:
     details: dict[str, Any]
 
 
-class SimToolExecutor:
+class SimToolExecutor(
+    SimToolExecutorExecutionMixin,
+    SimToolExecutorInspectionMixin,
+    SimToolExecutorPlanningMixin,
+    SimToolExecutorStateLoadingMixin,
+):
     """Dispatch simulator tool calls against a live RoboCasa environment."""
 
     _HELD_Z_OFFSET = 0.0
@@ -371,6 +390,7 @@ class SimToolExecutor:
             trajectory_object_specs=trajectory_object_specs,
         )
         self.env = self.runner.env
+        self._task_name = task_name
         self._held_objects: dict[int, str] = {}
         self._held_object_offsets: dict[int, np.ndarray] = {}
         self._support_parents: dict[str, str] = {}
@@ -1073,857 +1093,6 @@ class SimToolExecutor:
     # Scene / state helpers
     # ------------------------------------------------------------------
 
-    def close(self):
-        self.runner.close()
-
-    def get_scene_description(self) -> dict[str, Any]:
-        return self.runner.get_scene_description()
-
-    def render(self) -> dict[str, np.ndarray]:
-        return self.runner.render()
-
-    def save_placement_map(
-        self,
-        output_dir: str | Path,
-        prefix: str = "placement",
-        clean_labels: bool = True,
-    ) -> Path:
-        """Render the 2D placement map and save it to *output_dir*.
-
-        Uses the grid view for grid mode, continuous view for continuous mode,
-        or side-by-side if both are available.
-        """
-        output_dir = Path(output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        return self._save_map_image(
-            output_dir / f"{prefix}_map.png",
-            clean_labels=clean_labels,
-        )
-
-    def _save_map_image(
-        self,
-        image_path: str | Path,
-        clean_labels: bool = True,
-    ) -> Path:
-        """Render the placement map and save it to an explicit output path.
-
-        *clean_labels*: when True (default), fixture labels are shortened
-        (strip ``_group``, ``_main``, dedupe repeated segments).
-        Set False to show full raw fixture ids.
-        """
-        import matplotlib
-
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-        from robocasa.utils.placement_map import draw_grid_map, draw_continuous_map
-
-        path = Path(image_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        mode = self.runner._placement_mode
-        if mode == "grid":
-            fig, ax = plt.subplots(1, 1, figsize=(20, 16))
-            draw_grid_map(ax, self.runner, clean_labels=clean_labels)
-        elif mode == "continuous":
-            fig, ax = plt.subplots(1, 1, figsize=(20, 16))
-            draw_continuous_map(ax, self.runner, clean_labels=clean_labels)
-        else:
-            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(36, 16))
-            draw_grid_map(ax1, self.runner, clean_labels=clean_labels)
-            draw_continuous_map(ax2, self.runner, clean_labels=clean_labels)
-
-        fig.tight_layout()
-        fig.savefig(path, dpi=300)
-        plt.close(fig)
-        return path
-
-    def save_scene_frames(
-        self, output_dir: str | Path, prefix: str = "initial"
-    ) -> dict[str, Path]:
-        """Render the current scene and save one image per camera."""
-        output_dir = Path(output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        frames = self.render()
-        saved = {}
-        for camera_name, image in frames.items():
-            camera_dir = output_dir / camera_name
-            camera_dir.mkdir(parents=True, exist_ok=True)
-            path = camera_dir / f"{prefix}.jpg"
-            imageio.imwrite(path, image, quality=85)
-            saved[camera_name] = path
-        return saved
-
-    def _parse_agent_idx(self, agent_id: str | int) -> int:
-        if isinstance(agent_id, int):
-            return agent_id
-        agent_str = str(agent_id)
-        if agent_str.startswith("agent_"):
-            return int(agent_str.replace("agent_", ""))
-        return int(agent_str)
-
-    def _render_camera(self, camera_name: str) -> np.ndarray:
-        if camera_name == "room_view":
-            return self.runner._render_room_view()
-        if camera_name == "top_view":
-            return self.runner._render_top_view()
-        # Ensure camera renders are not silently black when offscreen context
-        # was dropped between trajectories.
-        self.runner._ensure_offscreen_render_context()
-        try:
-            return self.env.sim.render(
-                height=self.runner.render_height,
-                width=self.runner.render_width,
-                camera_name=camera_name,
-            )[::-1]
-        except AttributeError as exc:
-            if "MjRenderContextOffscreen" not in str(exc):
-                raise
-            return np.zeros(
-                (self.runner.render_height, self.runner.render_width, 3),
-                dtype=np.uint8,
-            )
-
-    def _save_image(
-        self, image: np.ndarray, image_path: str | Path, *, is_map: bool = False
-    ) -> Path:
-        path = Path(image_path)
-        # Use JPEG for camera renders (much smaller), keep PNG for maps
-        if not is_map and path.suffix.lower() == ".png":
-            path = path.with_suffix(".jpg")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if path.suffix.lower() in {".jpg", ".jpeg"}:
-            imageio.imwrite(path, image, quality=85)
-        else:
-            imageio.imwrite(path, image)
-        return path
-
-    def _camera_name_for_agent_view(
-        self, agent_id: str | int, view: str
-    ) -> tuple[int, str]:
-        robot_idx = self._parse_agent_idx(agent_id)
-        view_name = str(view).strip().lower()
-        view_aliases = {
-            "wrist": "eye_in_hand",
-            "eye_in_hand": "eye_in_hand",
-            "agentview_center": "agentview_center",
-            "agentview_left": "agentview_left",
-            "agentview_right": "agentview_right",
-            "robotview": "robotview",
-        }
-        suffix = view_aliases.get(view_name, view_name)
-        if suffix.startswith("robot"):
-            return robot_idx, suffix
-        return robot_idx, f"robot{robot_idx}_{suffix}"
-
-    def _set_fixture_machine_state(self, fixture_id: str, started: bool):
-        fixture = self._require_fixture(fixture_id)
-        started = bool(started)
-        if isinstance(fixture, (CoffeeMachine, Microwave)):
-            fixture._turned_on = started
-        elif isinstance(fixture, ElectricKettle):
-            fixture.set_power_state(self.env, power_on=started)
-        else:
-            return
-        self._settle_scene(steps=_PLACEMENT_SETTLE_STEPS)
-
-    def load_initial_state(
-        self, initial_state: dict[str, Any] | None
-    ) -> dict[str, Any]:
-        """Apply a normalized initial state to the live simulator."""
-        if not initial_state:
-            return {"loaded": False}
-
-        fixtures = initial_state.get("fixtures", {})
-        objects = initial_state.get("objects", {})
-        agents = initial_state.get("agents", {})
-        machine_state = initial_state.get("machine_state", {})
-        held_assignments: dict[int, str] = {}
-
-        if not hasattr(self, "_held_objects") or not isinstance(self._held_objects, dict):
-            self._held_objects = {}
-        if not hasattr(self, "_held_object_offsets") or not isinstance(
-            self._held_object_offsets,
-            dict,
-        ):
-            self._held_object_offsets = {}
-        if not hasattr(self, "_support_parents") or not isinstance(self._support_parents, dict):
-            self._support_parents = {}
-        if not hasattr(self, "_recent_opened_sliding_fixture") or not isinstance(
-            self._recent_opened_sliding_fixture,
-            dict,
-        ):
-            self._recent_opened_sliding_fixture = {}
-
-        self._held_objects.clear()
-        self._held_object_offsets.clear()
-        self._support_parents.clear()
-        self._recent_opened_sliding_fixture.clear()
-
-        # Apply fixture part states from the trajectory's initial_state.
-        # The sim's _setup_scene may have opened fixtures during object
-        # placement (e.g. opening a cabinet to place a mug inside).  The
-        # trajectory expects specific initial states (e.g. cabinet closed),
-        # so we enforce them here.  The trajectory's own steps will
-        # open/close fixtures as needed during execution.
-        for fixture_id, fixture_cfg in fixtures.items():
-            fixture = self.runner._fixtures.get(fixture_id)
-            if fixture is None:
-                continue
-            for part_id, part_cfg in fixture_cfg.get("parts", {}).items():
-                desired_state = part_cfg.get("state")
-                if desired_state == "closed":
-                    if part_id == "hinged" and hasattr(fixture, "close_door"):
-                        fixture.close_door(env=self.env)
-                    else:
-                        try:
-                            joint_name = self._resolve_joint_name(fixture, part_id)
-                            self._set_named_joint(fixture, joint_name, 0.0)
-                        except ValueError:
-                            pass
-                elif desired_state == "open":
-                    if part_id == "hinged" and hasattr(fixture, "open_door"):
-                        fixture.open_door(env=self.env)
-                    else:
-                        try:
-                            joint_name = self._resolve_joint_name(fixture, part_id)
-                            self._set_named_joint(
-                                fixture,
-                                joint_name,
-                                self._sliding_joint_open_fraction(
-                                    joint_name,
-                                    part_id=part_id,
-                                ),
-                            )
-                        except ValueError:
-                            pass
-        self.env.sim.forward()
-
-        for fixture_id, machine_cfg in machine_state.items():
-            if not isinstance(machine_cfg, dict):
-                continue
-            if "started" in machine_cfg:
-                self._set_fixture_machine_state(
-                    fixture_id, bool(machine_cfg["started"])
-                )
-
-        held_object_ids = set()
-        for agent_id, agent_state in agents.items():
-            held_object = agent_state.get("held_object")
-            if held_object is None:
-                continue
-            robot_idx = self._parse_agent_idx(agent_id)
-            held_assignments[robot_idx] = held_object
-            held_object_ids.add(held_object)
-
-        # Object placements from the scene description — where the sim
-        # originally placed each object.  Used to skip redundant moves.
-        scene = self.get_scene_description()
-        sim_object_placements = scene.get("object_placements", {})
-
-        current_scene_objects = scene.get("objects", {})
-        placement_events: list[dict[str, Any]] = []
-
-        def _resolve_fixture_location_target(
-            object_state: dict[str, Any],
-        ) -> tuple[str, str | None] | None:
-            location = object_state.get("location")
-            if not isinstance(location, str) or location in objects:
-                return None
-            target_site_id = object_state.get("target_site_id")
-            if not isinstance(target_site_id, str):
-                target_site_id = None
-            return self._resolve_support_target(location, target_site_id)
-
-        contained_children_by_parent: dict[str, list[str]] = {}
-        for child_object_id, child_state in objects.items():
-            child_location = child_state.get("location")
-            if isinstance(child_location, str) and child_location in objects:
-                contained_children_by_parent.setdefault(child_location, []).append(
-                    child_object_id
-                )
-
-        contained_object_ids = {
-            object_id
-            for object_id, object_state in objects.items()
-            if isinstance(object_state.get("location"), str)
-            and object_state.get("location") in objects
-        }
-
-        # Seed the symbolic support graph from the requested state before any
-        # fixture placement. This lets container placement ignore its future
-        # contents even if the simulator still has those descendants elsewhere.
-        for object_id, object_state in objects.items():
-            location = object_state.get("location")
-            if isinstance(location, str) and location in objects:
-                self._set_support_parent(object_id, location)
-            else:
-                self._set_support_parent(object_id, None)
-
-        def _containment_depth(object_id: str, stack: set[str] | None = None) -> int:
-            object_state = objects.get(object_id, {})
-            location = object_state.get("location")
-            if not isinstance(location, str) or location not in objects:
-                return 0
-            if stack is None:
-                stack = set()
-            if object_id in stack:
-                return 0
-            return 1 + _containment_depth(location, stack | {object_id})
-
-        def _preserve_pose_requested(object_state: dict[str, Any]) -> bool:
-            flag = object_state.get("preserve_pose")
-            if not isinstance(flag, bool):
-                return False
-            return flag
-
-        # First pass: place objects whose location is a fixture or support site.
-        for object_id, object_state in objects.items():
-            if object_id in held_object_ids:
-                continue
-            resolved_target = _resolve_fixture_location_target(object_state)
-            if resolved_target is not None:
-                location = object_state.get("location")
-                target_fixture_id, target_site_id = resolved_target
-                explicit_target_site_requested = isinstance(
-                    object_state.get("target_site_id"), str
-                )
-                current_scene_location = (
-                    current_scene_objects.get(object_id, {}) or {}
-                ).get("location")
-                current_scene_site_id = (
-                    self._infer_object_support_site(object_id, target_fixture_id)
-                    if current_scene_location == target_fixture_id
-                    else None
-                )
-                current_support_object = self._current_support_object(object_id)
-                if (
-                    _preserve_pose_requested(object_state)
-                    and current_scene_location == target_fixture_id
-                    and (
-                        target_site_id is None
-                        or current_scene_site_id == target_site_id
-                    )
-                ):
-                    placement_events.append(
-                        {
-                            "object_id": object_id,
-                            "target_fixture_id": target_fixture_id,
-                            "target_site_id": (
-                                self._raw_support_site_to_external(target_site_id)
-                                if isinstance(target_site_id, str)
-                                else None
-                            ),
-                            "skipped": True,
-                            "reason": "preserve_pose",
-                        }
-                    )
-                    self._set_support_parent(object_id, target_fixture_id)
-                    self.runner._set_object_location(object_id, target_fixture_id)
-                    continue
-                # If no site was explicitly requested, keep simulator-native fixture
-                # spawn placement before auto-selecting a support site. This avoids
-                # unnecessary site injection (e.g., drawers resolving to "int") that
-                # can force re-placement even when the object already spawned on the
-                # correct fixture.
-                if (
-                    not explicit_target_site_requested
-                    and current_support_object is None
-                    and target_site_id is None
-                    and current_scene_location == target_fixture_id
-                    and sim_object_placements.get(object_id) == target_fixture_id
-                    and (
-                        self._fixture_placement_semantics(target_fixture_id) == "receptacle"
-                        or any(
-                            token in (
-                                (self._get_fixture_type_name(target_fixture_id) or "")
-                                .lower()
-                            )
-                            for token in ("cabinet", "fridge", "dishwasher", "drawer")
-                        )
-                    )
-                ):
-                    placement_events.append(
-                        {
-                            "object_id": object_id,
-                            "target_fixture_id": target_fixture_id,
-                            "target_site_id": None,
-                            "skipped": True,
-                            "reason": "preserve_original_spawn",
-                        }
-                    )
-                    self._set_support_parent(object_id, target_fixture_id)
-                    self.runner._set_object_location(object_id, target_fixture_id)
-                    continue
-                target_site_id = self._normalize_target_site_id_for_placement(
-                    target_fixture_id,
-                    target_site_id,
-                )
-                if target_site_id is None:
-                    # For receptacle-like fixtures with a single support site
-                    # (e.g., many drawers exposing only interior "int"), use
-                    # that site so placement stays inside the receptacle.
-                    if self._fixture_placement_semantics(target_fixture_id) == "receptacle":
-                        support_sites = self.get_support_sites(target_fixture_id)
-                        if len(support_sites) == 1 and isinstance(support_sites[0], str):
-                            target_site_id = support_sites[0]
-                if (
-                    target_site_id is None
-                    and self._fixture_requires_explicit_site(target_fixture_id)
-                ):
-                    target_site_id = self._default_support_site_for_unspecified_fixture(
-                        target_fixture_id,
-                        incoming_object_id=object_id,
-                    )
-                current_scene_quat = None
-                if current_scene_location == target_fixture_id:
-                    try:
-                        _current_scene_pos, current_scene_quat = self._get_object_pose(object_id)
-                    except Exception:
-                        current_scene_quat = None
-                fixture_pose_requires_reset = (
-                    current_scene_location == target_fixture_id
-                    and current_scene_quat is not None
-                    and self._fixture_pose_needs_reset(
-                        object_id,
-                        target_fixture_id,
-                        site_id=target_site_id,
-                        quat_wxyz=current_scene_quat,
-                    )
-                )
-                if (
-                    current_support_object is None
-                    and target_site_id is None
-                    and sim_object_placements.get(object_id) == target_fixture_id
-                    and (
-                        self._fixture_placement_semantics(target_fixture_id) == "receptacle"
-                        or any(
-                            token in (
-                                (self._get_fixture_type_name(target_fixture_id) or "")
-                                .lower()
-                            )
-                            for token in ("cabinet", "fridge", "dishwasher", "drawer")
-                        )
-                    )
-                ):
-                    placement_events.append(
-                        {
-                            "object_id": object_id,
-                            "target_fixture_id": target_fixture_id,
-                            "target_site_id": None,
-                            "skipped": True,
-                            "reason": "preserve_original_spawn",
-                        }
-                    )
-                    self._set_support_parent(object_id, target_fixture_id)
-                    self.runner._set_object_location(object_id, target_fixture_id)
-                    continue
-                if (
-                    current_support_object is None
-                    and
-                    not fixture_pose_requires_reset
-                    and
-                    current_scene_location == target_fixture_id
-                    and (
-                        target_site_id is None
-                        or current_scene_site_id == target_site_id
-                    )
-                ) or (
-                    current_support_object is None
-                    and
-                    not fixture_pose_requires_reset
-                    and
-                    target_site_id is None
-                    and sim_object_placements.get(object_id) == target_fixture_id
-                ):
-                    placement_events.append(
-                        {
-                            "object_id": object_id,
-                            "target_fixture_id": target_fixture_id,
-                            "target_site_id": (
-                                self._raw_support_site_to_external(target_site_id)
-                                if isinstance(target_site_id, str)
-                                else None
-                            ),
-                            "skipped": True,
-                            "reason": "already_on_target_fixture",
-                        }
-                    )
-                    self._set_support_parent(object_id, target_fixture_id)
-                    self.runner._set_object_location(object_id, target_fixture_id)
-                    continue
-                self._require_explicit_site_if_needed(
-                    target_fixture_id,
-                    target_site_id,
-                    action_name="load_initial_state",
-                )
-                self._set_support_parent(object_id, target_fixture_id)
-                if _sim_tool_debug_enabled():
-                    print(
-                        "[load_initial_state] placing",
-                        json.dumps(
-                            {
-                                "object_id": object_id,
-                                "requested_location": location,
-                                "target_fixture_id": target_fixture_id,
-                                "target_site_id": (
-                                    self._raw_support_site_to_external(target_site_id)
-                                    if isinstance(target_site_id, str)
-                                    else None
-                                ),
-                            },
-                            sort_keys=True,
-                        ),
-                    )
-                preferred_xy = None
-                if isinstance(target_site_id, str):
-                    preferred_xy = self._incoming_fixture_site_preference(
-                        target_fixture_id,
-                        target_site_id,
-                        incoming_object_id=object_id,
-                    )
-                    if preferred_xy is None:
-                        preferred_xy = self._preferred_xy_for_fixture_target(
-                            target_fixture_id,
-                            site_id=target_site_id,
-                        )
-                else:
-                    fixture_type = (self._get_fixture_type_name(target_fixture_id) or "").lower()
-                    if self._fixture_placement_semantics(target_fixture_id) == "surface":
-                        preferred_xy = self._default_fixture_surface_preference(
-                            target_fixture_id,
-                            object_id,
-                        )
-                    elif fixture_type in _FRONT_BIASED_INTERIOR_FIXTURE_TYPES:
-                        preferred_xy = self._preferred_xy_for_fixture_target(
-                            target_fixture_id
-                        )
-                try:
-                    self._place_object_on_fixture(
-                        object_id,
-                        target_fixture_id,
-                        preferred_xy=preferred_xy,
-                        target_site_id=target_site_id,
-                        settle=False,
-                    )
-                except Exception:
-                    if _sim_tool_debug_enabled():
-                        diagnostics = getattr(self.runner, "_last_placement_diagnostics", None)
-                        if diagnostics is not None:
-                            print(
-                                "[load_initial_state] placement_diagnostics",
-                                json.dumps(diagnostics, sort_keys=True),
-                            )
-                    raise
-                placement_events.append(
-                    {
-                        "object_id": object_id,
-                        "target_fixture_id": target_fixture_id,
-                        "target_site_id": (
-                            self._raw_support_site_to_external(target_site_id)
-                            if isinstance(target_site_id, str)
-                            else None
-                        ),
-                        "skipped": False,
-                    }
-                )
-
-        # --- Overlap repair pass ---
-        # Fix objects that the sim placed at near-identical positions on the
-        # same fixture (e.g. sausage + cheese both on the same fridge shelf).
-        # Only targets coincident placements (XY < 3cm), NOT objects that are
-        # merely close together on a counter (which is normal).
-        _COINCIDENT_THRESHOLD = 0.03  # 3cm — catches sim duplicate placement
-        fixture_to_objects: dict[str, list[str]] = {}
-        for object_id, object_state in objects.items():
-            if object_id in held_object_ids:
-                continue
-            resolved_target = _resolve_fixture_location_target(object_state)
-            if resolved_target is not None:
-                fixture_id, _support_site_id = resolved_target
-                fixture_to_objects.setdefault(fixture_id, []).append(object_id)
-
-        for fixture_id, obj_ids in fixture_to_objects.items():
-            if len(obj_ids) < 2:
-                continue
-            poses = {}
-            for oid in obj_ids:
-                try:
-                    pos, _ = self._get_object_pose(oid)
-                    obj = self.env.objects[oid]
-                    radius = getattr(obj, "horizontal_radius", 0.05)
-                    poses[oid] = (pos, radius)
-                except Exception:
-                    continue
-            # Sort smallest-first so we move the smaller object.
-            sorted_ids = sorted(poses.keys(), key=lambda o: poses[o][1])
-            for i in range(len(sorted_ids)):
-                for j in range(i + 1, len(sorted_ids)):
-                    id_a, id_b = sorted_ids[i], sorted_ids[j]
-                    pos_a, rad_a = poses[id_a]
-                    pos_b, rad_b = poses[id_b]
-                    xy_dist = float(np.linalg.norm(pos_a[:2] - pos_b[:2]))
-                    if xy_dist >= _COINCIDENT_THRESHOLD:
-                        continue
-                    # Objects are at near-identical positions.  Nudge the
-                    # smaller one laterally (along the fixture's local X
-                    # axis) by enough to clear both radii.
-                    min_clearance = rad_a + rad_b + 0.005
-                    fixture = self.runner._fixtures.get(fixture_id)
-                    if fixture is not None and hasattr(fixture, "rot") and fixture.rot is not None:
-                        angle = float(fixture.rot)
-                        lateral = np.array([np.cos(angle), np.sin(angle)])
-                    else:
-                        lateral = np.array([1.0, 0.0])
-                    # Try positive lateral direction first, then negative.
-                    # Validate the nudged position is still on the fixture.
-                    placed = False
-                    for sign in (1.0, -1.0):
-                        candidate = pos_a.copy()
-                        candidate[:2] += lateral * min_clearance * sign
-                        if self.runner._validate_object_on_fixture(
-                            candidate, fixture_id
-                        ):
-                            self._set_object_pose(id_a, candidate)
-                            poses[id_a] = (candidate, rad_a)
-                            placed = True
-                            break
-                    if not placed:
-                        # Neither direction is on-fixture; nudge anyway
-                        # (less bad than coincident placement).
-                        fallback = pos_a.copy()
-                        fallback[:2] += lateral * min_clearance
-                        self._set_object_pose(id_a, fallback)
-                        poses[id_a] = (fallback, rad_a)
-
-        # --- Object-in-object placement ---
-        # Place objects whose location is another object (e.g. slices inside
-        # a bowl).  Runs AFTER the overlap repair so containers are at their
-        # final positions and items won't be accidentally dragged by sibling
-        # objects during nudging.
-        for object_id in sorted(contained_object_ids, key=_containment_depth):
-            object_state = objects[object_id]
-            if object_id in held_object_ids:
-                continue
-            location = object_state.get("location")
-            if isinstance(location, str) and location in objects:
-                self._set_support_parent(object_id, location)
-                if _preserve_pose_requested(object_state):
-                    self.runner._set_object_location(object_id, location)
-                    continue
-                if self._current_support_object(object_id) == location:
-                    self.runner._set_object_location(object_id, location)
-                    continue
-                try:
-                    self._place_on_object_center(object_id, location)
-                    self._settle_and_reseat_supported_object(object_id, location)
-                except Exception as exc:
-                    if _sim_tool_debug_enabled():
-                        print(
-                            f"[load_initial_state] Could not place {object_id} "
-                            f"inside {location}: {exc}"
-                        )
-
-        support_children: dict[str, list[str]] = {}
-        for object_id, object_state in objects.items():
-            if object_id in held_object_ids:
-                continue
-            location = object_state.get("location")
-            if isinstance(location, str) and location in objects:
-                support_children.setdefault(location, []).append(object_id)
-
-        for support_object_id, child_ids in support_children.items():
-            if len(child_ids) <= 1:
-                continue
-            if self._support_object_should_keep_pose(support_object_id):
-                continue
-            if any(
-                _preserve_pose_requested(objects[child_id])
-                for child_id in child_ids
-            ):
-                continue
-            if not self._supported_children_need_repack(support_object_id, child_ids):
-                continue
-            self._repack_supported_children(support_object_id, child_ids)
-            self._settle_scene(steps=max(_PLACEMENT_SETTLE_STEPS, 4))
-
-        if getattr(self, "_robot_spawn", "trajectory") == "trajectory":
-            # Navigate each robot to the trajectory's stated initial location.
-            # These are the LLM planner's logical assumptions (not sim ground
-            # truth), but the user explicitly requested trajectory-based spawn.
-            for agent_id, agent_state in agents.items():
-                location = agent_state.get("location")
-                if isinstance(location, str) and location in self.runner._fixtures:
-                    robot_idx = self._parse_agent_idx(agent_id)
-                    require_front = self._surface_fixture_prefers_front_approach(
-                        location
-                    )
-                    try:
-                        self.runner._move_robot_near_fixture(
-                            robot_idx,
-                            location,
-                            require_front=require_front,
-                        )
-                    except TypeError:
-                        self.runner._move_robot_near_fixture(robot_idx, location)
-                    # Apply stove-workstation facing normalization only during
-                    # initial-state spawn positioning, not during runtime
-                    # navigate_to_fixture tool calls.
-                    self._normalize_robot_facing_for_stove_workstation(
-                        robot_idx,
-                        location,
-                    )
-            # Final safety: verify every robot is inside kitchen
-            for i in range(self.runner._num_robots):
-                self.runner._rescue_robot_to_kitchen(i)
-        # else: "sim" mode — robots already placed at init_robot_base_ref
-        # by _place_robots_at_spawn() during __init__.
-
-        for robot_idx, object_id in held_assignments.items():
-            self._require_object(object_id)
-            self._held_objects[robot_idx] = object_id
-            self._held_object_offsets[robot_idx] = self._held_pose_offset(object_id)
-            self._set_support_parent(object_id, f"held_by_robot_{robot_idx}")
-            self._sync_held_object(robot_idx)
-            agent_key = f"agent_{robot_idx}"
-            agent_state = agents.get(agent_key, {})
-            location = agent_state.get("location")
-            if isinstance(location, str) and location in self.runner._fixtures:
-                self.runner._set_object_location(object_id, location)
-
-        stable_support_poses = self._snapshot_stable_support_poses()
-        self._settle_scene(steps=max(_PLACEMENT_SETTLE_STEPS * 2, 10))
-        self._restore_stable_support_poses(stable_support_poses)
-
-        for support_object_id in list(self.env.objects.keys()):
-            child_ids = self._iter_direct_supported_children(support_object_id)
-            if not child_ids:
-                continue
-            if self._support_object_should_keep_pose(support_object_id):
-                continue
-            self._repair_supported_children_vertical_gaps(
-                support_object_id,
-                child_ids,
-            )
-
-        return {
-            "loaded": True,
-            "agents": sorted(agents.keys()),
-            "objects": sorted(objects.keys()),
-            "fixtures": sorted(fixtures.keys()),
-            "placement_events": placement_events,
-            "held_objects": {
-                f"robot{robot_idx}": object_id
-                for robot_idx, object_id in sorted(self._held_objects.items())
-            },
-        }
-
-    def run_tool_plan(
-        self,
-        tool_calls: list[dict[str, Any]],
-        output_dir: str | Path,
-        fps: int = 2,
-        skip_videos: bool = False,
-    ) -> dict[str, Any]:
-        """
-        Execute a list of tool calls, letting ``get_image`` steps produce images.
-
-        Images are saved only when the plan contains ``get_image`` tool calls
-        with ``image_paths``.  When ``skip_videos`` is False, per-camera MP4
-        videos are also generated by rendering all cameras before and after
-        every action step (giving a complete visual record of the trajectory).
-        """
-        tool_calls = self.ground_plan_template(tool_calls)
-        output_dir = Path(output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        camera_names = list(self.render().keys())
-
-        # Video writers — render before/after for every action step
-        writers: dict[str, Any] = {}
-        if not skip_videos:
-            writers = {
-                cam: imageio.get_writer(str(output_dir / f"{cam}.mp4"), fps=fps)
-                for cam in camera_names
-            }
-
-        def _write_video_frame():
-            if writers:
-                frames = self.render()
-                for cam, image in frames.items():
-                    if cam in writers:
-                        writers[cam].append_data(image)
-
-        metadata = {
-            "task": self.get_scene_description().get("task"),
-            "steps": [],
-            "cameras": camera_names,
-        }
-
-        try:
-            # Initial frame
-            _write_video_frame()
-
-            for step_idx, tool_call in enumerate(tool_calls):
-                tool_name = tool_call["tool"]
-                robot_idx = tool_call.get("robot_idx", 0)
-                args = tool_call.get("args", {})
-
-                if _sim_tool_debug_enabled():
-                    print(
-                        f"[run_tool_plan] step {step_idx + 1}/{len(tool_calls)} "
-                        f"robot={robot_idx} tool={tool_name} args={json.dumps(args, sort_keys=True)}"
-                    )
-
-                # Before frame (for action steps only — get_image doesn't change state)
-                is_action = tool_name != "get_image"
-                if is_action:
-                    _write_video_frame()
-
-                result = self.execute(tool_name, robot_idx=robot_idx, **args)
-
-                # After frame
-                if is_action:
-                    _write_video_frame()
-
-                # Record robot positions for diagnostics
-                robot_positions = {}
-                for ri in range(self.runner._num_robots):
-                    rp = self.runner._get_robot_position(ri)
-                    robot_positions[f"robot{ri}"] = [
-                        round(float(rp[0]), 3),
-                        round(float(rp[1]), 3),
-                        round(float(rp[2]), 3),
-                    ]
-
-                step_meta = {
-                    "step_index": step_idx,
-                    "tool": tool_name,
-                    "robot_idx": robot_idx,
-                    "args": args,
-                    "success": result.success,
-                    "details": result.details,
-                    "robot_positions": robot_positions,
-                }
-                # Propagate image paths produced by get_image
-                if result.details.get("image_paths"):
-                    step_meta["image_paths"] = result.details["image_paths"]
-
-                metadata["steps"].append(step_meta)
-                if _sim_tool_debug_enabled():
-                    print(
-                        f"[run_tool_plan] step {step_idx + 1}/{len(tool_calls)} "
-                        f"success={result.success}"
-                    )
-        finally:
-            for writer in writers.values():
-                writer.close()
-
-        with open(output_dir / "plan.json", "w") as f:
-            json.dump(tool_calls, f, indent=2)
-        with open(output_dir / "metadata.json", "w") as f:
-            json.dump(metadata, f, indent=2)
-
-        return metadata
-
     def _require_fixture(self, fixture_id: str):
         if fixture_id not in self.runner._fixtures:
             raise ValueError(f"Unknown fixture_id: {fixture_id!r}")
@@ -2471,6 +1640,24 @@ class SimToolExecutor:
             )
         support_tokens = self._support_object_tokens(support_object_id)
         incoming_tokens = self._scene_object_tokens(incoming_object_id)
+        hotdog_pair_slot = self._portion_hotdogs_plate_slot_preference(
+            support_object_id,
+            incoming_object_id,
+            existing_object_ids=existing_object_ids,
+        )
+        if hotdog_pair_slot is not None:
+            return hotdog_pair_slot
+        if (
+            not existing_object_ids
+            and "tray" in support_tokens
+            and incoming_tokens & _TRAY_BULKY_PAIR_OBJECT_TOKENS
+        ):
+            slot_positions = self._support_object_slot_positions(
+                support_object_id,
+                count=2,
+            )
+            if slot_positions:
+                return np.asarray(slot_positions[0], dtype=float)[:2]
         if "tray" in support_tokens and not existing_object_ids:
             if incoming_tokens & {"kettle"}:
                 # Deterministic anchor for tea setup: kettle goes to tray-right.
@@ -2489,7 +1676,7 @@ class SimToolExecutor:
             ) & _TRAY_KETTLE_MUG_PAIR_OBJECT_TOKENS
             if len(pair_tokens) == 2:
                 # Keep kettle+mug pairs farther apart on trays. The kettle handle
-                # often occupies usable area near the center even when AABB-based
+                # often occupies usable area near the center even when simple
                 # collision checks pass.
                 geometry = self._support_object_geometry(support_object_id)
                 lateral_xy, _inward_xy = self._support_object_anchor_axes_xy(
@@ -2511,18 +1698,6 @@ class SimToolExecutor:
                     existing_side = float(np.dot(existing_delta, lateral_xy))
                     desired_local_x = -side_half if existing_side >= 0.0 else side_half
                 return geometry["center_xy"] + lateral_xy * desired_local_x
-        if (
-            not existing_object_ids
-            and "tray" in support_tokens
-            and self._scene_object_tokens(incoming_object_id)
-            & _TRAY_BULKY_PAIR_OBJECT_TOKENS
-        ):
-            slot_positions = self._support_object_slot_positions(
-                support_object_id,
-                count=2,
-            )
-            if slot_positions:
-                return np.asarray(slot_positions[0], dtype=float)[:2]
         slot_positions = self._support_object_slot_positions(
             support_object_id,
             count=len(existing_object_ids) + 1,
@@ -2536,6 +1711,66 @@ class SimToolExecutor:
             slot_positions,
             existing_positions=existing_positions,
             center_xy=geometry["center_xy"],
+        )
+
+    def _is_portion_hotdogs_plate_pair(
+        self,
+        support_object_id: str,
+        object_ids: Sequence[str],
+    ) -> bool:
+        if str(getattr(self, "_task_name", "") or "").strip().lower() != "portionhotdogs":
+            return False
+        support_tokens = self._support_object_tokens(support_object_id)
+        if "plate" not in support_tokens:
+            return False
+        if not object_ids:
+            return False
+        pair_tokens = {"bun", "hotdog", "sausage"}
+        for object_id in object_ids:
+            object_tokens = self._scene_object_tokens(object_id)
+            if not (object_tokens & pair_tokens):
+                return False
+        return True
+
+    def _portion_hotdogs_plate_slot_preference(
+        self,
+        support_object_id: str,
+        incoming_object_id: str,
+        *,
+        existing_object_ids: Sequence[str],
+    ) -> np.ndarray | None:
+        relevant_object_ids = list(existing_object_ids) + [incoming_object_id]
+        if not self._is_portion_hotdogs_plate_pair(
+            support_object_id,
+            relevant_object_ids,
+        ):
+            return None
+
+        geometry = self._support_object_geometry(support_object_id)
+        lateral_xy, inward_xy = self._support_object_anchor_axes_xy(
+            support_object_id,
+            support_geometry=geometry,
+        )
+        major = max(float(geometry["extent_x"]), float(geometry["extent_y"]), 1e-6)
+        minor = max(min(float(geometry["extent_x"]), float(geometry["extent_y"])), 1e-6)
+        side_half = 0.16 * major
+        depth_bias = 0.05 * minor
+        center_xy = np.asarray(geometry["center_xy"], dtype=float)
+
+        slot_positions = [
+            center_xy - np.asarray(lateral_xy, dtype=float) * side_half
+            - np.asarray(inward_xy, dtype=float) * depth_bias,
+            center_xy + np.asarray(lateral_xy, dtype=float) * side_half
+            + np.asarray(inward_xy, dtype=float) * depth_bias,
+        ]
+        existing_positions = [
+            self._get_object_pose(object_id)[0][:2].copy()
+            for object_id in existing_object_ids
+        ]
+        return self._choose_slot_position(
+            slot_positions,
+            existing_positions=existing_positions,
+            center_xy=center_xy,
         )
 
     def _incoming_fixture_site_preference(
@@ -2613,6 +1848,12 @@ class SimToolExecutor:
         self,
         support_object_id: str,
     ) -> bool:
+        if (
+            str(getattr(self, "_task_name", "") or "").strip().lower()
+            == "portionhotdogs"
+            and "plate" in self._support_object_tokens(support_object_id)
+        ):
+            return True
         return bool(
             self._support_object_tokens(support_object_id)
             & _NO_SETTLE_CHILD_SUPPORT_TOKENS
@@ -2707,6 +1948,9 @@ class SimToolExecutor:
                 support_object_id,
                 relative_position=relative_position,
             )
+            child_ids = self._iter_direct_supported_children(support_object_id)
+            if self._supported_children_should_balance_slots(support_object_id, child_ids):
+                self._repack_supported_children(support_object_id, child_ids)
             return
 
         self._settle_scene(steps=settle_steps)
@@ -4047,6 +3291,8 @@ class SimToolExecutor:
         ]
         if len(active_child_ids) != 2:
             return False
+        if self._is_portion_hotdogs_plate_pair(support_object_id, active_child_ids):
+            return True
         support_tokens = self._support_object_tokens(support_object_id)
         if "tray" not in support_tokens:
             return False
@@ -4307,13 +3553,14 @@ class SimToolExecutor:
         scene = self.get_scene_description()
         scene_objects = scene.get("objects", {})
         scene_fixtures = scene.get("fixtures", {})
+        support_parents = getattr(self, "_support_parents", {})
 
         while isinstance(current_object_id, str):
             if current_object_id in seen_object_ids:
-                return None
+                break
             seen_object_ids.add(current_object_id)
 
-            support_parent = self._support_parents.get(current_object_id)
+            support_parent = support_parents.get(current_object_id)
             if isinstance(support_parent, str):
                 if support_parent in self.runner._fixtures:
                     return support_parent
@@ -4350,6 +3597,14 @@ class SimToolExecutor:
         if inferred in self.runner._fixtures:
             return inferred
         return None
+
+    def _clear_held_object_state(self, robot_idx: int) -> None:
+        held_objects = getattr(self, "_held_objects", None)
+        if isinstance(held_objects, dict):
+            held_objects.pop(robot_idx, None)
+        held_object_offsets = getattr(self, "_held_object_offsets", None)
+        if isinstance(held_object_offsets, dict):
+            held_object_offsets.pop(robot_idx, None)
 
     def _resolve_pick_source_target(
         self,
@@ -4980,547 +4235,6 @@ class SimToolExecutor:
         self._sync_held_object(robot_idx)
         return fixture_id
 
-    def _semantic_ref(self, resolver: str, **kwargs) -> dict[str, Any]:
-        return {"$ref": resolver, **kwargs}
-
-    def _build_hotdog_setup_demo_template(self) -> list[dict[str, Any]]:
-        return [
-            {
-                "tool": "communicate",
-                "robot_idx": 0,
-                "args": {
-                    "to": "agent_1",
-                    "message": "I will stage the bun and condiment at the dining table.",
-                },
-            },
-            {
-                "tool": "communicate",
-                "robot_idx": 1,
-                "args": {
-                    "to": "agent_0",
-                    "message": "I will bring the sausage from the fridge once the plate is ready.",
-                },
-            },
-            {
-                "tool": "navigate_to_fixture",
-                "robot_idx": 0,
-                "args": {
-                    "fixture_id": self._semantic_ref(
-                        "source_fixture",
-                        object_id="hotdog_bun",
-                    )
-                },
-            },
-            {
-                "tool": "pick_up_object",
-                "robot_idx": 0,
-                "args": {
-                    "object_id": "hotdog_bun",
-                    "source_id": self._semantic_ref(
-                        "source_fixture",
-                        object_id="hotdog_bun",
-                    ),
-                },
-            },
-            {
-                "tool": "navigate_to_fixture",
-                "robot_idx": 1,
-                "args": {
-                    "fixture_id": self._semantic_ref(
-                        "source_fixture",
-                        object_id="sausage",
-                        preferred_fixture_types=["fridge"],
-                    )
-                },
-            },
-            {
-                "tool": "open_hinged_part",
-                "robot_idx": 1,
-                "args": {
-                    "target_id": self._semantic_ref(
-                        "source_fixture",
-                        object_id="sausage",
-                        preferred_fixture_types=["fridge"],
-                    ),
-                    "part_id": "hinged",
-                },
-            },
-            {
-                "tool": "navigate_to_fixture",
-                "robot_idx": 0,
-                "args": {
-                    "fixture_id": self._semantic_ref(
-                        "object_anchor_fixture",
-                        object_id="plate",
-                        preferred_fixture_types=[
-                            "dining_counter",
-                            "island",
-                            "counter_non_dining",
-                        ],
-                        require_placeable=True,
-                    )
-                },
-            },
-            {
-                "tool": "place_on_object",
-                "robot_idx": 0,
-                "args": {
-                    "object_id": "hotdog_bun",
-                    "support_object_id": "plate",
-                    "anchor_fixture_id": self._semantic_ref(
-                        "object_anchor_fixture",
-                        object_id="plate",
-                        preferred_fixture_types=[
-                            "dining_counter",
-                            "island",
-                            "counter_non_dining",
-                        ],
-                        require_placeable=True,
-                    ),
-                },
-            },
-            {
-                "tool": "communicate",
-                "robot_idx": 0,
-                "args": {
-                    "to": "agent_1",
-                    "message": "Plate is staged on the dining table. Bring the sausage now.",
-                },
-            },
-            {
-                "tool": "pick_up_object",
-                "robot_idx": 1,
-                "args": {
-                    "object_id": "sausage",
-                    "source_id": self._semantic_ref(
-                        "source_fixture",
-                        object_id="sausage",
-                        preferred_fixture_types=["fridge"],
-                    ),
-                },
-            },
-            {
-                "tool": "navigate_to_fixture",
-                "robot_idx": 1,
-                "args": {
-                    "fixture_id": self._semantic_ref(
-                        "object_anchor_fixture",
-                        object_id="plate",
-                        preferred_fixture_types=[
-                            "dining_counter",
-                            "island",
-                            "counter_non_dining",
-                        ],
-                        require_placeable=True,
-                    )
-                },
-            },
-            {
-                "tool": "place_on_object",
-                "robot_idx": 1,
-                "args": {
-                    "object_id": "sausage",
-                    "support_object_id": "plate",
-                    "anchor_fixture_id": self._semantic_ref(
-                        "object_anchor_fixture",
-                        object_id="plate",
-                        preferred_fixture_types=[
-                            "dining_counter",
-                            "island",
-                            "counter_non_dining",
-                        ],
-                        require_placeable=True,
-                    ),
-                },
-            },
-            {
-                "tool": "communicate",
-                "robot_idx": 1,
-                "args": {
-                    "to": "agent_0",
-                    "message": "Sausage is placed. The dining table is clear for the condiment.",
-                },
-            },
-            {
-                "tool": "navigate_to_fixture",
-                "robot_idx": 0,
-                "args": {
-                    "fixture_id": self._semantic_ref(
-                        "source_fixture",
-                        object_id="condiment",
-                    )
-                },
-            },
-            {
-                "tool": "pick_up_object",
-                "robot_idx": 0,
-                "args": {
-                    "object_id": "condiment",
-                    "source_id": self._semantic_ref(
-                        "source_fixture",
-                        object_id="condiment",
-                    ),
-                },
-            },
-            {
-                "tool": "navigate_to_fixture",
-                "robot_idx": 0,
-                "args": {
-                    "fixture_id": self._semantic_ref(
-                        "object_anchor_fixture",
-                        object_id="plate",
-                        preferred_fixture_types=[
-                            "dining_counter",
-                            "island",
-                            "counter_non_dining",
-                        ],
-                        require_placeable=True,
-                    )
-                },
-            },
-            {
-                "tool": "place_on_surface",
-                "robot_idx": 0,
-                "args": {
-                    "object_id": "condiment",
-                    "support_id": self._semantic_ref(
-                        "object_anchor_fixture",
-                        object_id="plate",
-                        preferred_fixture_types=[
-                            "dining_counter",
-                            "island",
-                            "counter_non_dining",
-                        ],
-                        require_placeable=True,
-                    ),
-                },
-            },
-            {
-                "tool": "communicate",
-                "robot_idx": 0,
-                "args": {
-                    "to": "agent_1",
-                    "message": "Hot dog setup complete.",
-                },
-            },
-        ]
-
-    def _build_sandwich_station_demo_template(self) -> list[dict[str, Any]]:
-        """Demo plan for PrepareSandwichStation (cooperative 2-robot).
-
-        Robot 0: handles the ingredient bowl (fridge → counter near toaster_oven).
-        Robot 1: handles the baguette (fridge → counter near toaster_oven).
-
-        Coordination: R0 opens fridge and grabs bowl, R1 grabs baguette
-        while fridge is still open, R1 closes fridge, both place on counter.
-        """
-        fridge_ref = self._semantic_ref(
-            "source_fixture",
-            object_id="ingredient_bowl",
-            preferred_fixture_types=["fridge"],
-        )
-        counter_ref = self._semantic_ref(
-            "nearest_fixture",
-            anchor_fixture_type="toaster_oven",
-            preferred_fixture_types=["counter", "counter_non_dining"],
-            require_placeable=True,
-        )
-
-        return [
-            # --- Phase 1: Both robots approach the fridge ---
-            {
-                "tool": "communicate",
-                "robot_idx": 0,
-                "args": {
-                    "to": "agent_1",
-                    "message": "I'll open the fridge and grab the ingredient bowl. "
-                    "You grab the baguette after me.",
-                },
-            },
-            {
-                "tool": "communicate",
-                "robot_idx": 1,
-                "args": {
-                    "to": "agent_0",
-                    "message": "Got it. I'll grab the baguette and close the fridge.",
-                },
-            },
-            # R0 opens fridge
-            {
-                "tool": "navigate_to_fixture",
-                "robot_idx": 0,
-                "args": {"fixture_id": fridge_ref},
-            },
-            {
-                "tool": "open_hinged_part",
-                "robot_idx": 0,
-                "args": {"target_id": fridge_ref, "part_id": "hinged"},
-            },
-            # R0 picks ingredient bowl
-            {
-                "tool": "pick_up_object",
-                "robot_idx": 0,
-                "args": {
-                    "object_id": "ingredient_bowl",
-                    "source_id": fridge_ref,
-                },
-            },
-            # --- Phase 2: R0 clears the fridge area, R1 takes over ---
-            # R0 moves away so R1 has room at the fridge
-            {
-                "tool": "give_space",
-                "robot_idx": 0,
-                "args": {"fixture_id": fridge_ref},
-            },
-            # R1 picks baguette from still-open fridge
-            {
-                "tool": "pick_up_object",
-                "robot_idx": 1,
-                "args": {
-                    "object_id": "baguette",
-                    "source_id": self._semantic_ref(
-                        "source_fixture",
-                        object_id="baguette",
-                        preferred_fixture_types=["fridge"],
-                    ),
-                },
-            },
-            # R1 closes fridge (last one out)
-            {
-                "tool": "close_hinged_part",
-                "robot_idx": 1,
-                "args": {"target_id": fridge_ref, "part_id": "hinged"},
-            },
-            # --- Phase 3: Both place on counter near toaster oven ---
-            # R0 places bowl
-            {
-                "tool": "navigate_to_fixture",
-                "robot_idx": 0,
-                "args": {"fixture_id": counter_ref},
-            },
-            {
-                "tool": "place_on_surface",
-                "robot_idx": 0,
-                "args": {
-                    "object_id": "ingredient_bowl",
-                    "support_id": counter_ref,
-                },
-            },
-            {
-                "tool": "communicate",
-                "robot_idx": 0,
-                "args": {
-                    "to": "agent_1",
-                    "message": "Bowl is placed. Your turn to place the baguette.",
-                },
-            },
-            # R1 places baguette
-            {
-                "tool": "navigate_to_fixture",
-                "robot_idx": 1,
-                "args": {"fixture_id": counter_ref},
-            },
-            {
-                "tool": "place_on_surface",
-                "robot_idx": 1,
-                "args": {
-                    "object_id": "baguette",
-                    "support_id": counter_ref,
-                },
-            },
-            {
-                "tool": "communicate",
-                "robot_idx": 1,
-                "args": {
-                    "to": "agent_0",
-                    "message": "Sandwich station is ready.",
-                },
-            },
-        ]
-
-    def _resolve_nearest_fixture(
-        self,
-        anchor_fixture_type: str,
-        preferred_fixture_types: list[str] | set[str] | tuple[str, ...] | None = None,
-        require_placeable: bool = False,
-    ) -> str:
-        """Find the fixture of *preferred_fixture_types* nearest to the first fixture of *anchor_fixture_type*."""
-        scene = self.get_scene_description()
-        fixtures = scene.get("fixtures", {})
-
-        # Find the anchor fixture by type
-        anchor_id = None
-        for fid, finfo in fixtures.items():
-            if finfo.get("fixture_type") == anchor_fixture_type:
-                anchor_id = fid
-                break
-        if anchor_id is None:
-            raise ValueError(f"No fixture of type {anchor_fixture_type!r} found")
-        anchor_pos = np.asarray(fixtures[anchor_id]["position"][:2], dtype=float)
-        preferred = self._normalize_preferred_fixture_types(preferred_fixture_types)
-
-        best_id, best_dist = None, float("inf")
-        for fid, finfo in fixtures.items():
-            if fid == anchor_id:
-                continue
-            ftype = finfo.get("fixture_type")
-            if preferred is not None and ftype not in preferred:
-                continue
-            if require_placeable and not finfo.get("can_place_objects", False):
-                continue
-            d = float(
-                np.linalg.norm(
-                    np.asarray(finfo["position"][:2], dtype=float) - anchor_pos
-                )
-            )
-            if d < best_dist:
-                best_dist = d
-                best_id = fid
-
-        if best_id is None:
-            raise ValueError(
-                f"No fixture of types {preferred} found near {anchor_fixture_type!r}"
-            )
-        return best_id
-
-    def _resolve_semantic_ref(self, ref: dict[str, Any]) -> Any:
-        resolver = ref.get("$ref")
-        if resolver == "source_fixture":
-            preferred_fixture_types = ref.get("preferred_fixture_types")
-            return self._infer_source_fixture(
-                ref["object_id"],
-                preferred_fixture_types=preferred_fixture_types,
-            )
-        if resolver == "object_anchor_fixture":
-            preferred_fixture_types = ref.get("preferred_fixture_types")
-            return self._resolve_object_anchor_fixture(
-                ref["object_id"],
-                preferred_fixture_types=preferred_fixture_types,
-                require_placeable=bool(ref.get("require_placeable", False)),
-            )
-        if resolver == "nearest_fixture":
-            preferred_fixture_types = ref.get("preferred_fixture_types")
-            return self._resolve_nearest_fixture(
-                ref["anchor_fixture_type"],
-                preferred_fixture_types=preferred_fixture_types,
-                require_placeable=bool(ref.get("require_placeable", False)),
-            )
-        raise ValueError(f"Unknown semantic resolver {resolver!r}")
-
-    def _ground_value(self, value: Any) -> Any:
-        if isinstance(value, dict):
-            if "$ref" in value:
-                return self._resolve_semantic_ref(value)
-            return {
-                key: self._ground_value(subvalue) for key, subvalue in value.items()
-            }
-        if isinstance(value, list):
-            return [self._ground_value(item) for item in value]
-        return value
-
-    def ground_plan_template(
-        self, tool_calls: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
-        grounded_tool_calls = deepcopy(tool_calls)
-        for tool_call in grounded_tool_calls:
-            tool_call["args"] = self._ground_value(tool_call.get("args", {}))
-        return grounded_tool_calls
-
-    def build_demo_plan_template(self, demo_plan_name: str) -> list[dict[str, Any]]:
-        normalized_name = demo_plan_name.strip().lower().replace("-", "_")
-
-        if normalized_name == "cooperative_hotdog_setup":
-            if self._get_task_class_name() != "HotDogSetup":
-                raise ValueError(
-                    "The cooperative_hotdog_setup demo plan requires --task HotDogSetup"
-                )
-            return self._build_hotdog_setup_demo_template()
-
-        if normalized_name == "sandwich_station":
-            if self._get_task_class_name() != "PrepareSandwichStation":
-                raise ValueError(
-                    "The sandwich_station demo plan requires --task PrepareSandwichStation"
-                )
-            return self._build_sandwich_station_demo_template()
-
-        raise ValueError(
-            f"Unknown demo plan {demo_plan_name!r}. "
-            f"Available: {sorted(self._DEMO_TASK_BY_NAME)}"
-        )
-
-    def build_demo_plan(self, demo_plan_name: str) -> list[dict[str, Any]]:
-        return self.ground_plan_template(self.build_demo_plan_template(demo_plan_name))
-
-    # ------------------------------------------------------------------
-    # Introspection helpers
-    # ------------------------------------------------------------------
-
-    def get_parts(self, fixture_id: str) -> list[str]:
-        fixture = self._require_fixture(fixture_id)
-        parts = []
-
-        if isinstance(fixture, Blender):
-            return ["lid"]
-
-        if hasattr(fixture, "door_joint_names"):
-            for joint_name in fixture.door_joint_names:
-                if "slide" in joint_name.lower() or "drawer" in joint_name.lower():
-                    parts.append("sliding")
-                else:
-                    parts.append("hinged")
-                parts.append(joint_name)
-
-        if hasattr(fixture, "_joint_names"):
-            for key in fixture._joint_names:
-                lowered = key.lower()
-                if any(token in lowered for token in ("door", "lid", "head")):
-                    parts.append("hinged")
-                    parts.append(key)
-                elif any(token in lowered for token in ("rack", "drawer", "slide")):
-                    parts.append("sliding")
-                    parts.append(key)
-
-        return sorted(set(parts))
-
-    def get_controls(self, fixture_id: str) -> list[str]:
-        fixture = self._require_fixture(fixture_id)
-
-        if isinstance(fixture, CoffeeMachine):
-            return ["start_button"]
-        if isinstance(fixture, Microwave):
-            return ["start_button", "stop_button"]
-        if hasattr(fixture, "_joint_names"):
-            return sorted(fixture._joint_names.keys())
-        if hasattr(fixture, "_joint_infos"):
-            controls = []
-            naming_prefix = str(getattr(fixture, "naming_prefix", "") or "")
-            for joint_name in fixture._joint_infos:
-                lowered_joint_name = joint_name.lower()
-                if any(
-                    excluded_token in lowered_joint_name
-                    for excluded_token in ("door", "drawer", "slide", "rack", "tray")
-                ):
-                    continue
-                normalized_name = str(joint_name)
-                if naming_prefix and normalized_name.startswith(naming_prefix):
-                    normalized_name = normalized_name[len(naming_prefix):]
-                if normalized_name.endswith("_joint") and normalized_name.startswith(
-                    ("knob_", "lever_", "button_")
-                ):
-                    normalized_name = normalized_name[: -len("_joint")]
-                controls.append(normalized_name)
-            if controls:
-                return sorted(set(controls))
-        return []
-
-    def get_support_sites(self, fixture_id: str) -> list[str]:
-        return sorted(
-            {
-                self._raw_support_site_to_external(raw_site_id)
-                for raw_site_id in self._get_fixture_reset_regions(fixture_id)
-            }
-        )
-
     # ------------------------------------------------------------------
     # Primitive tools
     # ------------------------------------------------------------------
@@ -5818,7 +4532,15 @@ class SimToolExecutor:
             drawer_delta=drawer_delta,
             drawer_aabb=after_aabb,
         )
-        self._recent_opened_sliding_fixture[robot_idx] = target_id
+        recent_opened_sliding_fixture = getattr(
+            self,
+            "_recent_opened_sliding_fixture",
+            None,
+        )
+        if not isinstance(recent_opened_sliding_fixture, dict):
+            self._recent_opened_sliding_fixture = {}
+            recent_opened_sliding_fixture = self._recent_opened_sliding_fixture
+        recent_opened_sliding_fixture[robot_idx] = target_id
         occupancy_grid = getattr(self.runner, "_occupancy_grid", None)
         if occupancy_grid is not None:
             robot_pos = self.runner._get_robot_position(robot_idx)[:2]
@@ -5826,7 +4548,7 @@ class SimToolExecutor:
                 self.runner._move_robot_near_fixture(
                     robot_idx,
                     target_id,
-                    require_front=False,
+                    require_front=True,
                 )
                 self._sync_held_object(robot_idx)
         return ToolResult(
@@ -6501,10 +5223,36 @@ class SimToolExecutor:
         robot_idx: int = 0,
     ) -> ToolResult:
         self._require_object(object_id)
-        source_fixture_id, source_site_id, source_object_id = (
-            self._resolve_pick_source_target(source_id, source_site_id)
-        )
         actual_fixture_id = self._get_scene_object_location(object_id)
+        try:
+            source_fixture_id, source_site_id, source_object_id = (
+                self._resolve_pick_source_target(source_id, source_site_id)
+            )
+        except ValueError:
+            fallback_fixture_id = actual_fixture_id
+            if not isinstance(fallback_fixture_id, str):
+                for candidate_object_id in (object_id, source_id):
+                    if candidate_object_id not in self.env.objects:
+                        continue
+                    try:
+                        candidate_pos, _candidate_quat = self._get_object_pose(
+                            candidate_object_id
+                        )
+                    except Exception:
+                        continue
+                    inferred_fixture_id = self.runner._find_object_fixture(candidate_pos)
+                    if inferred_fixture_id in self.runner._fixtures:
+                        fallback_fixture_id = inferred_fixture_id
+                        break
+            if source_id not in self.env.objects or not isinstance(fallback_fixture_id, str):
+                raise
+            source_fixture_id = fallback_fixture_id
+            source_object_id = source_id
+            if source_site_id is None:
+                source_site_id = self._infer_object_support_site(
+                    object_id,
+                    source_fixture_id,
+                )
         if (
             isinstance(actual_fixture_id, str)
             and self._fixture_is_drawer(actual_fixture_id)
@@ -6522,7 +5270,15 @@ class SimToolExecutor:
                 f"Object {object_id!r} is already held by robot {current_holder}"
             )
 
-        recent_opened_drawer = self._recent_opened_sliding_fixture.get(robot_idx)
+        recent_opened_sliding_fixture = getattr(
+            self,
+            "_recent_opened_sliding_fixture",
+            None,
+        )
+        if not isinstance(recent_opened_sliding_fixture, dict):
+            self._recent_opened_sliding_fixture = {}
+            recent_opened_sliding_fixture = self._recent_opened_sliding_fixture
+        recent_opened_drawer = recent_opened_sliding_fixture.get(robot_idx)
         skip_renav_after_drawer_open = bool(
             isinstance(recent_opened_drawer, str)
             and recent_opened_drawer == source_fixture_id
@@ -6530,7 +5286,7 @@ class SimToolExecutor:
         )
         # Single-use behavior: keep context only for the immediate matching pickup.
         if skip_renav_after_drawer_open or isinstance(recent_opened_drawer, str):
-            self._recent_opened_sliding_fixture.pop(robot_idx, None)
+            recent_opened_sliding_fixture.pop(robot_idx, None)
 
         # Skip navigation only if the robot is already in a usable working
         # pose for the fixture.
@@ -6682,8 +5438,7 @@ class SimToolExecutor:
         self._set_object_pose(object_id, target_pos, target_quat)
         self._set_support_parent(object_id, support_fixture_id)
         self.runner._set_object_location(object_id, support_fixture_id)
-        self._held_objects.pop(robot_idx, None)
-        self._held_object_offsets.pop(robot_idx, None)
+        self._clear_held_object_state(robot_idx)
         self._settle_scene()
         return ToolResult(
             "place_on_surface",
@@ -6888,8 +5643,7 @@ class SimToolExecutor:
             ):
                 final_settle_steps = 0
 
-        self._held_objects.pop(robot_idx, None)
-        self._held_object_offsets.pop(robot_idx, None)
+        self._clear_held_object_state(robot_idx)
         if final_settle_steps > 0:
             self._settle_scene(steps=final_settle_steps)
         if (
@@ -7057,8 +5811,7 @@ class SimToolExecutor:
         self._set_support_parent(object_id, support_fixture_id)
         self.runner._set_object_location(object_id, support_fixture_id)
 
-        self._held_objects.pop(robot_idx, None)
-        self._held_object_offsets.pop(robot_idx, None)
+        self._clear_held_object_state(robot_idx)
         self._settle_scene()
         return ToolResult(
             "place_next_to",
@@ -7096,6 +5849,7 @@ class SimToolExecutor:
         holder = self._held_by_robot(object_id)
         if holder not in {None, robot_idx}:
             raise ValueError(f"Object {object_id!r} is held by robot {holder}")
+        settle_after_placement = True
 
         self.runner._move_robot_near_fixture(
             robot_idx,
@@ -7131,10 +5885,12 @@ class SimToolExecutor:
             self._set_support_parent(object_id, reference_fixture_id)
             self.runner._set_object_location(object_id, reference_fixture_id)
             support_fixture_id = reference_fixture_id
+            settle_after_placement = False
         elif dispenser_site_name is not None:
             resolved_target_site_id = None
             target_quat = None
-            if isinstance(target_site_id, str):
+            explicit_target_site_requested = isinstance(target_site_id, str)
+            if explicit_target_site_requested:
                 resolved_target_site_id = self._resolve_fixture_site_id(
                     reference_fixture_id,
                     target_site_id,
@@ -7151,7 +5907,7 @@ class SimToolExecutor:
                     )
             site_id = self.env.sim.model.site_name2id(dispenser_site_name)
             site_pos = self.env.sim.data.site_xpos[site_id].copy()
-            if isinstance(resolved_target_site_id, str):
+            if explicit_target_site_requested and isinstance(resolved_target_site_id, str):
                 target_pos = self._compute_region_center_target_pos(
                     reference_fixture_id,
                     object_id,
@@ -7175,6 +5931,7 @@ class SimToolExecutor:
             self._set_support_parent(object_id, reference_fixture_id)
             self.runner._set_object_location(object_id, reference_fixture_id)
             support_fixture_id = reference_fixture_id
+            settle_after_placement = False
         else:
             # Generic: project fixture XY, find the surface below.
             fxtr_pos = np.asarray(fixture.pos, dtype=float)
@@ -7214,9 +5971,9 @@ class SimToolExecutor:
             self._set_support_parent(object_id, support_fixture_id)
             self.runner._set_object_location(object_id, support_fixture_id)
 
-        self._held_objects.pop(robot_idx, None)
-        self._held_object_offsets.pop(robot_idx, None)
-        self._settle_scene()
+        self._clear_held_object_state(robot_idx)
+        if settle_after_placement:
+            self._settle_scene()
         return ToolResult(
             "place_under",
             True,
@@ -7288,8 +6045,7 @@ class SimToolExecutor:
             support_object_id,
             relative_position=relative_position,
         )
-        self._held_objects.pop(robot_idx, None)
-        self._held_object_offsets.pop(robot_idx, None)
+        self._clear_held_object_state(robot_idx)
         if not self._support_object_accepts_child_without_settle(support_object_id):
             self._settle_scene(steps=_PLACEMENT_SETTLE_STEPS)
         return ToolResult(
@@ -7438,8 +6194,7 @@ class SimToolExecutor:
         """Move the robot to open floor space away from *fixture_id*.
 
         Delegates to ``TrajectoryRunner.give_space`` which finds a free grid
-        cell (grid mode) or a standable position on expanding circles
-        (continuous mode) that is ≥1.5 m from the fixture.
+        cell that is ≥1.5 m from the fixture.
         """
         self._require_fixture(fixture_id)
         self.runner.give_space(robot_idx, fixture_id)
@@ -7471,6 +6226,10 @@ class SimToolExecutor:
         method = getattr(self, tool_name, None)
         if method is None:
             raise NotImplementedError(f"No executor method defined for {tool_name!r}")
+        if tool_name != "get_image":
+            invalidate_visual_cache = getattr(self, "_invalidate_visual_cache", None)
+            if callable(invalidate_visual_cache):
+                invalidate_visual_cache()
         return method(robot_idx=robot_idx, **kwargs)
 
 
@@ -7560,9 +6319,9 @@ def _main():
     parser.add_argument("--gl-backend", type=str, default="osmesa")
     parser.add_argument(
         "--placement",
-        choices=["grid", "continuous"],
+        choices=["grid"],
         default="grid",
-        help="Robot placement strategy: grid (occupancy grid) or continuous (AABB-based).",
+        help="Robot placement strategy. Only occupancy-grid placement is supported.",
     )
     parser.add_argument(
         "--cell-size",
@@ -7586,7 +6345,7 @@ def _main():
         "--sample-spacing",
         type=float,
         default=0.12,
-        help="Spacing between candidate samples along fixture faces (continuous mode). Default: 0.12",
+        help="Spacing between candidate samples along fixture faces. Default: 0.12",
     )
     parser.add_argument(
         "--robot-radius",

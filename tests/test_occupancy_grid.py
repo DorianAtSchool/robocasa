@@ -168,6 +168,56 @@ class TestOccupancyGridUnit(unittest.TestCase):
         result = grid.find_placement(f1)
         self.assertIsNotNone(result)
 
+    def test_enclosed_corner_requires_two_walls_and_two_counters(self):
+        """A true room-corner trap with two walls and two counters is rejected."""
+        fixtures = {
+            "wall_pos_x": _make_mock_fixture((0.55, 0.0, 0.0), size=(0.10, 1.20, 0.9)),
+            "wall_pos_y": _make_mock_fixture((0.0, 0.55, 0.0), size=(1.20, 0.10, 0.9)),
+            "counter_neg_x": _make_mock_fixture((-0.55, 0.0, 0.0), size=(0.10, 1.20, 0.9)),
+            "counter_neg_y": _make_mock_fixture((0.0, -0.55, 0.0), size=(1.20, 0.10, 0.9)),
+        }
+        grid = OccupancyGrid(fixtures, cell_size=0.05)
+
+        self.assertTrue(grid._is_enclosed(np.array([0.0, 0.0], dtype=float)))
+
+    def test_enclosed_corner_rejects_entire_bounded_region(self):
+        """The full wall-and-structure corner region should be non-standable."""
+        fixtures = {
+            "wall_pos_x": _make_mock_fixture((0.60, 0.0, 0.0), size=(0.10, 1.60, 0.9)),
+            "wall_pos_y": _make_mock_fixture((0.0, 0.60, 0.0), size=(1.60, 0.10, 0.9)),
+            "counter_neg_x": _make_mock_fixture((-0.40, 0.0, 0.0), size=(0.10, 1.60, 0.9)),
+            "counter_neg_y": _make_mock_fixture((0.0, -0.40, 0.0), size=(1.60, 0.10, 0.9)),
+        }
+        grid = OccupancyGrid(fixtures, cell_size=0.05)
+
+        self.assertTrue(grid._is_enclosed(np.array([0.45, 0.45], dtype=float)))
+        self.assertTrue(grid._is_enclosed(np.array([0.45, -0.25], dtype=float)))
+        self.assertTrue(grid._is_enclosed(np.array([-0.25, 0.45], dtype=float)))
+        self.assertTrue(grid._is_enclosed(np.array([-0.25, -0.25], dtype=float)))
+
+    def test_enclosed_corner_bridges_single_cell_gap(self):
+        """A one-cell overlap gap between blocking structures should still fill the pocket."""
+        fixtures = {
+            "wall_pos_x": _make_mock_fixture((0.60, 0.0, 0.0), size=(0.10, 1.60, 0.9)),
+            "wall_pos_y": _make_mock_fixture((0.0, 0.60, 0.0), size=(1.60, 0.10, 0.9)),
+            "counter_neg_x": _make_mock_fixture((-0.40, -0.30, 0.0), size=(0.10, 0.60, 0.9)),
+            "counter_neg_y": _make_mock_fixture((0.0, -0.40, 0.0), size=(1.60, 0.10, 0.9)),
+        }
+        grid = OccupancyGrid(fixtures, cell_size=0.05)
+
+        self.assertTrue(grid._is_enclosed(np.array([0.20, -0.35], dtype=float)))
+
+    def test_l_corner_without_opposite_counter_pair_is_not_enclosed(self):
+        """A simple wall-plus-counter L-shape should remain standable."""
+        fixtures = {
+            "wall_pos_x": _make_mock_fixture((0.55, 0.0, 0.0), size=(0.10, 1.20, 0.9)),
+            "wall_pos_y": _make_mock_fixture((0.0, 0.55, 0.0), size=(1.20, 0.10, 0.9)),
+            "counter_neg_x": _make_mock_fixture((-0.55, 0.0, 0.0), size=(0.10, 1.20, 0.9)),
+        }
+        grid = OccupancyGrid(fixtures, cell_size=0.05)
+
+        self.assertFalse(grid._is_enclosed(np.array([0.0, 0.0], dtype=float)))
+
     def test_occupy_and_release(self):
         """occupy() and release() should toggle cell state."""
         f1 = _make_mock_fixture((0.0, 0.0, 0.0), size=(0.4, 0.4, 0.9))
@@ -360,8 +410,8 @@ class TestOccupancyGridUnit(unittest.TestCase):
         self.assertGreater(pos_xy[1], 0.25, f"Expected target-inferred front face, got {pos_xy}")
         self.assertGreater(abs(pos_xy[1]), abs(pos_xy[0]), f"Expected front along +Y, got {pos_xy}")
 
-    def test_corner_pocket_is_not_standable(self):
-        """Three-sided pockets should be rejected even if they sit inside the room."""
+    def test_three_sided_wall_pocket_is_not_a_counter_wall_corner_trap(self):
+        """Wall-only pockets should not trigger the counter-wall corner heuristic."""
         fixtures = {
             "wall_left": _make_mock_fixture((-0.25, 0.0, 0.0), size=(0.10, 0.80, 0.9)),
             "wall_right": _make_mock_fixture((0.25, 0.0, 0.0), size=(0.10, 0.80, 0.9)),
@@ -370,8 +420,7 @@ class TestOccupancyGridUnit(unittest.TestCase):
         grid = OccupancyGrid(fixtures, cell_size=0.05)
         pocket = np.array([0.0, 0.0], dtype=float)
 
-        self.assertTrue(grid._is_enclosed(pocket))
-        self.assertFalse(grid.is_standable(pocket))
+        self.assertFalse(grid._is_enclosed(pocket))
 
     def test_open_gap_is_not_treated_as_corner_pocket(self):
         """Two nearby obstacles should not block an otherwise reachable stance cell."""

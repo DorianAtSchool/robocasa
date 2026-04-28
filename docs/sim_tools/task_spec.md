@@ -29,6 +29,20 @@ It describes:
 
 The runtime loader is [tasks/specs/__init__.py](/home/dorian/Projects/robocasa/data_generation/task_level/tasks/specs/__init__.py:31).
 
+## Verified Inventory
+
+The checked-in verified inventory is now canonicalized to one JSON file per
+task slug under
+`data_generation/task_level/tasks/specs/verified/`.
+
+Overlapping validation-group membership is tracked separately in:
+
+- `data_generation/task_level/pipeline/task_groups.py`
+- `data_generation/task_level/tasks/specs/verified/README.md`
+
+This keeps the runnable spec set flat for generation/sweep workflows while
+still preserving the behavior-family groupings used during validation.
+
 ## Pipeline Behavior
 
 ### Phase 1

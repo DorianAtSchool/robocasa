@@ -40,10 +40,6 @@
         "object_type": "cheese",
         "location": "fridge"
       },
-      "cutting_board": {
-        "object_type": "cutting_board",
-        "location": "counter"
-      },
       "baguette": {
         "object_type": "baguette",
         "location": "cutting_board"
@@ -51,20 +47,27 @@
       "knife": {
         "object_type": "knife",
         "location": "counter"
+      },
+      "cutting_board": {
+        "object_type": "cutting_board",
+        "location": "counter"
       }
     },
     "fixtures": {
       "fridge": {
         "fixture_type": "fridge",
         "parts": {
-          "door": {
+          "hinged": {
             "part_type": "hinged_part",
             "state": "closed"
           }
-        }
+        },
+        "controls": {}
       },
       "counter": {
-        "fixture_type": "counter"
+        "fixture_type": "counter",
+        "parts": {},
+        "controls": {}
       }
     },
     "machine_state": {
@@ -99,7 +102,20 @@
         "fridge"
       ],
       "allowed_part_ids": [
-        "door"
+        "hinged"
+      ]
+    },
+    "close_hinged_part": {
+      "description": "Close a hinged door, lid, or articulated head on a fixture.",
+      "tool_args": [
+        "target_id",
+        "part_id"
+      ],
+      "allowed_target_ids": [
+        "fridge"
+      ],
+      "allowed_part_ids": [
+        "hinged"
       ]
     },
     "pick_up_object": {
@@ -138,7 +154,7 @@
         "sausage",
         "cheese"
       ],
-      "allowed_support_object_ids": [
+      "support_object_id": [
         "cutting_board"
       ]
     },
@@ -153,127 +169,82 @@
       ]
     }
   },
-  "task_goal": "retrieve sausage and cheese from the fridge and place them on the cutting board on the counter.",
+  "task_goal": "Retrieve the sausage and cheese from the fridge and place them on the cutting board on the counter.",
   "extra_execution_rules": [
-    "Place sausage and cheese on the cutting_board, not directly on the counter.",
-    "Do not move the baguette or the knife.",
-    "The fridge door must be open before picking up the sausage or cheese."
+    "Open the fridge door before picking up ingredients.",
+    "Place both ingredients on the cutting board where the baguette is located.",
+    "After picking up sausage or cheese from the fridge, navigate directly to the counter and place it on the cutting board before manipulating the fridge again.",
+    "Do not use close_hinged_part while holding sausage or cheese.",
+    "Only use give_space at a fixture where that agent is already positioned.",
+    "As soon as both sausage and cheese are on the cutting board, end the trajectory immediately without any cleanup or extra actions."
   ],
   "initial_public_state": {
     "sausage_location": "fridge",
     "cheese_location": "fridge",
-    "baguette_location": "cutting_board",
-    "knife_location": "counter",
-    "cutting_board_location": "counter"
+    "baguette_location": "cutting_board"
   },
   "task_preconditions": [
-    {
-      "kind": "object_must_remain_at_location",
-      "object_id": "baguette",
-      "location": "cutting_board",
-      "message": "The baguette must remain on the cutting board."
-    },
-    {
-      "kind": "object_must_remain_at_location",
-      "object_id": "knife",
-      "location": "counter",
-      "message": "The knife must remain on the counter."
-    },
     {
       "kind": "fixture_part_state_required_for_pickup",
       "tool": "pick_up_object",
       "source_id": "fridge",
       "fixture_id": "fridge",
-      "part_id": "door",
+      "part_id": "hinged",
       "required_state": "open",
-      "message": "The fridge door must be open to retrieve ingredients."
+      "message": "The fridge must be open to retrieve ingredients."
     }
   ],
   "goal_conditions": [
     {
       "kind": "object_at_location",
       "object_id": "sausage",
-      "location": "cutting_board"
+      "location": "cutting_board",
+      "machine_path": null
     },
     {
       "kind": "object_at_location",
       "object_id": "cheese",
-      "location": "cutting_board"
+      "location": "cutting_board",
+      "machine_path": null
     }
   ],
   "task_effects": [],
   "grounding": {
-    "legacy_symbol_aliases": {
-      "sausage_1": "sausage",
-      "cheese_1": "cheese",
-      "baguette_1": "baguette",
-      "knife_1": "knife",
-      "baguette_container": "cutting_board",
-      "fridge_1": "fridge",
-      "counter_1": "counter"
-    },
+    "legacy_symbol_aliases": {},
     "symbols": {
       "sausage": {
         "entity_type": "object",
         "resolver": "object_by_type",
-        "role": "sausage",
-        "preferred_fixture_types": [
-          "fridge"
-        ],
         "object_type": "sausage"
       },
       "cheese": {
         "entity_type": "object",
         "resolver": "object_by_type",
-        "role": "cheese",
-        "preferred_fixture_types": [
-          "fridge"
-        ],
         "object_type": "cheese"
       },
       "baguette": {
         "entity_type": "object",
         "resolver": "object_by_type",
-        "role": "baguette",
-        "preferred_fixture_types": [
-          "counter"
-        ],
         "object_type": "baguette"
       },
       "knife": {
         "entity_type": "object",
         "resolver": "object_by_type",
-        "role": "knife",
-        "preferred_fixture_types": [
-          "counter"
-        ],
         "object_type": "knife"
       },
       "cutting_board": {
         "entity_type": "object",
         "resolver": "object_by_type",
-        "role": "cutting_board",
-        "preferred_fixture_types": [
-          "counter"
-        ],
         "object_type": "cutting_board"
       },
       "fridge": {
         "entity_type": "fixture",
         "resolver": "unique_fixture_type",
-        "role": "fridge",
-        "preferred_fixture_types": [
-          "fridge"
-        ],
         "fixture_type": "fridge"
       },
       "counter": {
         "entity_type": "fixture",
         "resolver": "unique_fixture_type",
-        "role": "counter",
-        "preferred_fixture_types": [
-          "counter"
-        ],
         "fixture_type": "counter"
       }
     }
@@ -294,9 +265,9 @@
         "tool": "communicate",
         "args": {
           "to": "agent_1",
-          "message": "I will open the fridge and get the sausage."
+          "message": "I will get the sausage first. Please clear the fridge, then return for the cheese after I place the sausage."
         },
-        "reasoning": "Coordinating to divide the retrieval of ingredients."
+        "reasoning": "Coordinating a sequential handoff at the shared fridge and counter."
       },
       {
         "step": 1,
@@ -304,39 +275,38 @@
         "tool": "communicate",
         "args": {
           "to": "agent_0",
-          "message": "I will get the cheese once the door is open."
+          "message": "Understood. I will give space at the fridge now and return for the cheese once the sausage is on the cutting board."
         },
-        "reasoning": "Confirming the plan to retrieve the second ingredient."
+        "reasoning": "Acknowledging the sequence so only one agent works at the fridge at a time."
       },
       {
         "step": 2,
+        "agent": "agent_1",
+        "tool": "give_space",
+        "args": {
+          "fixture_id": "fridge"
+        },
+        "reasoning": "Clearing a shared fixture already occupied by this agent before the other agent uses it."
+      },
+      {
+        "step": 3,
         "agent": "agent_0",
         "tool": "open_hinged_part",
         "args": {
           "target_id": "fridge",
-          "part_id": "door"
+          "part_id": "hinged"
         },
-        "reasoning": "The fridge door must be open to access the contents."
+        "reasoning": "Opening the fridge to access the ingredients."
       },
       {
-        "step": 3,
+        "step": 4,
         "agent": "agent_0",
         "tool": "pick_up_object",
         "args": {
           "object_id": "sausage",
           "source_id": "fridge"
         },
-        "reasoning": "Retrieving the sausage from the fridge."
-      },
-      {
-        "step": 4,
-        "agent": "agent_1",
-        "tool": "pick_up_object",
-        "args": {
-          "object_id": "cheese",
-          "source_id": "fridge"
-        },
-        "reasoning": "Retrieving the cheese from the fridge."
+        "reasoning": "Picking up the sausage."
       },
       {
         "step": 5,
@@ -345,19 +315,10 @@
         "args": {
           "fixture_id": "counter"
         },
-        "reasoning": "Moving to the counter to place the sausage on the cutting board."
+        "reasoning": "Carrying the sausage directly to the counter for placement."
       },
       {
         "step": 6,
-        "agent": "agent_1",
-        "tool": "navigate_to_fixture",
-        "args": {
-          "fixture_id": "counter"
-        },
-        "reasoning": "Moving to the counter to place the cheese on the cutting board."
-      },
-      {
-        "step": 7,
         "agent": "agent_0",
         "tool": "place_on_object",
         "args": {
@@ -367,15 +328,63 @@
         "reasoning": "Placing the sausage on the cutting board."
       },
       {
+        "step": 7,
+        "agent": "agent_0",
+        "tool": "communicate",
+        "args": {
+          "to": "agent_1",
+          "message": "Sausage is on the cutting board. The fridge is still open, so you can get the cheese now."
+        },
+        "reasoning": "Letting agent_1 know the shared counter is nearly free and the fridge remains accessible."
+      },
+      {
         "step": 8,
+        "agent": "agent_0",
+        "tool": "give_space",
+        "args": {
+          "fixture_id": "counter"
+        },
+        "reasoning": "Clearing the counter so agent_1 can place the cheese."
+      },
+      {
+        "step": 9,
+        "agent": "agent_1",
+        "tool": "navigate_to_fixture",
+        "args": {
+          "fixture_id": "fridge"
+        },
+        "reasoning": "Returning to the fridge after previously giving space there."
+      },
+      {
+        "step": 10,
+        "agent": "agent_1",
+        "tool": "pick_up_object",
+        "args": {
+          "object_id": "cheese",
+          "source_id": "fridge"
+        },
+        "reasoning": "Picking up the cheese while the fridge is still open."
+      },
+      {
+        "step": 11,
+        "agent": "agent_1",
+        "tool": "navigate_to_fixture",
+        "args": {
+          "fixture_id": "counter"
+        },
+        "reasoning": "Carrying the cheese directly to the counter for placement."
+      },
+      {
+        "step": 12,
         "agent": "agent_1",
         "tool": "place_on_object",
         "args": {
           "object_id": "cheese",
           "support_object_id": "cutting_board"
         },
-        "reasoning": "Placing the cheese on the cutting board completes the task."
+        "reasoning": "Placing the cheese on the cutting board."
       }
     ]
-  }
+  },
+  "notes": []
 }

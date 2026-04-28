@@ -1519,7 +1519,7 @@ def main():
         help="Environment seeds (default: 42)",
     )
     parser.add_argument("--robots", type=int, default=2)
-    parser.add_argument("--placement", choices=["grid", "continuous"], default="grid")
+    parser.add_argument("--placement", choices=["grid"], default="grid")
     parser.add_argument("--cell-size", type=float, default=0.05)
     parser.add_argument(
         "--workers",

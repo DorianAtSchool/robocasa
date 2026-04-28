@@ -54,7 +54,11 @@ from data_generation.task_level.tasks import (
     get_task_definition,
     supported_task_names,
 )
-from data_generation.task_level.tasks.specs import TaskSpec, load_task_spec
+from data_generation.task_level.tasks.specs import (
+    TaskSpec,
+    load_task_spec,
+    supported_verified_task_names,
+)
 from data_generation.task_level.tasks.specs.runtime import SpecDrivenTaskValidator
 from data_generation.task_level.subatomic_tool_calls import discover_subatomic_tools
 from data_generation.task_level.runtime.batch_generation import (
@@ -75,6 +79,7 @@ from data_generation.task_level.generation.raw.config import (
     INTERRUPTED_EXIT_CODE,
     INTERRUPTED_MESSAGE,
     RuntimeConfig,
+    VERIFIED_COMPOSITE_TASKS_OPTION,
 )
 from data_generation.task_level.generation.raw.costs import (
     _build_cost_summary_from_generation_usages,
@@ -1039,6 +1044,10 @@ class SubatomicToolCatalogTests(unittest.TestCase):
             prompt,
         )
         self.assertIn(
+            "Do not use a movable object that any agent is currently holding as a source, support, receptacle, or reference target.",
+            prompt,
+        )
+        self.assertIn(
             "Open mug_source_fixture.door before using pick_up_object on mug from mug_source_fixture.",
             prompt,
         )
@@ -1631,6 +1640,41 @@ class DotenvLoadingTests(unittest.TestCase):
 
         self.assertEqual(runtime_config.composite_task, supported_task_names()[0])
         self.assertEqual(runtime_config.composite_tasks, supported_task_names())
+
+    def test_parse_args_accepts_verified_tasks_option(self):
+        runtime_config = parse_args(["--tasks", VERIFIED_COMPOSITE_TASKS_OPTION])
+
+        self.assertEqual(
+            runtime_config.composite_task,
+            supported_verified_task_names()[0],
+        )
+        self.assertEqual(
+            runtime_config.composite_tasks,
+            supported_verified_task_names(),
+        )
+        self.assertIsNone(runtime_config.summary_path)
+
+    def test_parse_args_verified_tasks_option_is_case_insensitive(self):
+        runtime_config = parse_args(["--tasks", "VERIFIED"])
+
+        self.assertEqual(
+            runtime_config.composite_tasks,
+            supported_verified_task_names(),
+        )
+
+    def test_parse_args_verified_tasks_option_overrides_other_task_entries(self):
+        runtime_config = parse_args(
+            ["--tasks", "PrepareCoffee", "verified", "HotDogSetup"]
+        )
+
+        self.assertEqual(
+            runtime_config.composite_task,
+            supported_verified_task_names()[0],
+        )
+        self.assertEqual(
+            runtime_config.composite_tasks,
+            supported_verified_task_names(),
+        )
 
     def test_runtime_config_for_task_preserves_single_requested_task(self):
         runtime_config = parse_args(["--tasks", "PrepareCoffee", "HotDogSetup"])
@@ -2780,7 +2824,7 @@ class FiniteStateTaskValidatorTests(unittest.TestCase):
 
         self.assertTrue(validation["is_valid"])
 
-    def test_validator_resolves_fixture_for_object_held_by_other_agent(self):
+    def test_validator_rejects_placing_into_receptacle_held_by_other_agent(self):
         initial_state = deepcopy(PLACEMENT_REFERENCE_INITIAL_STATE)
         initial_state["objects"]["bowl_1"] = {"location": "table_1"}
         allowed_tool_specs = build_allowed_tool_specs(
@@ -2838,12 +2882,20 @@ class FiniteStateTaskValidatorTests(unittest.TestCase):
             action_agents=("agent_1", "agent_1", "agent_0", "agent_0"),
         )
 
-        validation = HeldReceptacleValidator().validate(candidate)
+        with self.assertRaises(TaskSemanticValidationError) as raised:
+            HeldReceptacleValidator().validate(candidate)
 
-        self.assertTrue(validation["is_valid"])
-        self.assertEqual(
-            validation["final_state"]["objects"]["apple_1"]["location"],
-            "bowl_1",
+        self.assertIsInstance(
+            raised.exception,
+            TaskPreconditionSemanticValidationError,
+        )
+        self.assertIn(
+            "place_in_receptacle cannot use receptacle_id=bowl_1",
+            str(raised.exception),
+        )
+        self.assertIn(
+            "held by agent_1",
+            str(raised.exception),
         )
 
     def test_validator_accepts_alternative_valid_action_order(self):

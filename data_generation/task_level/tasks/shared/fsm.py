@@ -505,6 +505,7 @@ class FiniteStateTaskValidator:
                         "actual_location": object_location,
                     },
                 )
+            self._require_referenced_objects_not_held(step, runtime_state)
             return
 
         # Once an agent is holding something, the only shared safe actions are
@@ -554,6 +555,7 @@ class FiniteStateTaskValidator:
                 agent_state,
                 tool_args["object_id"],
             )
+            self._require_referenced_objects_not_held(step, runtime_state)
             return
 
         if tool_name in INTERACTION_TOOL_NAMES:
@@ -1105,6 +1107,58 @@ class FiniteStateTaskValidator:
                     "agent": agent_id,
                     "expected_object": object_id,
                     "held_object": agent_state.held_object,
+                },
+            )
+
+    def _iter_referenced_object_args(
+        self,
+        step: dict[str, Any],
+        runtime_state: TaskRuntimeState,
+    ) -> list[tuple[str, str]]:
+        """Collect object-valued anchor args used by the current step."""
+
+        referenced_args: list[tuple[str, str]] = []
+        tool_args = step["args"]
+        for arg_name in (
+            "source_id",
+            "target_id",
+            "support_object_id",
+            "receptacle_id",
+            "reference_object_id",
+            "reference_id",
+        ):
+            arg_value = tool_args.get(arg_name)
+            if isinstance(arg_value, str) and arg_value in runtime_state.objects:
+                referenced_args.append((arg_name, arg_value))
+        return referenced_args
+
+    def _require_referenced_objects_not_held(
+        self,
+        step: dict[str, Any],
+        runtime_state: TaskRuntimeState,
+    ) -> None:
+        """Reject object-relative actions that target a held movable object."""
+
+        for arg_name, object_id in self._iter_referenced_object_args(
+            step,
+            runtime_state,
+        ):
+            object_location = runtime_state.objects.get(object_id, {}).get("location")
+            if (
+                not isinstance(object_location, str)
+                or not object_location.startswith("held_by_")
+            ):
+                continue
+            holder_agent_id = object_location.removeprefix("held_by_")
+            raise TaskPreconditionSemanticValidationError(
+                f"{step['tool']} cannot use {arg_name}={object_id} because "
+                f"{object_id} is currently held by {holder_agent_id}.",
+                details={
+                    "agent": step["agent"],
+                    "tool": step["tool"],
+                    "arg_name": arg_name,
+                    "arg_value": object_id,
+                    "holder_agent": holder_agent_id,
                 },
             )
 

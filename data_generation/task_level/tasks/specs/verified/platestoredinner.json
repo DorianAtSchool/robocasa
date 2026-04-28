@@ -191,6 +191,7 @@
   "extra_execution_rules": [
     "One steak must end up on the plate on the counter.",
     "The other steak must end up in the bowl, and that bowl must be placed inside the fridge.",
+    "Do not place a steak into the bowl while any agent is holding the bowl; the bowl must rest on the counter during loading.",
     "Do not move the plate from the counter."
   ],
   "initial_public_state": {

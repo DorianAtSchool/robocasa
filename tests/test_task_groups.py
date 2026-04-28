@@ -3,13 +3,19 @@ from pathlib import Path
 from data_generation.task_level.pipeline.task_groups import (
     count_unique_task_specs,
     copy_group_task_specs,
+    groups_for_task,
     tasks_for_group,
 )
+from data_generation.task_level.tasks import supported_task_names
 
 
 def test_batch1_bowls_group_includes_hotdog_portioning_overlap():
     assert "portionhotdogs" in tasks_for_group("bowls", batch="batch1")
     assert "portionhotdogs" in tasks_for_group("plates", batch="batch1")
+
+
+def test_groups_for_task_returns_all_overlapping_batch1_groups():
+    assert groups_for_task("portionhotdogs", batch="batch1") == ("bowls", "plates")
 
 
 def test_copy_group_task_specs_copies_present_and_reports_missing(tmp_path: Path):
@@ -88,3 +94,10 @@ def test_count_unique_task_specs_counts_duplicates_by_task_slug(tmp_path: Path):
         "bowls/portionhotdogs.json",
         "plates/portionhotdogs.json",
     )
+
+
+def test_supported_task_names_defaults_to_canonical_verified_inventory():
+    supported = supported_task_names()
+
+    assert "HotDogSetup" in supported
+    assert "PrepareCoffee" in supported

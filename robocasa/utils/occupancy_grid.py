@@ -2,8 +2,8 @@
 2D occupancy grid for robot base placement.
 
 Ground-level fixtures and walls mark cells as occupied.  Placement candidates
-are generated at a fixed standoff distance from each fixture face (same
-approach as ContinuousPlacement), then validated against the grid.
+are generated at a fixed standoff distance from each fixture face, then
+validated against the grid.
 
 Multi-robot collision is handled by cell exclusion and physical distance
 checks.
@@ -32,6 +32,13 @@ _SKIP_NAME_PATTERNS = ("floor",)
 # Minimum height (z) of the fixture's lowest ext_site point for it to be
 # considered "above ground" and therefore not a ground obstacle.
 _ABOVE_GROUND_Z_THRESHOLD = 0.60
+def _classify_enclosure_obstacle(name: str) -> str:
+    """Return a coarse obstacle class used by local corner-trap checks."""
+
+    name_lower = name.lower()
+    if name_lower.startswith("wall_"):
+        return "wall"
+    return "structure"
 
 
 def _is_ground_obstacle(
@@ -77,8 +84,8 @@ class OccupancyGrid:
         self._standoff = standoff
         self._sample_spacing = sample_spacing
         self._include_corner_cabinets = include_corner_cabinets
-        self._obstacle_aabbs: list[tuple[np.ndarray, np.ndarray]] = []
-        self._transient_obstacle_aabbs: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+        self._obstacle_aabbs: list[tuple[np.ndarray, np.ndarray, str]] = []
+        self._transient_obstacle_aabbs: dict[str, tuple[np.ndarray, np.ndarray, str]] = {}
 
         # Compute world AABB from ALL fixtures, rasterize ground obstacles.
         all_points: list[np.ndarray] = []
@@ -105,6 +112,7 @@ class OccupancyGrid:
             self._grid = np.zeros((1, 1), dtype=bool)
             self._rows = 1
             self._cols = 1
+            self._wall_grid = self._grid.copy()
             self._fixture_grid = self._grid.copy()
             self._base_grid = self._grid.copy()
             self._base_fixture_grid = self._fixture_grid.copy()
@@ -130,7 +138,9 @@ class OccupancyGrid:
         for name in obstacle_names:
             aabb = get_fixture_aabb(fixtures[name])
             if aabb is not None:
-                self._obstacle_aabbs.append(aabb)
+                self._obstacle_aabbs.append(
+                    (aabb[0], aabb[1], _classify_enclosure_obstacle(name))
+                )
             self._rasterize_fixture(name, fixtures[name])
 
         # Save fixture-only occupancy (before flood-fill).  Front-face
@@ -215,6 +225,7 @@ class OccupancyGrid:
             elif dc == 1:
                 shifted[:, 0] = False
             wall_dilated |= shifted
+        self._wall_grid = wall_dilated
         # Combine: original obstacle grid + dilated wall cells
         flood_barrier = self._grid | wall_dilated
 
@@ -382,8 +393,8 @@ class OccupancyGrid:
         self._grid = self._base_grid.copy()
         self._fixture_grid = self._base_fixture_grid.copy()
         self._obstacle_aabbs = list(self._base_obstacle_aabbs)
-        for aabb_min, aabb_max in self._transient_obstacle_aabbs.values():
-            self._obstacle_aabbs.append((aabb_min, aabb_max))
+        for aabb_min, aabb_max, obstacle_kind in self._transient_obstacle_aabbs.values():
+            self._obstacle_aabbs.append((aabb_min, aabb_max, obstacle_kind))
             self._rasterize_world_aabb_onto(self._grid, aabb_min, aabb_max)
         self._seal_unreachable_cells(self._fixtures)
 
@@ -396,7 +407,11 @@ class OccupancyGrid:
         normalized_id = obstacle_id or f"transient_{len(self._transient_obstacle_aabbs)}"
         aabb_min = np.asarray(aabb[0], dtype=float)[:2]
         aabb_max = np.asarray(aabb[1], dtype=float)[:2]
-        self._transient_obstacle_aabbs[normalized_id] = (aabb_min, aabb_max)
+        self._transient_obstacle_aabbs[normalized_id] = (
+            aabb_min,
+            aabb_max,
+            "transient",
+        )
         self._rebuild_transient_occupancy()
         return normalized_id
 
@@ -447,62 +462,135 @@ class OccupancyGrid:
         pos: np.ndarray,
         exclude_fixture: Fixture | None = None,
     ) -> bool:
-        """Return True if *pos* sits in a tight pocket between obstacles.
+        """Return True if *pos* sits in a true wall-and-structure corner trap.
 
-        A position is considered unstandable when either:
-        - It is tightly boxed in by 3+ blocking directions, or
-        - It lies in an L-corner (one blocked x direction and one blocked y
-          direction), which tends to produce cabinet / wall clipping.
+        The hard reject here is intentionally narrow: only positions boxed into
+        a room corner by two wall sides and two structure sides are marked as
+        unstandable. Broader unreachable pockets should already have been sealed
+        by the flood-fill pass in ``_seal_unreachable_cells``. For a true
+        corner trap we reject the full bounded region, not just the cells near
+        the inner apex.
         """
         exclude_aabb = None
         if exclude_fixture is not None:
             exclude_aabb = get_fixture_aabb(exclude_fixture)
 
-        # Corner blocking distance for standability checks. A tighter value
-        # misses practical cabinet/counter corners; this slightly larger value
-        # better matches mobile-base clearance needs.
+        def _matches_corner_trap_patterns(
+            wall_blocked: list[bool],
+            structure_blocked: list[bool],
+        ) -> bool:
+            return any(
+                (
+                    wall_blocked[0] and wall_blocked[2] and structure_blocked[1] and structure_blocked[3],
+                    wall_blocked[0] and wall_blocked[3] and structure_blocked[1] and structure_blocked[2],
+                    wall_blocked[1] and wall_blocked[2] and structure_blocked[0] and structure_blocked[3],
+                    wall_blocked[1] and wall_blocked[3] and structure_blocked[0] and structure_blocked[2],
+                )
+            )
+
+        def _matches_bounded_corner_region(
+            wall_distances: np.ndarray,
+            structure_distances: np.ndarray,
+        ) -> bool:
+            max_region_span = 1.20
+            patterns = (
+                (0, 2, 1, 3),
+                (0, 3, 1, 2),
+                (1, 2, 0, 3),
+                (1, 3, 0, 2),
+            )
+            for wall_x_idx, wall_y_idx, structure_x_idx, structure_y_idx in patterns:
+                wall_x = wall_distances[wall_x_idx]
+                wall_y = wall_distances[wall_y_idx]
+                structure_x = structure_distances[structure_x_idx]
+                structure_y = structure_distances[structure_y_idx]
+                if not np.isfinite(wall_x) or not np.isfinite(wall_y):
+                    continue
+                if not np.isfinite(structure_x) or not np.isfinite(structure_y):
+                    continue
+                if wall_x + structure_x > max_region_span:
+                    continue
+                if wall_y + structure_y > max_region_span:
+                    continue
+                return True
+            return False
+
+        # Nearby obstacle distance for identifying a local corner trap when the
+        # full bounded-region check does not apply.
         threshold = 0.55
-        blocked = [False, False, False, False]  # +x, -x, +y, -y
+        overlap_tolerance = self.cell_size * 1.05
+        region_wall_distances = np.full(4, np.inf, dtype=float)  # +x, -x, +y, -y
+        region_structure_distances = np.full(4, np.inf, dtype=float)  # +x, -x, +y, -y
+        near_wall_blocked = [False, False, False, False]  # +x, -x, +y, -y
+        near_structure_blocked = [False, False, False, False]  # +x, -x, +y, -y
         pos_xy = np.asarray(pos, dtype=float)[:2]
-        for aabb_min, aabb_max in self._obstacle_aabbs:
+        for aabb_min, aabb_max, obstacle_kind in self._obstacle_aabbs:
             if exclude_aabb is not None:
                 if (
                     np.allclose(aabb_min, exclude_aabb[0], atol=0.01)
                     and np.allclose(aabb_max, exclude_aabb[1], atol=0.01)
                 ):
                     continue
+            if obstacle_kind not in {"wall", "structure"}:
+                continue
+
+            region_direction_index = None
+            near_direction_index = None
+            direction_distance = None
             if (
-                aabb_min[0] - pos_xy[0] <= threshold
-                and aabb_min[0] >= pos_xy[0]
-                and pos_xy[1] >= aabb_min[1]
-                and pos_xy[1] <= aabb_max[1]
+                pos_xy[1] >= aabb_min[1] - overlap_tolerance
+                and pos_xy[1] <= aabb_max[1] + overlap_tolerance
             ):
-                blocked[0] = True
+                if aabb_min[0] >= pos_xy[0]:
+                    region_direction_index = 0
+                    direction_distance = float(aabb_min[0] - pos_xy[0])
+                    if aabb_min[0] - pos_xy[0] <= threshold:
+                        near_direction_index = 0
+                elif aabb_max[0] <= pos_xy[0]:
+                    region_direction_index = 1
+                    direction_distance = float(pos_xy[0] - aabb_max[0])
+                    if pos_xy[0] - aabb_max[0] <= threshold:
+                        near_direction_index = 1
             if (
-                pos_xy[0] - aabb_max[0] <= threshold
-                and aabb_max[0] <= pos_xy[0]
-                and pos_xy[1] >= aabb_min[1]
-                and pos_xy[1] <= aabb_max[1]
+                region_direction_index is None
+                and pos_xy[0] >= aabb_min[0] - overlap_tolerance
+                and pos_xy[0] <= aabb_max[0] + overlap_tolerance
             ):
-                blocked[1] = True
-            if (
-                aabb_min[1] - pos_xy[1] <= threshold
-                and aabb_min[1] >= pos_xy[1]
-                and pos_xy[0] >= aabb_min[0]
-                and pos_xy[0] <= aabb_max[0]
-            ):
-                blocked[2] = True
-            if (
-                pos_xy[1] - aabb_max[1] <= threshold
-                and aabb_max[1] <= pos_xy[1]
-                and pos_xy[0] >= aabb_min[0]
-                and pos_xy[0] <= aabb_max[0]
-            ):
-                blocked[3] = True
-        blocked_x = blocked[0] or blocked[1]
-        blocked_y = blocked[2] or blocked[3]
-        corner_pocket = blocked_x and blocked_y
-        return sum(blocked) >= 3 or corner_pocket
+                if aabb_min[1] >= pos_xy[1]:
+                    region_direction_index = 2
+                    direction_distance = float(aabb_min[1] - pos_xy[1])
+                    if aabb_min[1] - pos_xy[1] <= threshold:
+                        near_direction_index = 2
+                elif aabb_max[1] <= pos_xy[1]:
+                    region_direction_index = 3
+                    direction_distance = float(pos_xy[1] - aabb_max[1])
+                    if pos_xy[1] - aabb_max[1] <= threshold:
+                        near_direction_index = 3
+
+            if region_direction_index is None or direction_distance is None:
+                continue
+            if obstacle_kind == "wall":
+                region_wall_distances[region_direction_index] = min(
+                    region_wall_distances[region_direction_index],
+                    direction_distance,
+                )
+                if near_direction_index is not None:
+                    near_wall_blocked[near_direction_index] = True
+            else:
+                region_structure_distances[region_direction_index] = min(
+                    region_structure_distances[region_direction_index],
+                    direction_distance,
+                )
+                if near_direction_index is not None:
+                    near_structure_blocked[near_direction_index] = True
+
+        return (
+            _matches_bounded_corner_region(
+                region_wall_distances,
+                region_structure_distances,
+            )
+            or _matches_corner_trap_patterns(near_wall_blocked, near_structure_blocked)
+        )
 
     def is_standable(self, xy: np.ndarray) -> bool:
         """Return True if a robot can stand at world position *xy*."""
@@ -683,7 +771,7 @@ class OccupancyGrid:
                 if not self._is_in_bounds(probe):
                     return False
                 row, col = self._world_to_grid(probe)
-                if self._fixture_grid[row, col]:
+                if self._wall_grid[row, col]:
                     return False
             return True
 

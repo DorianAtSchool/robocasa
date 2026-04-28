@@ -96,6 +96,14 @@ with convenience aliases `BATCH1_TASK_GROUPS`, `BATCH2_TASK_GROUPS`, and
 `BATCH3_TASK_GROUPS`. The groups intentionally overlap so specs and sweeps can
 be checked by behavior/fixture family instead of by a strict partition.
 
+Verified TaskSpecs are now stored canonically as one flat JSON file per task
+slug under `data_generation/task_level/tasks/specs/verified/`. Group
+membership is preserved separately:
+
+- programmatically in `data_generation/task_level/pipeline/task_groups.py`
+- as checked-in documentation in
+  `data_generation/task_level/tasks/specs/verified/README.md`
+
 Print the available groups:
 
 ```bash
@@ -105,6 +113,15 @@ for batch, groups in TASK_GROUPS_BY_BATCH.items():
     print(f"[{batch}]")
     for name, tasks in groups.items():
         print(name, " ".join(tasks))
+PY
+```
+
+Reverse-lookup the groups for one canonical task slug:
+
+```bash
+python - <<'PY'
+from data_generation.task_level.pipeline.task_groups import groups_for_task
+print(groups_for_task("portionhotdogs", batch="batch1"))
 PY
 ```
 

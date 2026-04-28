@@ -1147,6 +1147,127 @@ class TestSimToolExecutorObservationHelpers(unittest.TestCase):
                 [str(top_path.with_suffix(".jpg")), str(map_path)],
             )
 
+    def test_get_image_reuses_cached_shared_view_for_unchanged_state(self):
+        top_render_count = 0
+
+        def _render_top_view():
+            nonlocal top_render_count
+            top_render_count += 1
+            return np.full((4, 5, 3), 9, dtype=np.uint8)
+
+        executor = SimToolExecutor.__new__(SimToolExecutor)
+        executor.runner = SimpleNamespace(
+            render_height=4,
+            render_width=5,
+            _render_room_view=lambda: np.full((4, 5, 3), 7, dtype=np.uint8),
+            _render_top_view=_render_top_view,
+        )
+        executor.env = SimpleNamespace(
+            sim=SimpleNamespace(
+                render=lambda height, width, camera_name: np.full(
+                    (height, width, 3), 13, dtype=np.uint8
+                )
+            )
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            executor.get_image(
+                views=["top_view"],
+                image_paths=[str(Path(tmpdir) / "top_a.png")],
+            )
+            executor.get_image(
+                views=["top_view"],
+                image_paths=[str(Path(tmpdir) / "top_b.png")],
+            )
+
+        self.assertEqual(top_render_count, 1)
+
+    def test_get_image_reuses_cached_map_for_unchanged_state(self):
+        map_render_count = 0
+        executor = self._make_executor()
+
+        def _render_map_image_bytes(*, clean_labels=True, image_format="png"):
+            nonlocal map_render_count
+            map_render_count += 1
+            return b"map-bytes"
+
+        executor._render_map_image_bytes = _render_map_image_bytes
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            executor.get_image(
+                views=["map"],
+                image_paths=[str(Path(tmpdir) / "map_a.png")],
+            )
+            executor.get_image(
+                views=["map"],
+                image_paths=[str(Path(tmpdir) / "map_b.png")],
+            )
+
+        self.assertEqual(map_render_count, 1)
+
+    def test_execute_invalidates_cached_views_after_action(self):
+        top_render_count = 0
+
+        def _render_top_view():
+            nonlocal top_render_count
+            top_render_count += 1
+            return np.full((4, 5, 3), 9, dtype=np.uint8)
+
+        executor = SimToolExecutor.__new__(SimToolExecutor)
+        executor.runner = SimpleNamespace(
+            render_height=4,
+            render_width=5,
+            _render_room_view=lambda: np.full((4, 5, 3), 7, dtype=np.uint8),
+            _render_top_view=_render_top_view,
+        )
+        executor.env = SimpleNamespace(
+            sim=SimpleNamespace(
+                render=lambda height, width, camera_name: np.full(
+                    (height, width, 3), 13, dtype=np.uint8
+                )
+            )
+        )
+        executor.wait = lambda robot_idx=0: SimpleNamespace(
+            success=True,
+            details={"robot_idx": robot_idx},
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            executor.get_image(
+                views=["top_view"],
+                image_paths=[str(Path(tmpdir) / "top_before.png")],
+            )
+            executor.execute("wait", robot_idx=0)
+            executor.get_image(
+                views=["top_view"],
+                image_paths=[str(Path(tmpdir) / "top_after.png")],
+            )
+
+        self.assertEqual(top_render_count, 2)
+
+    def test_run_tool_plan_skips_initial_render_when_videos_disabled(self):
+        executor = SimToolExecutor.__new__(SimToolExecutor)
+        executor.ground_plan_template = lambda tool_calls: tool_calls
+        executor.get_scene_description = lambda: {
+            "task": "demo_task",
+            "cameras": ["top_view", "room_view"],
+        }
+        executor.runner = SimpleNamespace(
+            _num_robots=0,
+            camera_names=["top_view", "room_view"],
+        )
+        executor.render = MagicMock(side_effect=AssertionError("render should not be called"))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            metadata = executor.run_tool_plan(
+                tool_calls=[],
+                output_dir=tmpdir,
+                skip_videos=True,
+            )
+
+        self.assertEqual(metadata["cameras"], ["top_view", "room_view"])
+        executor.render.assert_not_called()
+
 
 class TestSimToolExecutorLoadInitialState(unittest.TestCase):
     def test_load_initial_state_repositions_agents_and_holds_objects(self):

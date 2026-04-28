@@ -1,5 +1,5 @@
 """
-2D placement map rendering for grid and continuous strategies.
+2D placement map rendering for the occupancy-grid strategy.
 
 Reusable drawing functions consumed by ``SimToolExecutor.save_placement_map``
 and ``experiments/visualize_grid.py``.
@@ -16,61 +16,22 @@ import numpy as np
 import textwrap
 
 from robocasa.utils.placement import (
-    ContinuousPlacement,
     get_fixture_aabb,
-    get_front_working_side_clearance,
-    get_face_order,
     is_ground_obstacle,
-    is_within_face_working_band,
 )
-from robocasa.models.fixtures import FixtureType
-from robocasa.models.fixtures.fixture_utils import fixture_is_type
-
-_FRONT_ONLY_FIXTURE_TYPES = [
-    FixtureType.FRIDGE,
-    FixtureType.CABINET,
-    FixtureType.CABINET_WITH_DOOR,
-    FixtureType.CABINET_SINGLE_DOOR,
-    FixtureType.CABINET_DOUBLE_DOOR,
-    FixtureType.DRAWER,
-    FixtureType.TOP_DRAWER,
-    FixtureType.MICROWAVE,
-    FixtureType.OVEN,
-    FixtureType.DISHWASHER,
-]
 
 
-def _format_fixture_label(name: str, clean: bool = True, wrap_width: int = 18) -> str:
+def _format_fixture_label(name: str, clean: bool = True, wrap_width: int = 24) -> str:
     """Render a readable fixture label from an internal fixture id.
 
-    When *clean* is True, strips layout-internal suffixes (``_group``,
-    ``_main``) and collapses repeated segments while **keeping** positional
-    tags (``_left``, ``_right``, ``_center``) for spatial context.
+    When *clean* is True, preserves the full fixture id but converts
+    underscores to spaces for readability.
 
     When *clean* is False, returns the full raw fixture id (only wrapped).
-
-    Examples (clean=True)::
-
-        coffee_machine_left_group  → coffee_machine_left
-        counter_1_left_group       → counter_1_left
-        cab_1_main_group           → cab_1
-        dining_dining_group        → dining
-        fridge_right_group         → fridge_right
     """
-    import re
     label = str(name).strip()
     if clean:
-        # Strip trailing _group (layout-internal grouping suffix)
-        label = re.sub(r"_group$", "", label)
-        # Strip _main (generic grouping tag, not spatially meaningful)
-        label = re.sub(r"_main$", "", label)
-        # Collapse repeated segments (e.g. dining_dining → dining)
-        parts = label.split("_")
-        deduped = [parts[0]]
-        for p in parts[1:]:
-            if p != deduped[-1]:
-                deduped.append(p)
-        label = "_".join(deduped)
+        label = label.replace("_", " ")
     if len(label) <= wrap_width:
         return label
     return textwrap.fill(
@@ -448,85 +409,4 @@ def draw_grid_map(ax, runner, clean_labels=True):
     ax.set_title(
         f"Grid — {grid._rows}x{grid._cols} @ {grid.cell_size}m | "
         f"occ={occupied_count}, enclosed={enclosed_count}, free={free_count}"
-    )
-
-
-def draw_continuous_map(ax, runner, clean_labels=True):
-    """Draw the continuous placement candidates on axes.
-
-    *clean_labels*: when True (default), fixture labels are shortened.
-    Set False for raw fixture ids.
-    """
-    cp = runner._continuous or ContinuousPlacement(runner._fixtures)
-    grid = runner._occupancy_grid  # for bounds only
-
-    # Light background
-    x_min = grid._origin[0]
-    x_max = grid._origin[0] + grid._cols * grid.cell_size
-    y_min = grid._origin[1]
-    y_max = grid._origin[1] + grid._rows * grid.cell_size
-    ax.add_patch(patches.Rectangle(
-        (x_min, y_min), x_max - x_min, y_max - y_min,
-        facecolor="#f8f8f8", edgecolor="#ccc", linewidth=0.5,
-    ))
-
-    placed_label_boxes = _draw_fixtures(ax, runner._fixtures, clean_labels=clean_labels)
-
-    def _classify_candidate(cp, pos, fixture_id, fxtr, face_key):
-        """Return (color, marker, size) for a candidate position."""
-        if any(fixture_is_type(fxtr, ft) for ft in _FRONT_ONLY_FIXTURE_TYPES):
-            aabb = get_fixture_aabb(fxtr)
-            if aabb is not None:
-                fmin, fmax = aabb
-                front_target = None
-                if hasattr(runner, "_get_fixture_front_target_xy"):
-                    front_target = runner._get_fixture_front_target_xy(fixture_id)
-                front_face = get_face_order(fxtr, front_target_xy=front_target)[0]
-                side_clearance = get_front_working_side_clearance(front_face, fmin, fmax)
-                if face_key != front_face:
-                    return "#cc3333", "x", 3
-                if not is_within_face_working_band(
-                    front_face,
-                    pos,
-                    fmin,
-                    fmax,
-                    side_clearance=side_clearance,
-                ):
-                    return "#cc3333", "x", 3
-        if not cp.is_standable(pos):
-            return "#cc3333", "x", 3   # red x: out of bounds or collides
-        if cp._collides_with_obstacles(pos, exclude_fixture=fxtr):
-            return "#cc3333", "x", 3   # red x: collides with obstacle
-        if cp._is_enclosed(pos, exclude_fixture=fxtr):
-            return "#cc8833", "x", 3   # orange x: enclosed / tight gap
-        return "#33aa33", ".", 5        # green dot: valid
-
-    # Draw candidate positions for ALL fixtures of key types (not just one
-    # per type) so the map shows the full picture.
-    target_types = [FixtureType.COUNTER, FixtureType.FRIDGE, FixtureType.SINK,
-                    FixtureType.STOVE, FixtureType.CABINET,
-                    FixtureType.DINING_COUNTER]
-    for fid, fxtr in runner._fixtures.items():
-        is_target = any(fixture_is_type(fxtr, ft) for ft in target_types)
-        is_dining = "dining" in fid.lower()
-        if not (is_target or is_dining):
-            continue
-        grouped_candidates = cp._generate_face_candidates_grouped(fxtr)
-        for face_key, candidates in grouped_candidates.items():
-            for pos, yaw in candidates:
-                color, marker, size = _classify_candidate(cp, pos, fid, fxtr, face_key)
-                ax.plot(pos[0], pos[1], marker, color=color, markersize=size,
-                        zorder=3, alpha=0.7)
-
-    _draw_robots(ax, runner, placed_label_boxes=placed_label_boxes)
-    _draw_objects(ax, runner, placed_label_boxes=placed_label_boxes)
-
-    ax.set_xlim(x_min - 0.2, x_max + 0.2)
-    ax.set_ylim(y_min - 0.2, y_max + 0.2)
-    ax.set_aspect("equal")
-    ax.set_xlabel("X (m)")
-    ax.set_ylabel("Y (m)")
-    ax.set_title(
-        f"Continuous — {len(cp._obstacle_aabbs)} obstacle AABBs | "
-        f"green=valid, red=collides, orange=enclosed"
     )

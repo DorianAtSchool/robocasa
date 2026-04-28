@@ -129,7 +129,11 @@
     }
   },
   "task_goal": "Place the pitcher and cup on the dining counter for serving.",
-  "extra_execution_rules": [],
+  "extra_execution_rules": [
+    "Only use give_space at a fixture where that agent is already positioned.",
+    "After an agent gives space at the sink_counter, it must navigate back before picking up an item there.",
+    "Once both the pitcher and cup are on the dining_counter, end the trajectory immediately without extra cleanup actions."
+  ],
   "initial_public_state": {
     "pitcher_location": "sink_counter",
     "cup_location": "sink_counter"
@@ -225,15 +229,6 @@
       },
       {
         "step": 4,
-        "agent": "agent_1",
-        "tool": "give_space",
-        "args": {
-          "fixture_id": "sink_counter"
-        },
-        "reasoning": "Giving space for agent_0 to move away with the pitcher."
-      },
-      {
-        "step": 5,
         "agent": "agent_0",
         "tool": "navigate_to_fixture",
         "args": {
@@ -242,7 +237,7 @@
         "reasoning": "Moving to the destination."
       },
       {
-        "step": 6,
+        "step": 5,
         "agent": "agent_0",
         "tool": "place_on_surface",
         "args": {
@@ -252,7 +247,7 @@
         "reasoning": "Placing the pitcher on the dining counter."
       },
       {
-        "step": 7,
+        "step": 6,
         "agent": "agent_1",
         "tool": "navigate_to_fixture",
         "args": {
@@ -261,7 +256,7 @@
         "reasoning": "Moving back to the sink counter to get the cup."
       },
       {
-        "step": 8,
+        "step": 7,
         "agent": "agent_1",
         "tool": "pick_up_object",
         "args": {
@@ -271,7 +266,7 @@
         "reasoning": "Picking up the cup."
       },
       {
-        "step": 9,
+        "step": 8,
         "agent": "agent_0",
         "tool": "give_space",
         "args": {
@@ -280,7 +275,7 @@
         "reasoning": "Clearing a shared fixture already occupied by this agent before the other agent uses it."
       },
       {
-        "step": 10,
+        "step": 9,
         "agent": "agent_1",
         "tool": "navigate_to_fixture",
         "args": {
@@ -289,7 +284,7 @@
         "reasoning": "Moving to the dining counter."
       },
       {
-        "step": 11,
+        "step": 10,
         "agent": "agent_1",
         "tool": "place_on_surface",
         "args": {

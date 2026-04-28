@@ -2815,6 +2815,65 @@ class TestFrontRetryUnit(unittest.TestCase):
             )
         )
 
+    def test_supported_children_balances_hotdog_pair_on_plate_for_portion_task(self):
+        executor = SimToolExecutor.__new__(SimToolExecutor)
+        executor._task_name = "PortionHotDogs"
+        executor.env = SimpleNamespace(
+            objects={"plate1": object(), "hotdog_bun1": object(), "sausage1": object()}
+        )
+        executor._held_by_robot = MagicMock(return_value=None)
+        executor._support_object_tokens = MagicMock(return_value={"plate"})
+        executor._scene_object_tokens = MagicMock(
+            side_effect=lambda object_id: (
+                {"bun", "hotdog"} if "bun" in object_id else {"sausage"}
+            )
+        )
+
+        self.assertTrue(
+            executor._supported_children_should_balance_slots(
+                "plate1",
+                ["hotdog_bun1", "sausage1"],
+            )
+        )
+
+    def test_portion_hotdogs_second_plate_item_uses_inboard_opposite_slot(self):
+        executor = SimToolExecutor.__new__(SimToolExecutor)
+        executor._task_name = "PortionHotDogs"
+        executor._iter_direct_supported_children = MagicMock(return_value=["hotdog_bun1"])
+        executor._find_objects_on_support = MagicMock(return_value=["hotdog_bun1"])
+        executor._support_object_tokens = MagicMock(return_value={"plate"})
+        executor._scene_object_tokens = MagicMock(
+            side_effect=lambda object_id: (
+                {"bun", "hotdog"} if "bun" in object_id else {"sausage"}
+            )
+        )
+        executor._support_object_geometry = MagicMock(
+            return_value={
+                "center_xy": np.array([0.0, 0.0], dtype=float),
+                "rot_xy": np.eye(2, dtype=float),
+                "extent_x": 1.0,
+                "extent_y": 1.0,
+                "support_tokens": {"plate"},
+                "is_concave": False,
+            }
+        )
+        executor._support_object_anchor_axes_xy = MagicMock(
+            return_value=(
+                np.array([1.0, 0.0], dtype=float),
+                np.array([0.0, 1.0], dtype=float),
+            )
+        )
+        executor._get_object_pose = MagicMock(
+            return_value=(np.array([-0.16, -0.05, 0.0], dtype=float), np.array([1.0, 0.0, 0.0, 0.0]))
+        )
+
+        preferred = executor._incoming_support_slot_preference("plate1", "sausage1")
+
+        self.assertIsNotNone(preferred)
+        self.assertGreater(float(preferred[0]), 0.0)
+        self.assertLess(float(preferred[0]), 0.2)
+        self.assertGreater(float(preferred[1]), 0.0)
+
     def test_settle_and_reseat_supported_object_reapplies_upright_pose_after_tip(self):
         executor = SimToolExecutor.__new__(SimToolExecutor)
         executor._set_support_parent = MagicMock()
