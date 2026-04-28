@@ -6,6 +6,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
 
+from data_generation.task_level.object_type_families import object_type_matches
 from data_generation.task_level.tasks.specs import load_task_spec
 
 GROUNDING_MAP_VERSION = 2
@@ -453,6 +454,24 @@ def _resolve_nearest_placeable_surface(
             candidates=[],
         )
 
+    parent_fixture_id = anchor_fixture.get("parent_fixture")
+    if isinstance(parent_fixture_id, str):
+        parent_fixture = fixtures.get(parent_fixture_id)
+        if isinstance(parent_fixture, dict) and bool(
+            parent_fixture.get("can_place_objects", False)
+        ) and (
+            not preferred_fixture_types
+            or parent_fixture.get("fixture_type") in preferred_fixture_types
+        ):
+            return _resolved_symbol(
+                symbol,
+                spec,
+                parent_fixture_id,
+                confidence=1.0,
+                candidates=[parent_fixture_id],
+                reason=f"Resolved via parent_fixture of {anchor_fixture_symbol!r}.",
+            )
+
     if bool(anchor_fixture.get("can_place_objects", False)) and (
         not preferred_fixture_types
         or anchor_fixture.get("fixture_type") in preferred_fixture_types
@@ -475,15 +494,36 @@ def _resolve_nearest_placeable_surface(
             candidates=candidates,
         )
 
-    resolved_id = min(
-        candidates,
-        key=lambda fixture_id: _distance_to_fixture(scene, fixture_id, anchor_xy),
+    ranked_candidates = sorted(
+        (
+            (_distance_to_fixture(scene, fixture_id, anchor_xy), fixture_id)
+            for fixture_id in candidates
+        ),
+        key=lambda item: item[0],
     )
+    resolved_id = ranked_candidates[0][1]
+    if len(ranked_candidates) > 1:
+        best_distance = ranked_candidates[0][0]
+        tied_candidates = [
+            fixture_id
+            for distance, fixture_id in ranked_candidates
+            if distance <= best_distance + 0.15
+        ]
+        if len(tied_candidates) > 1:
+            return _unresolved_symbol(
+                symbol,
+                spec,
+                reason=(
+                    f"Multiple placeable surfaces are similarly near {anchor_fixture_symbol!r}; "
+                    "requires explicit grounding."
+                ),
+                candidates=tied_candidates,
+            )
     return _resolved_symbol(
         symbol,
         spec,
         resolved_id,
-        confidence=0.9,
+        confidence=0.95,
         candidates=candidates,
         reason=f"Selected nearest placeable surface to {anchor_fixture_symbol!r}.",
     )
@@ -497,13 +537,16 @@ def _object_candidates_for_type(
 ) -> list[str]:
     """Returns scene object candidates that match one symbolic object entry."""
 
+    object_type = str(object_type).lower()
+
     preferred_fixture_types = tuple(preferred_fixture_types or ())
     fixtures = scene.get("fixtures", {})
     candidates: list[str] = []
     for object_id, object_info in scene.get("objects", {}).items():
         if not isinstance(object_info, dict):
             continue
-        if object_info.get("object_type") != object_type:
+        actual_type = str(object_info.get("object_type", "")).lower()
+        if not object_type_matches(object_type, actual_type):
             continue
         if preferred_fixture_types:
             location_id = object_info.get("location")

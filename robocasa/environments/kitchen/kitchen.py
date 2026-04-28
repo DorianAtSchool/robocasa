@@ -37,6 +37,7 @@ from robocasa.utils.texture_swap import (
     replace_wall_texture,
 )
 from robocasa.utils.trajectory_pruning import (
+    filter_object_cfgs_for_trajectory,
     normalize_required_object_specs,
     resolve_trajectory_object_cfg_matches,
 )
@@ -1046,12 +1047,10 @@ class Kitchen(ManipulationEnv, metaclass=KitchenEnvMeta):
             required_object_specs=self.trajectory_object_specs,
         )
         self.symbolic_object_refs.update(matches)
-        keep_names = set(matches.values())
-        return [
-            deepcopy(cfg)
-            for cfg in object_cfgs
-            if str(cfg.get("name", "")).strip() in keep_names
-        ]
+        return filter_object_cfgs_for_trajectory(
+            object_cfgs,
+            required_object_specs=self.trajectory_object_specs,
+        )
 
     def _should_keep_object_cfg_for_trajectory(self, object_cfg):
         """Return whether one created / synthesized object should be kept."""

@@ -1,0 +1,337 @@
+{
+  "spec_version": 1,
+  "composite_task": "CandleCleanup",
+  "source_python_module": "robocasa.environments.kitchen.composite.clearing_table.candle_cleanup",
+  "agent_ids": [
+    "agent_0",
+    "agent_1"
+  ],
+  "max_reasoning_chars": 200,
+  "validator_checks": [
+    "initial_communication",
+    "allowed_tools",
+    "navigation_preconditions",
+    "manipulation_preconditions",
+    "effects",
+    "final_success"
+  ],
+  "preflight_token_estimate": {
+    "prompt_tokens": 3000,
+    "output_tokens": 3500,
+    "reasoning_tokens": 0
+  },
+  "initial_state": {
+    "agents": {
+      "agent_0": {
+        "location": "dining_table",
+        "held_object": null
+      },
+      "agent_1": {
+        "location": "dining_table",
+        "held_object": null
+      }
+    },
+    "objects": {
+      "obj1": {
+        "object_type": "decoration",
+        "location": "dining_table"
+      },
+      "obj2": {
+        "object_type": "decoration",
+        "location": "dining_table"
+      }
+    },
+    "fixtures": {
+      "cab": {
+        "fixture_type": "cabinet",
+        "parts": {
+          "hinged": {
+            "part_type": "hinged_part",
+            "state": "open"
+          }
+        },
+        "controls": {}
+      },
+      "dining_table": {
+        "fixture_type": "counter",
+        "parts": {},
+        "controls": {}
+      }
+    },
+    "machine_state": {
+      "candle_cleanup": {}
+    }
+  },
+  "allowed_tool_specs": {
+    "communicate": {
+      "description": "Send a short coordination message to the other agent in the scene. args.to must be that agent's exact ID.",
+      "tool_args": [
+        "to",
+        "message"
+      ]
+    },
+    "navigate_to_fixture": {
+      "description": "Move the robot base to the working pose of a fixture.",
+      "tool_args": [
+        "fixture_id"
+      ],
+      "allowed_fixture_ids": [
+        "cab",
+        "dining_table"
+      ]
+    },
+    "pick_up_object": {
+      "description": "Grasp and lift an object from a symbolic source region.",
+      "tool_args": [
+        "object_id",
+        "source_id"
+      ],
+      "optional_tool_args": [
+        "source_site_id"
+      ],
+      "allowed_object_ids": [
+        "obj1",
+        "obj2"
+      ],
+      "allowed_source_ids": [
+        "dining_table"
+      ]
+    },
+    "place_in_receptacle": {
+      "description": "Place an object into an interior or container-like receptacle. Use target_site_id separately when the exact basin, bowl, rack, shelf, slot, or tray matters.",
+      "tool_args": [
+        "object_id"
+      ],
+      "tool_arg_any_of": [
+        [
+          "target_id",
+          "receptacle_id"
+        ]
+      ],
+      "optional_tool_args": [
+        "target_id",
+        "receptacle_id",
+        "target_site_id",
+        "relative_position"
+      ],
+      "allowed_object_ids": [
+        "obj1",
+        "obj2"
+      ],
+      "allowed_receptacle_ids": [
+        "cab"
+      ]
+    },
+    "close_hinged_part": {
+      "description": "Close a hinged door, lid, or articulated head on a fixture.",
+      "tool_args": [
+        "target_id",
+        "part_id"
+      ],
+      "allowed_target_ids": [
+        "cab"
+      ],
+      "allowed_part_ids": [
+        "hinged"
+      ]
+    },
+    "give_space": {
+      "description": "Yield working room at a fixture so the other agent can complete an action there.",
+      "tool_args": [
+        "fixture_id"
+      ],
+      "allowed_fixture_ids": [
+        "cab",
+        "dining_table"
+      ]
+    }
+  },
+  "task_goal": "Pick the two decorations from the dining table and place them in the open cabinet, then close the cabinet.",
+  "extra_execution_rules": [
+    "The cabinet must be closed only after both objects are inside."
+  ],
+  "initial_public_state": {
+    "obj1_location": "dining_table",
+    "obj2_location": "dining_table",
+    "cabinet_state": "open"
+  },
+  "task_preconditions": [
+    {
+      "kind": "fixture_part_state_required_for_action",
+      "tool": "place_in_receptacle",
+      "fixture_id": "cab",
+      "part_id": "hinged",
+      "required_state": "open",
+      "arg_name": "receptacle_id",
+      "arg_value": "cab",
+      "message": "The cabinet must be open to place objects inside."
+    }
+  ],
+  "goal_conditions": [
+    {
+      "kind": "object_at_location",
+      "object_id": "obj1",
+      "location": "cab",
+      "machine_path": null
+    },
+    {
+      "kind": "object_at_location",
+      "object_id": "obj2",
+      "location": "cab",
+      "machine_path": null
+    },
+    {
+      "kind": "fixture_part_state",
+      "fixture_id": "cab",
+      "part_id": "hinged",
+      "state": "closed",
+      "machine_path": null
+    }
+  ],
+  "task_effects": [],
+  "grounding": {
+    "legacy_symbol_aliases": {},
+    "symbols": {
+      "obj1": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "object_type": "decoration"
+      },
+      "obj2": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "object_type": "decoration"
+      },
+      "cab": {
+        "entity_type": "fixture",
+        "resolver": "unique_fixture_type",
+        "fixture_type": "cabinet"
+      },
+      "dining_table": {
+        "entity_type": "fixture",
+        "resolver": "unique_fixture_type",
+        "object_id": "obj1",
+        "fixture_type": "counter"
+      }
+    }
+  },
+  "example_trajectory": {
+    "agents": [
+      {
+        "agent": "agent_0"
+      },
+      {
+        "agent": "agent_1"
+      }
+    ],
+    "steps": [
+      {
+        "step": 0,
+        "agent": "agent_0",
+        "tool": "communicate",
+        "args": {
+          "to": "agent_1",
+          "message": "I will take the first decoration to the cabinet."
+        },
+        "reasoning": "Coordinating to split the task of moving two objects."
+      },
+      {
+        "step": 1,
+        "agent": "agent_1",
+        "tool": "communicate",
+        "args": {
+          "to": "agent_0",
+          "message": "I will take the second decoration."
+        },
+        "reasoning": "Acknowledging coordination."
+      },
+      {
+        "step": 2,
+        "agent": "agent_1",
+        "tool": "give_space",
+        "args": {
+          "fixture_id": "dining_table"
+        },
+        "reasoning": "Clearing a shared fixture already occupied by this agent before the other agent uses it."
+      },
+      {
+        "step": 3,
+        "agent": "agent_0",
+        "tool": "pick_up_object",
+        "args": {
+          "object_id": "obj1",
+          "source_id": "dining_table"
+        },
+        "reasoning": "Picking up the first object."
+      },
+      {
+        "step": 4,
+        "agent": "agent_1",
+        "tool": "pick_up_object",
+        "args": {
+          "object_id": "obj2",
+          "source_id": "dining_table"
+        },
+        "reasoning": "Picking up the second object."
+      },
+      {
+        "step": 5,
+        "agent": "agent_0",
+        "tool": "navigate_to_fixture",
+        "args": {
+          "fixture_id": "cab"
+        },
+        "reasoning": "Moving to the target cabinet."
+      },
+      {
+        "step": 6,
+        "agent": "agent_0",
+        "tool": "place_in_receptacle",
+        "args": {
+          "object_id": "obj1",
+          "receptacle_id": "cab"
+        },
+        "reasoning": "Placing the first object inside the cabinet."
+      },
+      {
+        "step": 7,
+        "agent": "agent_0",
+        "tool": "give_space",
+        "args": {
+          "fixture_id": "cab"
+        },
+        "reasoning": "Clearing the area for the second agent to place their object."
+      },
+      {
+        "step": 8,
+        "agent": "agent_1",
+        "tool": "navigate_to_fixture",
+        "args": {
+          "fixture_id": "cab"
+        },
+        "reasoning": "Moving to the cabinet after agent_0 cleared space."
+      },
+      {
+        "step": 9,
+        "agent": "agent_1",
+        "tool": "place_in_receptacle",
+        "args": {
+          "object_id": "obj2",
+          "receptacle_id": "cab"
+        },
+        "reasoning": "Placing the second object inside the cabinet."
+      },
+      {
+        "step": 10,
+        "agent": "agent_1",
+        "tool": "close_hinged_part",
+        "args": {
+          "target_id": "cab",
+          "part_id": "hinged"
+        },
+        "reasoning": "Closing the cabinet now that both objects are inside."
+      }
+    ]
+  },
+  "notes": []
+}

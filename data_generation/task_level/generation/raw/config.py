@@ -7,8 +7,12 @@ import threading
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from data_generation.task_level.runtime.client import TrajectoryGenerationError
+from data_generation.task_level.runtime.client import (
+    DEFAULT_GENERATION_TIMEOUT_SEC,
+    TrajectoryGenerationError,
+)
 from data_generation.task_level.tasks import supported_task_names
+from data_generation.task_level.tasks.specs import supported_verified_task_names
 
 # This module lives under data_generation/task_level/generation/raw, so the
 # repository root is four parents above this file.
@@ -16,6 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parents[4]
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "data_generation" / "task_level" / "data"
 DEFAULT_COMPOSITE_TASK = supported_task_names()[0]
 ALL_COMPOSITE_TASKS_OPTION = "all"
+VERIFIED_COMPOSITE_TASKS_OPTION = "verified"
 DATASET_RUN_TIMESTAMP_FORMAT = "%Y%m%dT%H%M%SZ"
 TRAJECTORY_DIRECTORY_NAME = "trajectories"
 SUMMARY_OUTPUT_FILENAME = "summary.json"
@@ -61,11 +66,16 @@ class RuntimeConfig:
     cost_output_path: Path | None = None
     resume_path: Path | None = None
     disable_validation: bool = False
+    # Keep this default-on so raw trajectory generation rejects obvious
+    # hallucinated part/control/site ids even when running outside pipeline
+    # Phase 2 and without simulator initialization.
+    enable_static_referential_validation: bool = True
     batch_processing: bool = False
     batch_gcs_prefix: str | None = None
     run_indices: tuple[int, ...] = ()
     composite_tasks: tuple[str, ...] = ()
     task_cancellation_event: threading.Event | None = None
+    generation_timeout_sec: int | None = DEFAULT_GENERATION_TIMEOUT_SEC
 
     def __post_init__(self) -> None:
         """Normalizes single-task and multi-task config fields to a stable shape."""
@@ -99,6 +109,8 @@ class RuntimeConfig:
                 # Expand the CLI sentinel into the full supported task list.
                 if normalized_task_name.casefold() == ALL_COMPOSITE_TASKS_OPTION:
                     return supported_task_names()
+                if normalized_task_name.casefold() == VERIFIED_COMPOSITE_TASKS_OPTION:
+                    return supported_verified_task_names()
                 normalized_tasks.append(normalized_task_name)
         return tuple(normalized_tasks)
 

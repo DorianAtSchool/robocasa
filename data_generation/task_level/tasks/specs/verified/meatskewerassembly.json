@@ -1,0 +1,295 @@
+{
+  "spec_version": 1,
+  "composite_task": "MeatSkewerAssembly",
+  "source_python_module": "robocasa.environments.kitchen.composite.filling_serving_dishes.meat_skewer_assembly",
+  "agent_ids": [
+    "agent_0",
+    "agent_1"
+  ],
+  "max_reasoning_chars": 200,
+  "validator_checks": [
+    "initial_communication",
+    "allowed_tools",
+    "navigation_preconditions",
+    "manipulation_preconditions",
+    "effects",
+    "final_success"
+  ],
+  "preflight_token_estimate": {
+    "prompt_tokens": 3000,
+    "output_tokens": 3500,
+    "reasoning_tokens": 0
+  },
+  "initial_state": {
+    "agents": {
+      "agent_0": {
+        "location": "dining_counter",
+        "held_object": null
+      },
+      "agent_1": {
+        "location": "dining_counter",
+        "held_object": null
+      }
+    },
+    "objects": {
+      "skewer_plate": {
+        "object_type": "plate",
+        "location": "dining_counter"
+      },
+      "skewer1": {
+        "object_type": "kebab_skewer",
+        "location": "skewer_plate"
+      },
+      "skewer2": {
+        "object_type": "kebab_skewer",
+        "location": "skewer_plate"
+      },
+      "oven_tray": {
+        "object_type": "oven_tray",
+        "location": "dining_counter"
+      }
+    },
+    "fixtures": {
+      "dining_counter": {
+        "fixture_type": "dining_counter",
+        "parts": {},
+        "controls": {}
+      },
+      "stool": {
+        "fixture_type": "stool",
+        "parts": {},
+        "controls": {}
+      }
+    },
+    "machine_state": {
+      "meat_skewer_assembly": {}
+    }
+  },
+  "allowed_tool_specs": {
+    "communicate": {
+      "description": "Send a short coordination message to the other agent in the scene. args.to must be that agent's exact ID.",
+      "tool_args": [
+        "to",
+        "message"
+      ]
+    },
+    "navigate_to_fixture": {
+      "description": "Move the robot base to the working pose of a fixture.",
+      "tool_args": [
+        "fixture_id"
+      ],
+      "allowed_fixture_ids": [
+        "dining_counter"
+      ]
+    },
+    "pick_up_object": {
+      "description": "Grasp and lift an object from a symbolic source region.",
+      "tool_args": [
+        "object_id",
+        "source_id"
+      ],
+      "optional_tool_args": [
+        "source_site_id"
+      ],
+      "allowed_object_ids": [
+        "skewer1",
+        "skewer2"
+      ],
+      "allowed_source_ids": [
+        "skewer_plate"
+      ]
+    },
+    "place_in_receptacle": {
+      "description": "Place an object into an interior or container-like receptacle. Use target_site_id separately when the exact basin, bowl, rack, shelf, slot, or tray matters.",
+      "tool_args": [
+        "object_id"
+      ],
+      "tool_arg_any_of": [
+        [
+          "target_id",
+          "receptacle_id"
+        ]
+      ],
+      "optional_tool_args": [
+        "target_id",
+        "receptacle_id",
+        "target_site_id",
+        "relative_position"
+      ],
+      "allowed_object_ids": [
+        "skewer1",
+        "skewer2"
+      ],
+      "allowed_receptacle_ids": [
+        "oven_tray"
+      ]
+    },
+    "give_space": {
+      "description": "Yield working room at a fixture so the other agent can complete an action there.",
+      "tool_args": [
+        "fixture_id"
+      ],
+      "allowed_fixture_ids": [
+        "dining_counter"
+      ]
+    }
+  },
+  "task_goal": "Move the kebab skewers from the plate to the oven tray for oven preparation.",
+  "extra_execution_rules": [
+    "The oven tray must remain on the dining counter."
+  ],
+  "initial_public_state": {
+    "skewer1_location": "skewer_plate",
+    "skewer2_location": "skewer_plate",
+    "oven_tray_location": "dining_counter"
+  },
+  "task_preconditions": [
+    {
+      "kind": "object_must_remain_at_location",
+      "object_id": "oven_tray",
+      "location": "dining_counter",
+      "message": "The oven tray must stay on the counter during assembly."
+    }
+  ],
+  "goal_conditions": [
+    {
+      "kind": "object_at_location",
+      "object_id": "skewer1",
+      "location": "oven_tray",
+      "machine_path": null
+    },
+    {
+      "kind": "object_at_location",
+      "object_id": "skewer2",
+      "location": "oven_tray",
+      "machine_path": null
+    }
+  ],
+  "task_effects": [],
+  "grounding": {
+    "legacy_symbol_aliases": {},
+    "symbols": {
+      "skewer_plate": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "object_type": "plate"
+      },
+      "skewer1": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "object_type": "kebab_skewer"
+      },
+      "skewer2": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "object_type": "kebab_skewer"
+      },
+      "oven_tray": {
+        "entity_type": "object",
+        "resolver": "object_by_type",
+        "object_type": "oven_tray"
+      },
+      "dining_counter": {
+        "entity_type": "fixture",
+        "resolver": "unique_fixture_type",
+        "fixture_type": "dining_counter"
+      },
+      "stool": {
+        "entity_type": "fixture",
+        "resolver": "unique_fixture_type",
+        "fixture_type": "stool"
+      }
+    }
+  },
+  "example_trajectory": {
+    "agents": [
+      {
+        "agent": "agent_0"
+      },
+      {
+        "agent": "agent_1"
+      }
+    ],
+    "steps": [
+      {
+        "step": 0,
+        "agent": "agent_0",
+        "tool": "communicate",
+        "args": {
+          "to": "agent_1",
+          "message": "I will move the first skewer to the tray."
+        },
+        "reasoning": "Coordinating to divide the work."
+      },
+      {
+        "step": 1,
+        "agent": "agent_1",
+        "tool": "communicate",
+        "args": {
+          "to": "agent_0",
+          "message": "I will move the second skewer."
+        },
+        "reasoning": "Acknowledging the plan."
+      },
+      {
+        "step": 2,
+        "agent": "agent_1",
+        "tool": "give_space",
+        "args": {
+          "fixture_id": "dining_counter"
+        },
+        "reasoning": "Clearing a shared fixture already occupied by this agent before the other agent uses it."
+      },
+      {
+        "step": 3,
+        "agent": "agent_0",
+        "tool": "pick_up_object",
+        "args": {
+          "object_id": "skewer1",
+          "source_id": "skewer_plate"
+        },
+        "reasoning": "Picking up the first skewer."
+      },
+      {
+        "step": 4,
+        "agent": "agent_0",
+        "tool": "place_in_receptacle",
+        "args": {
+          "object_id": "skewer1",
+          "receptacle_id": "oven_tray"
+        },
+        "reasoning": "Placing the first skewer on the tray."
+      },
+      {
+        "step": 5,
+        "agent": "agent_0",
+        "tool": "give_space",
+        "args": {
+          "fixture_id": "dining_counter"
+        },
+        "reasoning": "Clearing space for agent_1."
+      },
+      {
+        "step": 6,
+        "agent": "agent_1",
+        "tool": "pick_up_object",
+        "args": {
+          "object_id": "skewer2",
+          "source_id": "skewer_plate"
+        },
+        "reasoning": "Picking up the second skewer."
+      },
+      {
+        "step": 7,
+        "agent": "agent_1",
+        "tool": "place_in_receptacle",
+        "args": {
+          "object_id": "skewer2",
+          "receptacle_id": "oven_tray"
+        },
+        "reasoning": "Placing the second skewer on the tray."
+      }
+    ]
+  },
+  "notes": []
+}

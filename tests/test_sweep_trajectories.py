@@ -162,6 +162,7 @@ class SweepTrajectoryWorkerTests(unittest.TestCase):
 
         console_cls.assert_called_once_with(stderr=True)
         eta_column_cls.assert_called_once()
+        self.assertEqual(len(eta_column_cls.call_args.args), 1)
         self.assertTrue(callable(eta_column_cls.call_args.args[0]))
         avg_column_cls.assert_called_once()
         self.assertTrue(callable(avg_column_cls.call_args.args[0]))
@@ -1262,11 +1263,11 @@ class SweepTrajectoryCliTests(unittest.TestCase):
                             with contextlib.redirect_stderr(io.StringIO()):
                                 sweep_trajectories_script.main()
 
-        summary_payload = json.loads(custom_summary_path.read_text(encoding="utf-8"))
-        self.assertEqual(summary_payload["trajectories"], 1)
-        self.assertEqual(summary_payload["num_shards"], 2)
-        self.assertEqual(summary_payload["shard_index"], 1)
-        self.assertEqual(observed_kwargs["workers"], 1)
+            summary_payload = json.loads(custom_summary_path.read_text(encoding="utf-8"))
+            self.assertEqual(summary_payload["trajectories"], 1)
+            self.assertEqual(summary_payload["num_shards"], 2)
+            self.assertEqual(summary_payload["shard_index"], 1)
+            self.assertEqual(observed_kwargs["workers"], 1)
 
     def test_main_allows_empty_shard_and_writes_zero_summary(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1317,13 +1318,13 @@ class SweepTrajectoryCliTests(unittest.TestCase):
                             with contextlib.redirect_stderr(io.StringIO()):
                                 sweep_trajectories_script.main()
 
-        summary_payload = json.loads(
-            (output_dir / "sweep_summary.json").read_text(encoding="utf-8")
-        )
-        self.assertEqual(execute_calls, 1)
-        self.assertEqual(summary_payload["trajectories"], 0)
-        self.assertEqual(summary_payload["total"], 0)
-        self.assertEqual(summary_payload["results"], [])
+            summary_payload = json.loads(
+                (output_dir / "sweep_summary.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(execute_calls, 1)
+            self.assertEqual(summary_payload["trajectories"], 0)
+            self.assertEqual(summary_payload["total"], 0)
+            self.assertEqual(summary_payload["results"], [])
 
     def test_main_gpu_ids_default_to_egl_and_forward_allocation_args(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

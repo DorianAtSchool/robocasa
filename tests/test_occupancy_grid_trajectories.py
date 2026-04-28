@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-Trajectory-level tests for robot placement (grid and continuous).
+Trajectory-level tests for occupancy-grid robot placement.
 
 Three test suites:
   A) Demo plan tests — run scripted multi-step plans end-to-end:
@@ -17,13 +17,13 @@ Each test verifies per-step invariants:
   - Robots stay inside the kitchen grid bounds
 
 Usage:
-  python tests/test_occupancy_grid_trajectories.py --placement continuous --output tmp/test_output
+  python tests/test_occupancy_grid_trajectories.py --placement grid --output tmp/test_output
   python tests/test_occupancy_grid_trajectories.py --placement grid --layout 56 --style 42
   python tests/test_occupancy_grid_trajectories.py --test generic --task MicrowaveThawing
-  python tests/test_occupancy_grid_trajectories.py --test sandwich --placement continuous --output tmp/sandwich
+  python tests/test_occupancy_grid_trajectories.py --test sandwich --placement grid --output tmp/sandwich
 
 Options:
-  --placement    grid or continuous (default: grid)
+  --placement    grid (default: grid)
   --output       Directory to save videos, frames, and placement maps (optional)
   --layout       Kitchen layout id (default: 11)
   --style        Kitchen style id (default: 34)
@@ -107,10 +107,7 @@ def _assert_navigate_invariants(
     runner = executor.runner
     pos = runner._get_robot_position(robot_idx)[:2]
 
-    if runner._continuous is not None:
-        standable = runner._continuous.is_standable(pos)
-    else:
-        standable = runner._occupancy_grid.is_standable(pos)
+    standable = runner._occupancy_grid.is_standable(pos)
     test_case.assertTrue(
         standable,
         f"[{tag}] Robot {robot_idx} in non-standable position after navigate to {fixture_id}. "
@@ -554,7 +551,7 @@ def main():
         description="Trajectory-level placement tests with optional video output.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--placement", default="grid", choices=["grid", "continuous"])
+    parser.add_argument("--placement", default="grid", choices=["grid"])
     parser.add_argument("--output", default=None, help="Output directory for videos/frames/maps")
     parser.add_argument("--layout", type=int, default=11)
     parser.add_argument("--style", type=int, default=34)

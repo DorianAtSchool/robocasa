@@ -15,20 +15,24 @@ from typing import Any
 def _build_tool_spec(
     name: str,
     description: str,
-    *arg_specs: str | tuple[str, str],
+    *arg_specs: str | tuple[str, str] | tuple[str, str, bool],
 ) -> dict[str, Any]:
     """Build a minimal tool spec with required parameters."""
     parameters = []
     for arg_spec in arg_specs:
         if isinstance(arg_spec, tuple):
-            arg_name, arg_type = arg_spec
+            if len(arg_spec) == 3:
+                arg_name, arg_type, required = arg_spec
+            else:
+                arg_name, arg_type = arg_spec
+                required = True
         else:
-            arg_name, arg_type = arg_spec, "string"
+            arg_name, arg_type, required = arg_spec, "string", True
         parameters.append(
             {
                 "name": arg_name,
                 "type": arg_type,
-                "required": True,
+                "required": bool(required),
             }
         )
     return {
@@ -85,18 +89,26 @@ SIM_TOOL_SPECS: list[dict[str, Any]] = [
         "Grasp and lift an object from a symbolic source region.",
         "object_id",
         "source_id",
+        ("source_site_id", "string", False),
     ),
     _build_tool_spec(
         "place_in_receptacle",
-        "Place an object into an interior or container-like receptacle.",
+        "Place an object into an interior or container-like receptacle. Use target_site_id separately when the exact basin, bowl, rack, shelf, slot, or tray matters.",
         "object_id",
         "receptacle_id",
+        ("target_id", "string", False),
+        ("target_site_id", "string", False),
+        ("relative_position", "string", False),
     ),
     _build_tool_spec(
         "place_next_to",
-        "Place an object adjacent to another object on the same surface.",
+        "Place an object adjacent to another object or nearby fixture on the same surface. Use reference_object_id only for movable objects and reference_fixture_id only for fixtures.",
         "object_id",
         "reference_object_id",
+        ("reference_id", "string", False),
+        ("reference_fixture_id", "string", False),
+        ("target_site_id", "string", False),
+        ("relative_position", "string", False),
     ),
     _build_tool_spec(
         "place_on_object",
@@ -104,12 +116,17 @@ SIM_TOOL_SPECS: list[dict[str, Any]] = [
         "object_id",
         "support_object_id",
         "anchor_fixture_id",
+        ("target_id", "string", False),
+        ("relative_position", "string", False),
     ),
     _build_tool_spec(
         "place_on_surface",
-        "Place an object onto an exposed support surface or attachment seat.",
+        "Place an object onto an exposed support surface or attachment seat. Keep the fixture id in support_id or target_id and put the exact burner, rack, or other sub-location in target_site_id.",
         "object_id",
         "support_id",
+        ("target_id", "string", False),
+        ("target_site_id", "string", False),
+        ("relative_position", "string", False),
     ),
     _build_tool_spec(
         "place_under",
@@ -119,6 +136,8 @@ SIM_TOOL_SPECS: list[dict[str, Any]] = [
         "object is placed on the nearest surface below.",
         "object_id",
         "reference_fixture_id",
+        ("target_id", "string", False),
+        ("target_site_id", "string", False),
     ),
     _build_tool_spec(
         "press_button",

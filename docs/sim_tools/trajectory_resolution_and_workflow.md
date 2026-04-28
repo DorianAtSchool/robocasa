@@ -52,7 +52,15 @@ These are built using reverse-lookup from `env.fixture_refs` and `env.object_cfg
 
 ### Robot Spawn
 
-Robot initial positions are determined by the sim's placement system, not overridden by the trajectory. The executor's `load_initial_state()` skips agent navigation when the trajectory's resolved agent location matches the sim's `init_robot_base_ref` fixture, preserving the placement system's computed position and facing direction.
+Robot initial positions depend on the executor's `robot_spawn` mode.
+
+- `trajectory` is the current default and places each robot at the fixture named
+  in the trajectory's `initial_state`
+- `sim` keeps the task's `init_robot_base_ref` placement from the simulator
+
+The executor still stages robots at the sim ground-truth start early in setup so
+debug maps and pre-initial-state renders can reflect the scene before
+trajectory-driven repositioning.
 
 ### Heuristic Fallback
 

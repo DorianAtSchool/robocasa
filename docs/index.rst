@@ -89,8 +89,10 @@ Welcome to RoboCasa's documentation!
    sim_tools/sim_tool_executor_phases
    sim_tools/sim_tool_executor_phase_2
    sim_tools/sim_tool_executor_phase_3
+   sim_tools/task_spec
    sim_tools/continuous_vs_grid_placement
-   sim_tools/trajectory_guessing_and_generation_workflow
+   sim_tools/trajectory_pipeline
+   sim_tools/trajectory_resolution_and_workflow
 
 .. toctree::
    :maxdepth: 4

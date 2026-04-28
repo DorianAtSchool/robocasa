@@ -1,9 +1,10 @@
 # Commands
 
-Run all commands from the repo root:
+Run commands from the repo root with the RoboCasa conda env active:
 
 ```bash
-cd /Users/dorian/Documents/robocasa_mason
+conda activate robocasa
+cd robocasa
 ```
 
 ## Sim Tool Executor
@@ -21,7 +22,7 @@ python -m robocasa.utils.sim_tool_executor \
   --output-dir tmp/executor_scene_grid
 ```
 
-Run the built-in hotdog demo plan with grid placement:
+Run the built-in hotdog demo plan:
 
 ```bash
 python -m robocasa.utils.sim_tool_executor \
@@ -35,7 +36,7 @@ python -m robocasa.utils.sim_tool_executor \
   --output-dir tmp/executor_hotdog_grid
 ```
 
-Run the built-in sandwich demo plan with grid placement:
+Run the built-in sandwich demo plan:
 
 ```bash
 python -m robocasa.utils.sim_tool_executor \
@@ -47,20 +48,6 @@ python -m robocasa.utils.sim_tool_executor \
   --seed 42 \
   --placement grid \
   --output-dir tmp/executor_sandwich_grid
-```
-
-Run the hotdog demo plan with continuous placement:
-
-```bash
-python -m robocasa.utils.sim_tool_executor \
-  --task HotDogSetup \
-  --demo-plan cooperative_hotdog_setup \
-  --robots 2 \
-  --layout 11 \
-  --style 34 \
-  --seed 42 \
-  --placement continuous \
-  --output-dir tmp/executor_hotdog_continuous
 ```
 
 Run an external tool plan JSON:
@@ -89,7 +76,7 @@ python -m robocasa.utils.sim_tool_executor \
   --output-dir tmp/executor_trajectory_grid
 ```
 
-Run a trajectory with a custom cell size (default is 0.05 m):
+Override the occupancy-grid cell size:
 
 ```bash
 python -m robocasa.utils.sim_tool_executor \
@@ -159,7 +146,7 @@ python scripts/sweep_trajectories.py \
   --seeds 42 99
 ```
 
-Dry run (preview without executing):
+Dry run:
 
 ```bash
 python scripts/sweep_trajectories.py \
@@ -169,9 +156,9 @@ python scripts/sweep_trajectories.py \
   --dry-run
 ```
 
-## Trajectory-Level Runs
+## Test And Smoke Commands
 
-Hotdog trajectory test, grid placement:
+Hotdog trajectory smoke test:
 
 ```bash
 python tests/test_occupancy_grid_trajectories.py \
@@ -185,7 +172,7 @@ python tests/test_occupancy_grid_trajectories.py \
   --output tmp/traj_hotdog_grid
 ```
 
-Sandwich trajectory test, grid placement:
+Sandwich trajectory smoke test:
 
 ```bash
 python tests/test_occupancy_grid_trajectories.py \
@@ -199,35 +186,7 @@ python tests/test_occupancy_grid_trajectories.py \
   --output tmp/traj_sandwich_grid
 ```
 
-Generic trajectory stress test on another task:
-
-```bash
-python tests/test_occupancy_grid_trajectories.py \
-  --placement grid \
-  --test generic \
-  --task MicrowaveThawing \
-  --robots 2 \
-  --layout 11 \
-  --style 34 \
-  --seed 42 \
-  --output tmp/traj_generic_grid
-```
-
-Run multiple trajectory suites together:
-
-```bash
-python tests/test_occupancy_grid_trajectories.py \
-  --placement continuous \
-  --test hotdog,sandwich,collision \
-  --layout 11 \
-  --style 34 \
-  --seed 42 \
-  --output tmp/traj_multi_continuous
-```
-
-## Sweep Tests
-
-Quick grid smoke test:
+Quick placement sweep:
 
 ```bash
 python tests/test_placement_sweep.py \
@@ -239,60 +198,10 @@ python tests/test_placement_sweep.py \
   --output tmp/quick_grid
 ```
 
-Full default grid sweep:
-
-```bash
-python tests/test_placement_sweep.py \
-  --placement grid \
-  --output tmp/sweep_grid
-```
-
-Full default continuous sweep:
-
-```bash
-python tests/test_placement_sweep.py \
-  --placement continuous \
-  --output tmp/sweep_continuous
-```
-
-Targeted sweep over both demo-backed tasks:
-
-```bash
-python tests/test_placement_sweep.py \
-  --placement grid \
-  --tasks HotDogSetup,PrepareSandwichStation \
-  --layouts 11,56 \
-  --styles 34,42 \
-  --seeds 42 \
-  --output tmp/sweep_targeted_grid
-```
-
-Faster sweep without saving videos:
-
-```bash
-python tests/test_placement_sweep.py \
-  --placement grid \
-  --tasks HotDogSetup \
-  --layouts 11 \
-  --styles 34 \
-  --seeds 42 \
-  --output tmp/quick_grid_no_video \
-  --no-video \
-  --verbose
-```
-
 ## Notes
 
-- `cooperative_hotdog_setup` maps to `HotDogSetup`.
-- `sandwich_station` maps to `PrepareSandwichStation`.
-- `grid` is the default placement mode for the executor, trajectory tests, and sweep tests.
-- Default grid cell size is 0.05 m (5 cm). Override with `--cell-size`.
-- `get_image` accepts an array of views in one call. Supported environment views include `top_view`, `room_view`, and `map`.
-- A trajectory JSON is not self-contained today unless it carries `scene_parameters` (or top-level `layout` / `style` / `seed`).
-  Older symbolic trajectory JSONs still need those flags so the simulator can recreate a concrete kitchen instance.
-- Trajectory adapter uses sim ground truth (`env.fixture_refs`, `env.object_cfgs`) as the primary resolution strategy. Heuristic fallback is used only for symbols not resolved by ground truth.
-- Robot initial spawn uses the sim's placement system (`init_robot_base_ref`), not the trajectory's agent locations.
-- `pick_up_object` returns failure if the robot cannot navigate to the source fixture.
-- Opening enclosing fixtures (fridges, cabinets) before picking is **not** automatic — trajectories must include explicit `open_hinged_part` steps. This is still to be determined.
-- Executor outputs include adapted trajectory, execution metadata, and images rendered by `get_image` steps.
-- Sweep outputs write one folder per combo with a `result.json`.
+- `grid` is the only supported placement mode.
+- `--placement` is still present for compatibility, but it currently only accepts `grid`.
+- Images are rendered only by explicit `get_image` tool calls.
+- Sweep mode skips videos by default.
+- Default grid cell size is `0.05` meters.

@@ -114,12 +114,79 @@ def filter_object_cfgs_for_trajectory(
         required_object_specs=required_specs,
     )
     keep_names = set(matches.values())
+    keep_names.update(
+        _expand_keep_names_with_implicit_support_cfgs(
+            cfg_copies,
+            initial_keep_names=keep_names,
+        )
+    )
 
     filtered: list[dict[str, Any]] = []
     for cfg_copy in cfg_copies:
         if str(cfg_copy.get("name", "")).strip() in keep_names:
             filtered.append(cfg_copy)
     return filtered
+
+
+def _expand_keep_names_with_implicit_support_cfgs(
+    object_cfgs: list[dict[str, Any]],
+    *,
+    initial_keep_names: set[str],
+) -> set[str]:
+    """Keep receptacle/support cfgs referenced via placement.try_to_place_in.
+
+    Example: if kept cfg `steak` has `try_to_place_in="plate"`, keep the cfg
+    that declares type `plate` as well, even if it is not explicitly named in
+    the trajectory spec.
+    """
+
+    cfg_by_name: dict[str, dict[str, Any]] = {
+        str(cfg.get("name", "")).strip(): cfg
+        for cfg in object_cfgs
+        if str(cfg.get("name", "")).strip()
+    }
+    keep_names = set(initial_keep_names)
+    changed = True
+    while changed:
+        changed = False
+        for cfg_name in tuple(sorted(keep_names)):
+            cfg = cfg_by_name.get(cfg_name)
+            if not isinstance(cfg, dict):
+                continue
+            placement = cfg.get("placement")
+            if not isinstance(placement, dict):
+                continue
+            support_type = placement.get("try_to_place_in")
+            if not isinstance(support_type, str) or not support_type.strip():
+                continue
+            support_type = support_type.strip()
+            for candidate_name, candidate_cfg in cfg_by_name.items():
+                if candidate_name in keep_names:
+                    continue
+                if _object_cfg_declares_type(candidate_cfg, support_type):
+                    keep_names.add(candidate_name)
+                    changed = True
+                    break
+    return keep_names
+
+
+def _object_cfg_declares_type(object_cfg: dict[str, Any], object_type: str) -> bool:
+    """Return whether cfg can instantiate the requested semantic object type."""
+
+    normalized_type = str(object_type).strip()
+    if not normalized_type:
+        return False
+
+    candidate_types: set[str] = set()
+    cfg_name = str(object_cfg.get("name", "")).strip()
+    if cfg_name:
+        candidate_types.add(cfg_name)
+    obj_groups = object_cfg.get("obj_groups")
+    if isinstance(obj_groups, str):
+        candidate_types.add(obj_groups)
+    elif isinstance(obj_groups, (list, tuple, set)):
+        candidate_types.update(str(group) for group in obj_groups if group)
+    return normalized_type in candidate_types
 
 
 def resolve_trajectory_object_cfg_matches(
@@ -148,6 +215,20 @@ def resolve_trajectory_object_cfg_matches(
         cfg = available_cfgs[symbol]
         if _object_cfg_matches_spec(cfg, remaining_specs[symbol]):
             _bind(symbol, symbol)
+
+    for symbol in sorted(tuple(remaining_specs)):
+        symbol_ordinal = _extract_trailing_ordinal(symbol)
+        if symbol_ordinal is None:
+            continue
+        spec = remaining_specs[symbol]
+        ordinal_candidates = [
+            cfg_name
+            for cfg_name, cfg in available_cfgs.items()
+            if _object_cfg_matches_spec(cfg, spec)
+            and _extract_trailing_ordinal(cfg_name) == symbol_ordinal
+        ]
+        if len(ordinal_candidates) == 1:
+            _bind(symbol, ordinal_candidates[0])
 
     changed = True
     while changed:
@@ -247,6 +328,16 @@ def is_generated_object_name(name: str) -> bool:
     return normalized.endswith(_AUTO_GENERATED_SUFFIXES) or bool(
         _GENERIC_OBJECT_NAME_RE.match(normalized)
     )
+
+
+def _extract_trailing_ordinal(name: str) -> int | None:
+    normalized = str(name).strip()
+    if not normalized:
+        return None
+    tail = normalized.rsplit("_", 1)[-1]
+    if tail.isdigit():
+        return int(tail)
+    return None
 
 
 def _extract_required_object_requirements(
@@ -377,4 +468,25 @@ def _object_cfg_matches_spec(
     required_type = required_object_spec.get("object_type")
     if not required_type:
         return False
-    return _object_cfg_matches_required_type(object_cfg, {str(required_type)})
+
+    # ``try_to_place_in`` describes an implicit generated container for this
+    # object, not the object's own type. Binding a symbolic container such as
+    # "pan" to the child steak cfg prevents Kitchen from later creating and
+    # binding the native ``obj_container``.
+    #
+    # Include cfg ``name`` as a candidate semantic type. Several tasks use a
+    # coarse symbolic type (e.g. "spice", "bottle"), while ``obj_groups``
+    # enumerates concrete variants (e.g. turmeric/paprika). If we only match
+    # against ``obj_groups``, trajectory pruning can drop required task objects
+    # and fail env init.
+    candidate_types: set[str] = set()
+    cfg_name = object_cfg.get("name")
+    if isinstance(cfg_name, str) and cfg_name.strip():
+        candidate_types.add(cfg_name.strip())
+    obj_groups = object_cfg.get("obj_groups")
+    if isinstance(obj_groups, str):
+        candidate_types.add(obj_groups)
+    elif isinstance(obj_groups, (list, tuple, set)):
+        candidate_types.update(str(group) for group in obj_groups if group)
+
+    return str(required_type) in candidate_types

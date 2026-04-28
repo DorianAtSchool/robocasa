@@ -13,6 +13,30 @@ BASIC_TASK_TOOL_NAMES = ("give_space",)
 def _build_subatomic_allowed_tool_specs() -> dict[str, dict[str, Any]]:
     """Builds the shared allowed-tool metadata for every subatomic tool."""
 
+    optional_arg_names_by_tool = {
+        "pick_up_object": ["source_site_id"],
+        "place_in_receptacle": [
+            "target_id",
+            "receptacle_id",
+            "target_site_id",
+            "relative_position",
+        ],
+        "place_next_to": [
+            "reference_id",
+            "reference_object_id",
+            "reference_fixture_id",
+            "target_site_id",
+            "relative_position",
+        ],
+        "place_on_object": ["target_id", "relative_position"],
+        "place_on_surface": [
+            "target_id",
+            "support_id",
+            "target_site_id",
+            "relative_position",
+        ],
+        "place_under": ["target_id", "reference_fixture_id", "target_site_id"],
+    }
     subatomic_allowed_tool_specs: dict[str, dict[str, Any]] = {}
     for tool_spec in discover_subatomic_tools():
         argument_names = [argument.name for argument in tool_spec.constructor_args]
@@ -21,14 +45,41 @@ def _build_subatomic_allowed_tool_specs() -> dict[str, dict[str, Any]]:
             for argument in tool_spec.constructor_args
             if argument.schema_type != "STRING"
         }
-        subatomic_allowed_tool_specs[tool_spec.name] = {
+        subatomic_allowed_tool_spec = {
             "description": tool_spec.description,
             "tool_args": list(argument_names),
         }
         if tool_arg_types:
-            subatomic_allowed_tool_specs[tool_spec.name][
-                "tool_arg_types"
-            ] = tool_arg_types
+            subatomic_allowed_tool_spec["tool_arg_types"] = tool_arg_types
+        if tool_spec.name == "place_next_to":
+            # `place_next_to` can anchor relative to either a movable object
+            # or a fixture with an explicit adjacent symbolic surface.
+            subatomic_allowed_tool_spec["tool_args"] = ["object_id"]
+            subatomic_allowed_tool_spec["tool_arg_any_of"] = [
+                ["reference_id", "reference_object_id", "reference_fixture_id"]
+            ]
+        elif tool_spec.name == "place_on_surface":
+            subatomic_allowed_tool_spec["tool_args"] = ["object_id"]
+            subatomic_allowed_tool_spec["tool_arg_any_of"] = [["target_id", "support_id"]]
+        elif tool_spec.name == "place_in_receptacle":
+            subatomic_allowed_tool_spec["tool_args"] = ["object_id"]
+            subatomic_allowed_tool_spec["tool_arg_any_of"] = [
+                ["target_id", "receptacle_id"]
+            ]
+        elif tool_spec.name == "place_on_object":
+            subatomic_allowed_tool_spec["tool_args"] = ["object_id"]
+            subatomic_allowed_tool_spec["tool_arg_any_of"] = [
+                ["target_id", "support_object_id"]
+            ]
+        elif tool_spec.name == "place_under":
+            subatomic_allowed_tool_spec["tool_args"] = ["object_id"]
+            subatomic_allowed_tool_spec["tool_arg_any_of"] = [
+                ["target_id", "reference_fixture_id"]
+            ]
+        optional_tool_args = optional_arg_names_by_tool.get(tool_spec.name)
+        if optional_tool_args:
+            subatomic_allowed_tool_spec["optional_tool_args"] = list(optional_tool_args)
+        subatomic_allowed_tool_specs[tool_spec.name] = subatomic_allowed_tool_spec
     return subatomic_allowed_tool_specs
 
 

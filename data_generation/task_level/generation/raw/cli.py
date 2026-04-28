@@ -23,6 +23,7 @@ from data_generation.task_level.generation.raw.config import (
     INTERRUPTED_MESSAGE,
     RuntimeConfig,
     THINKING_LEVEL_CHOICES,
+    VERIFIED_COMPOSITE_TASKS_OPTION,
     _validate_runtime_config,
 )
 from data_generation.task_level.generation.raw.orchestrator import generate_trajectories
@@ -215,7 +216,7 @@ def _task_resume_output_paths(
                 composite_task,
             )
     elif request_summary_path is None:
-        summary_path = resolve_dataset_output_path(
+        summary_path = runtime_config.summary_path or resolve_dataset_output_path(
             composite_task,
             model=runtime_config.model,
         )
@@ -490,7 +491,9 @@ def parse_args(argv: list[str] | None = None) -> RuntimeConfig:
         dest="composite_tasks",
         help=(
             "Task names to generate. Use "
-            f"`{ALL_COMPOSITE_TASKS_OPTION}` for every task. Available tasks: "
+            f"`{ALL_COMPOSITE_TASKS_OPTION}` for every task or "
+            f"`{VERIFIED_COMPOSITE_TASKS_OPTION}` for the canonical verified set. "
+            "Available tasks: "
             f"{supported_tasks}. --num-runs applies to each selected task."
         ),
     )
@@ -514,6 +517,16 @@ def parse_args(argv: list[str] | None = None) -> RuntimeConfig:
         help=(
             "Optional JSON path for the cost summary file. Defaults to "
             "`cost_summary.json` alongside the summary output."
+        ),
+    )
+    parser.add_argument(
+        "--summary-path",
+        type=Path,
+        default=None,
+        help=(
+            "Optional JSON path for the generated summary output. For a "
+            "single task this is the task summary path; for multiple tasks "
+            "this is the combined request summary path."
         ),
     )
     parser.add_argument(
@@ -622,6 +635,22 @@ def parse_args(argv: list[str] | None = None) -> RuntimeConfig:
         help="Maximum generation attempts per trajectory.",
     )
     parser.add_argument(
+        "--generation-timeout-sec",
+        type=int,
+        default=300,
+        help=(
+            "Per-request wall-clock cap (seconds) for the underlying SDK call. "
+            "Stalled requests raise a timeout error so retries can recover. "
+            "Set to 0 to disable. Default: 300."
+        ),
+    )
+    parser.add_argument(
+        "--generation_timeout_sec",
+        type=int,
+        dest="generation_timeout_sec",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
         "--paralleize-tasks",
         action="store_true",
         dest="parallelize_tasks",
@@ -700,12 +729,30 @@ def parse_args(argv: list[str] | None = None) -> RuntimeConfig:
         dest="disable_validation",
         help=argparse.SUPPRESS,
     )
+    # Default-on static referential validation catches common symbolic id
+    # mistakes (e.g. left_door) before simulator execution.
+    parser.set_defaults(enable_static_referential_validation=True)
+    parser.add_argument(
+        "--disable-static-referential-validation",
+        action="store_false",
+        dest="enable_static_referential_validation",
+        help=(
+            "Disable non-sim static referential checks for part/control/site ids "
+            "before FSM validation."
+        ),
+    )
+    parser.add_argument(
+        "--enable-static-referential-validation",
+        action="store_true",
+        dest="enable_static_referential_validation",
+        help=argparse.SUPPRESS,
+    )
     args = parser.parse_args(argv)
     parsed_tasks = tuple(args.composite_tasks)
     normalized_tasks = RuntimeConfig._normalize_composite_tasks(None, parsed_tasks)
     # Resolve the default single-task summary path from the normalized task list
     # so special selectors like `all` follow the same output-path behavior.
-    default_summary_path = (
+    default_summary_path = args.summary_path or (
         resolve_dataset_output_path(normalized_tasks[0], model=args.model)
         if len(normalized_tasks) == 1
         else None
@@ -730,9 +777,13 @@ def parse_args(argv: list[str] | None = None) -> RuntimeConfig:
         cost_output_path=args.cost_output,
         resume_path=args.resume,
         disable_validation=args.disable_validation,
+        enable_static_referential_validation=args.enable_static_referential_validation,
         batch_processing=args.batch_processing,
         batch_gcs_prefix=args.batch_gcs_prefix,
         composite_tasks=parsed_tasks,
+        generation_timeout_sec=(
+            None if args.generation_timeout_sec == 0 else args.generation_timeout_sec
+        ),
     )
 
 
@@ -760,7 +811,11 @@ def main(argv: list[str] | None = None) -> int:
     request_summary_path = (
         runtime_config.resume_path / "summary.json"
         if runtime_config.resume_path is not None
-        else resolve_request_output_path(model=runtime_config.model)
+        else (
+            runtime_config.summary_path
+            if runtime_config.summary_path is not None
+            else resolve_request_output_path(model=runtime_config.model)
+        )
     )
     task_run_results = _generate_task_results(
         runtime_config,

@@ -113,6 +113,67 @@ class TestTrajectoryPruning(unittest.TestCase):
         )
         self.assertEqual(matches, {"salad_bowl": "lettuce_container"})
 
+    def test_matcher_binds_generated_objects_by_shared_ordinal(self):
+        matches = resolve_trajectory_object_cfg_matches(
+            [
+                {"name": "obj_0", "obj_groups": "drink"},
+                {"name": "obj_1", "obj_groups": "drink"},
+                {"name": "obj_2", "obj_groups": "drink"},
+            ],
+            required_object_specs={
+                "drink_0": {"object_type": "drink"},
+                "drink_1": {"object_type": "drink"},
+                "drink_2": {"object_type": "drink"},
+            },
+        )
+        self.assertEqual(
+            matches,
+            {
+                "drink_0": "obj_0",
+                "drink_1": "obj_1",
+                "drink_2": "obj_2",
+            },
+        )
+
+    def test_filter_object_cfgs_keeps_ordinally_matched_generated_objects(self):
+        filtered = filter_object_cfgs_for_trajectory(
+            [
+                {"name": "obj_0", "obj_groups": "drink"},
+                {"name": "obj_1", "obj_groups": "drink"},
+                {"name": "obj_2", "obj_groups": "drink"},
+                {"name": "plate", "obj_groups": "plate"},
+            ],
+            required_object_specs={
+                "drink_0": {"object_type": "drink"},
+                "drink_1": {"object_type": "drink"},
+                "drink_2": {"object_type": "drink"},
+            },
+        )
+        self.assertEqual(
+            [cfg["name"] for cfg in filtered],
+            ["obj_0", "obj_1", "obj_2"],
+        )
+
+    def test_matcher_does_not_bind_symbolic_container_to_child_cfg(self):
+        matches = resolve_trajectory_object_cfg_matches(
+            [
+                {
+                    "name": "obj",
+                    "obj_groups": "steak",
+                    "placement": {"try_to_place_in": "pan"},
+                },
+                {"name": "plate", "obj_groups": "plate"},
+            ],
+            required_object_specs={
+                "steak": {"object_type": "steak", "location": "pan"},
+                "pan": {"object_type": "pan", "location": "stove"},
+                "plate": {"object_type": "plate", "location": "dining_table"},
+            },
+        )
+
+        self.assertEqual(matches, {"plate": "plate", "steak": "obj"})
+        self.assertNotIn("pan", matches)
+
     def test_generated_container_and_auxiliary_keep_logic(self):
         self.assertTrue(
             should_keep_object_cfg_for_trajectory(
@@ -121,12 +182,51 @@ class TestTrajectoryPruning(unittest.TestCase):
                 required_object_types={"bowl"},
             )
         )
+
+    def test_filter_keeps_try_to_place_in_support_cfg(self):
+        filtered = filter_object_cfgs_for_trajectory(
+            [
+                {
+                    "name": "steak",
+                    "obj_groups": "steak",
+                    "placement": {"try_to_place_in": "plate"},
+                },
+                {"name": "plate_0", "obj_groups": "plate"},
+                {"name": "distractor_bowl", "obj_groups": "bowl"},
+            ],
+            required_object_specs={
+                "steak": {"object_type": "steak"},
+            },
+        )
+        self.assertEqual(
+            [cfg["name"] for cfg in filtered],
+            ["steak", "plate_0"],
+        )
         self.assertFalse(
             should_keep_object_cfg_for_trajectory(
                 {"name": "knife_auxiliary", "obj_groups": "knife"},
                 required_object_names={"salad_bowl"},
                 required_object_types={"bowl"},
             )
+        )
+
+    def test_matcher_uses_cfg_name_for_symbolic_types_with_variant_obj_groups(self):
+        matches = resolve_trajectory_object_cfg_matches(
+            [
+                {"name": "spice", "obj_groups": ("turmeric", "paprika")},
+                {"name": "bottle", "obj_groups": ("ketchup", "mayonnaise")},
+            ],
+            required_object_specs={
+                "spice": {"object_type": "spice"},
+                "bottle": {"object_type": "bottle"},
+            },
+        )
+        self.assertEqual(
+            matches,
+            {
+                "spice": "spice",
+                "bottle": "bottle",
+            },
         )
 
 

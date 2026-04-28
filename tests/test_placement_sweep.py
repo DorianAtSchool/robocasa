@@ -10,9 +10,6 @@ Usage:
   # Default: 2 tasks × 2 layouts, grid placement
   python tests/test_placement_sweep.py --placement grid --output tmp/sweep_grid
 
-  # Continuous placement
-  python tests/test_placement_sweep.py --placement continuous --output tmp/sweep_continuous
-
   # Specific tasks and layouts
   python tests/test_placement_sweep.py --tasks HotDogSetup,PrepareSandwichStation \
       --layouts 11,56 --styles 34,42 --seeds 42 --output tmp/sweep
@@ -21,7 +18,7 @@ Usage:
   python tests/test_placement_sweep.py --tasks HotDogSetup --layouts 11 --styles 34 --output tmp/quick
 
 Options:
-  --placement    grid or continuous (default: grid)
+  --placement    grid (default: grid)
   --output       Directory for results (required)
   --tasks        Comma-separated task names (default: HotDogSetup,PrepareSandwichStation)
   --layouts      Comma-separated layout ids (default: 11,56)
@@ -125,7 +122,6 @@ def _check_invariants(
     runner = executor.runner
     violations = []
     positions = {}
-    is_grid_mode = runner._placement_mode != "continuous"
 
     for ridx in range(runner._num_robots):
         pos = runner._get_robot_position(ridx)
@@ -135,35 +131,14 @@ def _check_invariants(
 
         pos2d = pos[:2]
 
-        # Strategy-specific standability check
-        if is_grid_mode:
-            # Grid mode: cell must be free from fixtures.  Flood-fill-sealed
-            # cells are allowed (robot teleports for interactive fixtures).
-            grid = runner._occupancy_grid
-            if grid is not None and not grid.is_free_of_fixtures(pos2d):
-                violations.append(
-                    f"[{step_tag}] robot{ridx} in fixture-occupied cell at "
-                    f"({pos2d[0]:.3f}, {pos2d[1]:.3f})"
-                )
-        else:
-            # Continuous mode: check circle-vs-AABB collision + room bounds
-            if runner._continuous is not None:
-                if not runner._continuous.is_standable(pos2d):
-                    violations.append(
-                        f"[{step_tag}] robot{ridx} NOT standable at "
-                        f"({pos2d[0]:.3f}, {pos2d[1]:.3f})"
-                    )
-
-        # Inside-fixture check (both modes): robot must never be inside any fixture AABB
-        if runner._continuous is not None:
-            if runner._continuous.is_inside_any_fixture(pos2d):
-                violations.append(
-                    f"[{step_tag}] robot{ridx} INSIDE fixture at "
-                    f"({pos2d[0]:.3f}, {pos2d[1]:.3f})"
-                )
+        grid = runner._occupancy_grid
+        if grid is not None and not grid.is_free_of_fixtures(pos2d):
+            violations.append(
+                f"[{step_tag}] robot{ridx} in fixture-occupied cell at "
+                f"({pos2d[0]:.3f}, {pos2d[1]:.3f})"
+            )
 
         # Grid bounds check
-        grid = runner._occupancy_grid
         if grid is not None:
             cell = grid._world_to_grid(pos2d)
             r, c = cell
@@ -354,7 +329,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "--placement", default="grid", choices=["grid", "continuous"],
+        "--placement", default="grid", choices=["grid"],
         help="Placement strategy (default: grid)",
     )
     parser.add_argument(

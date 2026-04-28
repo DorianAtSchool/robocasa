@@ -85,6 +85,36 @@ class TestOccupancyGridUnit(unittest.TestCase):
         dist = np.linalg.norm(pos_xy - np.array([0.0, 0.0]))
         self.assertLess(dist, 2.0)
 
+    def test_corner_counter_front_prefers_kitchen_side_face(self):
+        """Corner counters should not use the modeled dining-side front first."""
+        corner = _make_mock_fixture(
+            (0.325, -0.325, 0.0),
+            size=(0.65, 0.60, 0.9),
+            name="counter_corner_main_group",
+        )
+        grid = OccupancyGrid({"counter_corner": corner}, cell_size=0.05)
+
+        result = grid.find_placement(corner, require_front=True)
+
+        self.assertIsNotNone(result)
+        pos_xy, _yaw = result
+        self.assertLess(pos_xy[1], -0.60)
+
+    def test_corner_counter_surface_approach_uses_kitchen_side_face(self):
+        """Surface placement around corner counters should not stand through the wall side."""
+        corner = _make_mock_fixture(
+            (0.325, -0.325, 0.0),
+            size=(0.65, 0.60, 0.9),
+            name="counter_corner_main_group",
+        )
+        grid = OccupancyGrid({"counter_corner": corner}, cell_size=0.05)
+
+        result = grid.find_placement(corner, require_front=False)
+
+        self.assertIsNotNone(result)
+        pos_xy, _yaw = result
+        self.assertLess(pos_xy[1], -0.60)
+
     def test_multi_robot_exclusion(self):
         """Second robot should get a different cell than the first."""
         f1 = _make_mock_fixture((0.0, 0.0, 0.0), size=(1.0, 1.0, 0.9))
@@ -109,9 +139,9 @@ class TestOccupancyGridUnit(unittest.TestCase):
         # Place a fixture at origin, with walls on 3 sides (left, right, back)
         fixtures = {
             "target": _make_mock_fixture((0.0, 0.0, 0.0), size=(0.4, 0.4, 0.9)),
-            "wall_left": _make_mock_fixture((-0.5, 0.0, 0.0), size=(0.4, 0.4, 0.9)),
-            "wall_right": _make_mock_fixture((0.5, 0.0, 0.0), size=(0.4, 0.4, 0.9)),
-            "wall_back": _make_mock_fixture((0.0, -0.5, 0.0), size=(0.4, 0.4, 0.9)),
+            "block_left": _make_mock_fixture((-0.5, 0.0, 0.0), size=(0.4, 0.4, 0.9)),
+            "block_right": _make_mock_fixture((0.5, 0.0, 0.0), size=(0.4, 0.4, 0.9)),
+            "block_back": _make_mock_fixture((0.0, -0.5, 0.0), size=(0.4, 0.4, 0.9)),
         }
         grid = OccupancyGrid(fixtures, cell_size=0.50)
 
@@ -138,6 +168,56 @@ class TestOccupancyGridUnit(unittest.TestCase):
         result = grid.find_placement(f1)
         self.assertIsNotNone(result)
 
+    def test_enclosed_corner_requires_two_walls_and_two_counters(self):
+        """A true room-corner trap with two walls and two counters is rejected."""
+        fixtures = {
+            "wall_pos_x": _make_mock_fixture((0.55, 0.0, 0.0), size=(0.10, 1.20, 0.9)),
+            "wall_pos_y": _make_mock_fixture((0.0, 0.55, 0.0), size=(1.20, 0.10, 0.9)),
+            "counter_neg_x": _make_mock_fixture((-0.55, 0.0, 0.0), size=(0.10, 1.20, 0.9)),
+            "counter_neg_y": _make_mock_fixture((0.0, -0.55, 0.0), size=(1.20, 0.10, 0.9)),
+        }
+        grid = OccupancyGrid(fixtures, cell_size=0.05)
+
+        self.assertTrue(grid._is_enclosed(np.array([0.0, 0.0], dtype=float)))
+
+    def test_enclosed_corner_rejects_entire_bounded_region(self):
+        """The full wall-and-structure corner region should be non-standable."""
+        fixtures = {
+            "wall_pos_x": _make_mock_fixture((0.60, 0.0, 0.0), size=(0.10, 1.60, 0.9)),
+            "wall_pos_y": _make_mock_fixture((0.0, 0.60, 0.0), size=(1.60, 0.10, 0.9)),
+            "counter_neg_x": _make_mock_fixture((-0.40, 0.0, 0.0), size=(0.10, 1.60, 0.9)),
+            "counter_neg_y": _make_mock_fixture((0.0, -0.40, 0.0), size=(1.60, 0.10, 0.9)),
+        }
+        grid = OccupancyGrid(fixtures, cell_size=0.05)
+
+        self.assertTrue(grid._is_enclosed(np.array([0.45, 0.45], dtype=float)))
+        self.assertTrue(grid._is_enclosed(np.array([0.45, -0.25], dtype=float)))
+        self.assertTrue(grid._is_enclosed(np.array([-0.25, 0.45], dtype=float)))
+        self.assertTrue(grid._is_enclosed(np.array([-0.25, -0.25], dtype=float)))
+
+    def test_enclosed_corner_bridges_single_cell_gap(self):
+        """A one-cell overlap gap between blocking structures should still fill the pocket."""
+        fixtures = {
+            "wall_pos_x": _make_mock_fixture((0.60, 0.0, 0.0), size=(0.10, 1.60, 0.9)),
+            "wall_pos_y": _make_mock_fixture((0.0, 0.60, 0.0), size=(1.60, 0.10, 0.9)),
+            "counter_neg_x": _make_mock_fixture((-0.40, -0.30, 0.0), size=(0.10, 0.60, 0.9)),
+            "counter_neg_y": _make_mock_fixture((0.0, -0.40, 0.0), size=(1.60, 0.10, 0.9)),
+        }
+        grid = OccupancyGrid(fixtures, cell_size=0.05)
+
+        self.assertTrue(grid._is_enclosed(np.array([0.20, -0.35], dtype=float)))
+
+    def test_l_corner_without_opposite_counter_pair_is_not_enclosed(self):
+        """A simple wall-plus-counter L-shape should remain standable."""
+        fixtures = {
+            "wall_pos_x": _make_mock_fixture((0.55, 0.0, 0.0), size=(0.10, 1.20, 0.9)),
+            "wall_pos_y": _make_mock_fixture((0.0, 0.55, 0.0), size=(1.20, 0.10, 0.9)),
+            "counter_neg_x": _make_mock_fixture((-0.55, 0.0, 0.0), size=(0.10, 1.20, 0.9)),
+        }
+        grid = OccupancyGrid(fixtures, cell_size=0.05)
+
+        self.assertFalse(grid._is_enclosed(np.array([0.0, 0.0], dtype=float)))
+
     def test_occupy_and_release(self):
         """occupy() and release() should toggle cell state."""
         f1 = _make_mock_fixture((0.0, 0.0, 0.0), size=(0.4, 0.4, 0.9))
@@ -151,6 +231,44 @@ class TestOccupancyGridUnit(unittest.TestCase):
 
         grid.release(free_pos)
         self.assertTrue(grid.is_free(free_pos))
+
+    def test_mark_world_aabb_occupied_blocks_then_restores_free_space(self):
+        """Transient AABBs should participate in occupancy until cleared."""
+        f1 = _make_mock_fixture((0.0, 0.0, 0.0), size=(0.4, 0.4, 0.9))
+        grid = OccupancyGrid({"f1": f1}, cell_size=0.10)
+        free_pos = np.array([0.55, 0.0], dtype=float)
+
+        self.assertTrue(grid.is_free(free_pos))
+
+        obstacle_id = grid.mark_world_aabb_occupied(
+            (np.array([0.45, -0.05]), np.array([0.65, 0.05])),
+            obstacle_id="drawer_sweep",
+        )
+
+        self.assertEqual(obstacle_id, "drawer_sweep")
+        self.assertFalse(grid.is_free(free_pos))
+
+        grid.clear_world_aabb_occupied("drawer_sweep")
+        self.assertTrue(grid.is_free(free_pos))
+
+    def test_corner_cabinet_can_be_included_as_obstacle(self):
+        """Corner cabinets should be optional ground obstacles for robot routing."""
+        corner_cab = _make_mock_fixture((0.0, 0.0, 0.0), size=(0.6, 0.6, 0.9), name="corner_cab")
+        corner_cab.is_corner_cab = True
+
+        excluded_grid = OccupancyGrid(
+            {"corner_cab": corner_cab},
+            cell_size=0.10,
+            include_corner_cabinets=False,
+        )
+        included_grid = OccupancyGrid(
+            {"corner_cab": corner_cab},
+            cell_size=0.10,
+            include_corner_cabinets=True,
+        )
+
+        self.assertTrue(excluded_grid.is_free(np.array([0.0, 0.0], dtype=float)))
+        self.assertFalse(included_grid.is_free(np.array([0.0, 0.0], dtype=float)))
 
     def test_ref_object_pos_biases_placement(self):
         """When ref_object_pos is given, placement should prefer the closer side."""
@@ -292,6 +410,29 @@ class TestOccupancyGridUnit(unittest.TestCase):
         self.assertGreater(pos_xy[1], 0.25, f"Expected target-inferred front face, got {pos_xy}")
         self.assertGreater(abs(pos_xy[1]), abs(pos_xy[0]), f"Expected front along +Y, got {pos_xy}")
 
+    def test_three_sided_wall_pocket_is_not_a_counter_wall_corner_trap(self):
+        """Wall-only pockets should not trigger the counter-wall corner heuristic."""
+        fixtures = {
+            "wall_left": _make_mock_fixture((-0.25, 0.0, 0.0), size=(0.10, 0.80, 0.9)),
+            "wall_right": _make_mock_fixture((0.25, 0.0, 0.0), size=(0.10, 0.80, 0.9)),
+            "wall_front": _make_mock_fixture((0.0, 0.25, 0.0), size=(0.80, 0.10, 0.9)),
+        }
+        grid = OccupancyGrid(fixtures, cell_size=0.05)
+        pocket = np.array([0.0, 0.0], dtype=float)
+
+        self.assertFalse(grid._is_enclosed(pocket))
+
+    def test_open_gap_is_not_treated_as_corner_pocket(self):
+        """Two nearby obstacles should not block an otherwise reachable stance cell."""
+        fixtures = {
+            "wall_left": _make_mock_fixture((-0.25, 0.0, 0.0), size=(0.10, 0.80, 0.9)),
+            "wall_right": _make_mock_fixture((0.25, 0.0, 0.0), size=(0.10, 0.80, 0.9)),
+        }
+        grid = OccupancyGrid(fixtures, cell_size=0.05)
+        gap = np.array([0.0, 0.0], dtype=float)
+
+        self.assertFalse(grid._is_enclosed(gap))
+
     def test_yaw_faces_fixture(self):
         """Robot yaw should point toward the fixture center."""
         f1 = _make_mock_fixture((0.0, 0.0, 0.0), size=(0.4, 0.4, 0.9))
@@ -337,7 +478,7 @@ class TestOccupancyGridUnit(unittest.TestCase):
             (-0.5, 0.0),               (0.5, 0.0),
             (-0.5, 0.5),  (0.0, 0.5),  (0.5, 0.5),
         ]):
-            fixtures[f"wall_{i}"] = _make_mock_fixture((dx, dy, 0.0), size=(0.4, 0.4, 0.9))
+            fixtures[f"block_{i}"] = _make_mock_fixture((dx, dy, 0.0), size=(0.4, 0.4, 0.9))
 
         grid = OccupancyGrid(fixtures, cell_size=0.50)
         result = grid.find_placement(f1)

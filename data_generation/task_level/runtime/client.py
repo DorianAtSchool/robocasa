@@ -127,9 +127,10 @@ class BaseGenerationClient:
         *,
         model: str,
         prompt: str,
-        response_schema: dict[str, Any],
+        response_schema: dict[str, Any] | None,
         temperature: float,
         thinking_level: str | None = None,
+        thinking_budget: int | None = None,
     ) -> Any:
         raise NotImplementedError
 
@@ -149,9 +150,13 @@ def _generation_error_status_code(exc: Exception) -> int | None:
     return None
 
 
-def _verbalized_response_count(response_schema: dict[str, Any]) -> int | None:
+def _verbalized_response_count(
+    response_schema: dict[str, Any] | None,
+) -> int | None:
     """Returns the verbalized response count encoded in one response schema."""
 
+    if response_schema is None:
+        return None
     responses_schema = response_schema.get("properties", {}).get("responses")
     if not isinstance(responses_schema, dict):
         return None
@@ -534,7 +539,22 @@ def build_generation_usage_metadata(
     )
 
 
-def build_raw_google_genai_client(project: str | None, location: str) -> Any:
+DEFAULT_GENERATION_TIMEOUT_SEC = 300
+"""Default per-request wall-clock cap for SDK calls.
+
+Without this, a stalled HTTP request hangs the worker forever (silent TCP
+drops, server-side hangs, idle timeouts at intermediate proxies). Five
+minutes is generous enough for the largest trajectory generations we have
+observed and short enough that retries can recover within `--max-retries`.
+"""
+
+
+def build_raw_google_genai_client(
+    project: str | None,
+    location: str,
+    *,
+    timeout_sec: int | None = DEFAULT_GENERATION_TIMEOUT_SEC,
+) -> Any:
     try:
         from google import genai
         from google.genai.types import HttpOptions
@@ -546,8 +566,12 @@ def build_raw_google_genai_client(project: str | None, location: str) -> Any:
 
     configure_google_genai_environment(project=project, location=location)
     validate_google_auth(project)
+    http_options_kwargs: dict[str, Any] = {"api_version": "v1"}
+    if timeout_sec is not None:
+        # HttpOptions.timeout is in milliseconds.
+        http_options_kwargs["timeout"] = int(timeout_sec) * 1000
     return genai.Client(
-        http_options=HttpOptions(api_version="v1"),
+        http_options=HttpOptions(**http_options_kwargs),
     )
 
 
@@ -555,26 +579,48 @@ DEFAULT_GOOGLE_GENAI_MAX_OUTPUT_TOKENS = 32768
 
 
 class GoogleGenAIClient(BaseGenerationClient):
-    def __init__(self, project: str | None, location: str):
-        self._client = build_raw_google_genai_client(project=project, location=location)
+    def __init__(
+        self,
+        project: str | None,
+        location: str,
+        *,
+        timeout_sec: int | None = DEFAULT_GENERATION_TIMEOUT_SEC,
+    ):
+        self._client = build_raw_google_genai_client(
+            project=project,
+            location=location,
+            timeout_sec=timeout_sec,
+        )
 
     def _build_generation_config(
         self,
         *,
         temperature: float,
-        response_schema: dict[str, Any],
+        response_schema: dict[str, Any] | None,
         thinking_level: str | None,
+        thinking_budget: int | None,
     ) -> dict[str, Any]:
         """Builds one google-genai generation config payload."""
 
-        config = {
+        config: dict[str, Any] = {
             "temperature": temperature,
             "max_output_tokens": DEFAULT_GOOGLE_GENAI_MAX_OUTPUT_TOKENS,
             "response_mime_type": "application/json",
-            "response_schema": response_schema,
         }
+        # Pass `response_schema` only when the caller supplied one. Phase 1
+        # (TaskSpec generation) omits the schema because the spec uses dicts
+        # with dynamic string keys that Gemini's structured-output mode
+        # cannot express — keeping the schema would force Gemini to return
+        # `{}` for any unenumerated object.
+        if response_schema is not None:
+            config["response_schema"] = response_schema
+        thinking_config: dict[str, Any] = {}
         if thinking_level is not None:
-            config["thinking_config"] = {"thinking_level": thinking_level}
+            thinking_config["thinking_level"] = thinking_level
+        if thinking_budget is not None:
+            thinking_config["thinking_budget"] = thinking_budget
+        if thinking_config:
+            config["thinking_config"] = thinking_config
         return config
 
     def generate(
@@ -582,9 +628,10 @@ class GoogleGenAIClient(BaseGenerationClient):
         *,
         model: str,
         prompt: str,
-        response_schema: dict[str, Any],
+        response_schema: dict[str, Any] | None,
         temperature: float,
         thinking_level: str | None = None,
+        thinking_budget: int | None = None,
     ) -> Any:
         try:
             response = self._client.models.generate_content(
@@ -594,6 +641,7 @@ class GoogleGenAIClient(BaseGenerationClient):
                     temperature=temperature,
                     response_schema=response_schema,
                     thinking_level=thinking_level,
+                    thinking_budget=thinking_budget,
                 ),
             )
         except Exception as exc:
@@ -640,9 +688,15 @@ def build_generation_client(
     sdk: str,
     project: str | None,
     location: str,
+    *,
+    timeout_sec: int | None = DEFAULT_GENERATION_TIMEOUT_SEC,
 ) -> BaseGenerationClient:
     if sdk == DEFAULT_SDK:
-        return GoogleGenAIClient(project=project, location=location)
+        return GoogleGenAIClient(
+            project=project,
+            location=location,
+            timeout_sec=timeout_sec,
+        )
     raise TrajectoryGenerationError(
         f"Unsupported SDK '{sdk}'. Expected one of: {DEFAULT_SDK}."
     )

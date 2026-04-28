@@ -100,7 +100,19 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from data_generation.task_level.runtime.render_env import normalize_mujoco_render_env
+
+
+def _bootstrap_mujoco_gl() -> None:
+    """Prevent inherited unsupported GL backends from breaking imports."""
+
+    normalize_mujoco_render_env(os.environ)
+
+
+_bootstrap_mujoco_gl()
+
 from data_generation.task_level.generation.raw import progress as raw_progress
+from data_generation.task_level.runtime.client import load_dotenv_file
 from robocasa.utils.trajectory_pruning import build_trajectory_pruning_config
 
 BarColumn = raw_progress.BarColumn
@@ -174,6 +186,132 @@ def clear_executor_cache() -> None:
 
 atexit.register(clear_executor_cache)
 
+
+def _stable_pruning_signature(
+    *,
+    update_fxtr_cfg_dict: dict[str, dict[str, Any]] | None,
+    trajectory_object_names: list[str] | tuple[str, ...] | None,
+    trajectory_object_types: list[str] | tuple[str, ...] | None,
+    trajectory_object_specs: dict | list | None,
+) -> str:
+    """Serialize pruning inputs into a stable cache signature."""
+
+    payload = {
+        "update_fxtr_cfg_dict": update_fxtr_cfg_dict,
+        "trajectory_object_names": list(trajectory_object_names or []),
+        "trajectory_object_types": list(trajectory_object_types or []),
+        "trajectory_object_specs": trajectory_object_specs,
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _executor_cache_key(
+    *,
+    task_name: str,
+    robots: int,
+    layout: int,
+    style: int,
+    seed: int,
+    placement: str,
+    cell_size: float,
+    robot_spawn: str,
+    gl_backend: str,
+    render_width: int = 512,
+    render_height: int = 512,
+    pruning_signature: str = "",
+) -> tuple[Any, ...]:
+    """Build the simulator reuse key for one worker-local executor."""
+
+    return (
+        task_name,
+        robots,
+        layout,
+        style,
+        seed,
+        placement,
+        cell_size,
+        robot_spawn,
+        gl_backend,
+        render_width,
+        render_height,
+        pruning_signature,
+    )
+
+
+def _get_or_create_cached_executor(
+    *,
+    task_name: str,
+    robots: int,
+    layout: int,
+    style: int,
+    seed: int,
+    placement: str,
+    cell_size: float,
+    robot_spawn: str,
+    gl_backend: str,
+    render_width: int = 512,
+    render_height: int = 512,
+    update_fxtr_cfg_dict: dict[str, dict[str, Any]] | None = None,
+    trajectory_object_names: list[str] | tuple[str, ...] | None = None,
+    trajectory_object_types: list[str] | tuple[str, ...] | None = None,
+    trajectory_object_specs: dict | list | None = None,
+    executor_factory: Callable[..., Any] | None = None,
+) -> Any:
+    """Reuse one live executor per worker thread when the env config matches."""
+
+    cache_slot = _worker_cache_slot()
+    pruning_signature = _stable_pruning_signature(
+        update_fxtr_cfg_dict=update_fxtr_cfg_dict,
+        trajectory_object_names=trajectory_object_names,
+        trajectory_object_types=trajectory_object_types,
+        trajectory_object_specs=trajectory_object_specs,
+    )
+    cache_key = _executor_cache_key(
+        task_name=task_name,
+        robots=robots,
+        layout=layout,
+        style=style,
+        seed=seed,
+        placement=placement,
+        cell_size=cell_size,
+        robot_spawn=robot_spawn,
+        gl_backend=gl_backend,
+        render_width=render_width,
+        render_height=render_height,
+        pruning_signature=pruning_signature,
+    )
+    cached_entry = _WORKER_EXECUTOR_CACHE.get(cache_slot)
+    if cached_entry is not None:
+        cached_key, cached_executor = cached_entry
+        if cached_key == cache_key:
+            return cached_executor
+        cached_executor.close()
+        del _WORKER_EXECUTOR_CACHE[cache_slot]
+
+    if executor_factory is None:
+        from robocasa.utils.sim_tool_executor import SimToolExecutor
+
+        executor_factory = SimToolExecutor
+
+    executor = executor_factory(
+        task_name=task_name,
+        robots=robots,
+        layout=layout,
+        style=style,
+        seed=seed,
+        placement=placement,
+        cell_size=cell_size,
+        robot_spawn=robot_spawn,
+        update_fxtr_cfg_dict=update_fxtr_cfg_dict,
+        trajectory_object_names=trajectory_object_names,
+        trajectory_object_types=trajectory_object_types,
+        trajectory_object_specs=trajectory_object_specs,
+        gl_backend=gl_backend,
+        render_width=render_width,
+        render_height=render_height,
+    )
+    _WORKER_EXECUTOR_CACHE[cache_slot] = (cache_key, executor)
+    return executor
 
 def _executor_processes(executor: Any) -> list[Any]:
     """Return the worker processes owned by one executor when exposed."""
@@ -326,96 +464,6 @@ def _install_sweep_signal_handlers(
     finally:
         for signum, previous_handler in previous_handlers.items():
             signal.signal(signum, previous_handler)
-
-
-def _executor_cache_key(
-    *,
-    task_name: str,
-    robots: int,
-    layout: int,
-    style: int,
-    seed: int,
-    placement: str,
-    cell_size: float,
-    robot_spawn: str,
-    gl_backend: str,
-    render_width: int = 512,
-    render_height: int = 512,
-) -> tuple[Any, ...]:
-    """Build the simulator reuse key for one worker-local executor."""
-    return (
-        task_name,
-        robots,
-        layout,
-        style,
-        seed,
-        placement,
-        cell_size,
-        robot_spawn,
-        gl_backend,
-        render_width,
-        render_height,
-    )
-
-
-def _get_or_create_cached_executor(
-    *,
-    task_name: str,
-    robots: int,
-    layout: int,
-    style: int,
-    seed: int,
-    placement: str,
-    cell_size: float,
-    robot_spawn: str,
-    gl_backend: str,
-    render_width: int = 512,
-    render_height: int = 512,
-    executor_factory: Callable[..., Any] | None = None,
-) -> Any:
-    """Reuse one live executor per worker thread when the env config matches."""
-    cache_slot = _worker_cache_slot()
-    cache_key = _executor_cache_key(
-        task_name=task_name,
-        robots=robots,
-        layout=layout,
-        style=style,
-        seed=seed,
-        placement=placement,
-        cell_size=cell_size,
-        robot_spawn=robot_spawn,
-        gl_backend=gl_backend,
-        render_width=render_width,
-        render_height=render_height,
-    )
-    cached_entry = _WORKER_EXECUTOR_CACHE.get(cache_slot)
-    if cached_entry is not None:
-        cached_key, cached_executor = cached_entry
-        if cached_key == cache_key:
-            return cached_executor
-        cached_executor.close()
-        del _WORKER_EXECUTOR_CACHE[cache_slot]
-
-    if executor_factory is None:
-        from robocasa.utils.sim_tool_executor import SimToolExecutor
-
-        executor_factory = SimToolExecutor
-
-    executor = executor_factory(
-        task_name=task_name,
-        robots=robots,
-        layout=layout,
-        style=style,
-        seed=seed,
-        placement=placement,
-        cell_size=cell_size,
-        robot_spawn=robot_spawn,
-        gl_backend=gl_backend,
-        render_width=render_width,
-        render_height=render_height,
-    )
-    _WORKER_EXECUTOR_CACHE[cache_slot] = (cache_key, executor)
-    return executor
 
 
 class SweepOverallEtaColumn(ProgressColumn):
@@ -935,6 +983,7 @@ def discover_trajectories(
     indices: list[int] | None = None,
 ) -> list[dict[str, Any]]:
     """Find all trajectory JSONs under input_dir/<task>/trajectories/."""
+
     entries = []
     for task_dir in sorted(input_dir.iterdir()):
         if not task_dir.is_dir():
@@ -1063,27 +1112,71 @@ def run_one(
 
     task_name = trajectory.get("composite_task", "Kitchen")
     pruning_config = build_trajectory_pruning_config(trajectory, layout=layout)
+    used_pruning_fallback = False
+    pruning_fallback_reason: str | None = None
 
-    executor = _get_or_create_cached_executor(
-        task_name=task_name,
-        robots=robots,
-        layout=layout,
-        style=style,
-        seed=seed,
-        placement=placement,
-        cell_size=cell_size,
-        robot_spawn=robot_spawn,
-        update_fxtr_cfg_dict=pruning_config["update_fxtr_cfg_dict"],
-        trajectory_object_names=pruning_config["trajectory_object_names"],
-        trajectory_object_types=pruning_config["trajectory_object_types"],
-        trajectory_object_specs=pruning_config["trajectory_object_specs"],
-        gl_backend=gl_backend,
-        render_width=render_width,
-        render_height=render_height,
+    should_try_pruning = any(
+        (
+            pruning_config.get("update_fxtr_cfg_dict"),
+            pruning_config.get("trajectory_object_names"),
+            pruning_config.get("trajectory_object_types"),
+            pruning_config.get("trajectory_object_specs"),
+        )
     )
-    executor.restore_baseline_state()
 
-    # Copy original trajectory JSON to output dir
+    if should_try_pruning:
+        try:
+            executor = _get_or_create_cached_executor(
+                task_name=task_name,
+                robots=robots,
+                layout=layout,
+                style=style,
+                seed=seed,
+                placement=placement,
+                cell_size=cell_size,
+                robot_spawn=robot_spawn,
+                gl_backend=gl_backend,
+                render_width=render_width,
+                render_height=render_height,
+                update_fxtr_cfg_dict=pruning_config["update_fxtr_cfg_dict"],
+                trajectory_object_names=pruning_config["trajectory_object_names"],
+                trajectory_object_types=pruning_config["trajectory_object_types"],
+                trajectory_object_specs=pruning_config["trajectory_object_specs"],
+            )
+        except Exception as exc:
+            pruning_fallback_reason = (
+                f"trajectory pruning init failed: {type(exc).__name__}: {exc}"
+            )
+            executor = _get_or_create_cached_executor(
+                task_name=task_name,
+                robots=robots,
+                layout=layout,
+                style=style,
+                seed=seed,
+                placement=placement,
+                cell_size=cell_size,
+                robot_spawn=robot_spawn,
+                gl_backend=gl_backend,
+                render_width=render_width,
+                render_height=render_height,
+            )
+            used_pruning_fallback = True
+    else:
+        executor = _get_or_create_cached_executor(
+            task_name=task_name,
+            robots=robots,
+            layout=layout,
+            style=style,
+            seed=seed,
+            placement=placement,
+            cell_size=cell_size,
+            robot_spawn=robot_spawn,
+            gl_backend=gl_backend,
+            render_width=render_width,
+            render_height=render_height,
+        )
+
+    executor.restore_baseline_state()
     output_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(traj_file, output_dir / "original_trajectory.json")
 
@@ -1093,8 +1186,6 @@ def run_one(
         output_dir=str(output_dir),
         skip_videos=skip_videos,
     )
-
-    # Count successes (skip get_image steps which always succeed)
     steps = metadata.get("steps", [])
     action_steps = [s for s in steps if s.get("tool") != "get_image"]
     n_success = sum(1 for s in action_steps if s.get("success"))
@@ -1107,6 +1198,8 @@ def run_one(
         "steps_succeeded": n_success,
         "steps_total": n_total,
         "images_rendered": n_images,
+        "used_pruning_fallback": used_pruning_fallback,
+        "pruning_fallback_reason": pruning_fallback_reason,
     }
 
 
@@ -1595,11 +1688,11 @@ def execute_sweep(
                 active_executor = None
     except KeyboardInterrupt:
         _shutdown_sweep_executor(active_executor, cancel_running=True)
-        clear_executor_cache()
         raise
     finally:
         if progress_display is not None:
             progress_display.close()
+        clear_executor_cache()
 
     flattened_results: list[dict[str, Any]] = []
     for entry_results in ordered_results:
@@ -1673,6 +1766,7 @@ def _iter_completed_runs(output_root: Path):
 
 def iter_sweep_metadata_paths(output_root: Path):
     """Yield repo-relative JSON artifact paths that should accompany the dataset."""
+
     seen = {Path("sweep_summary.json")}
     yield output_root / "sweep_summary.json", "sweep_summary.json"
 
@@ -1694,6 +1788,7 @@ def iter_sweep_metadata_paths(output_root: Path):
 
 def upload_sweep_metadata_files(repo_id: str, output_root: Path) -> None:
     """Upload referenced episode JSON files alongside the parquet dataset."""
+
     from huggingface_hub import HfApi
 
     HfApi().upload_folder(
@@ -1737,9 +1832,10 @@ def _read_compact_json(path: Path) -> str:
 
 def _build_step_level_dataset(output_root: Path) -> "datasets.Dataset":
     """Convert sweep output directory into a flat step-level dataset."""
-    from datasets import Dataset, Features, Value, Image as HFImage
 
-    IMAGE_COLUMNS = [
+    from datasets import Dataset, Features, Image as HFImage, Value
+
+    image_columns = [
         "room_view",
         "top_view",
         "map",
@@ -1749,7 +1845,7 @@ def _build_step_level_dataset(output_root: Path) -> "datasets.Dataset":
         "wrist",
     ]
 
-    rows: list[dict] = []
+    rows: list[dict[str, Any]] = []
     for run in _iter_completed_runs(output_root):
         metadata = run["metadata"]
         num_steps = len(metadata.get("steps", []))
@@ -1760,7 +1856,7 @@ def _build_step_level_dataset(output_root: Path) -> "datasets.Dataset":
             robot_idx = step.get("robot_idx", 0)
             args = step.get("args", {})
             success = step.get("success", False)
-            images = _resolve_step_images(step.get("image_paths"), IMAGE_COLUMNS)
+            images = _resolve_step_images(step.get("image_paths"), image_columns)
 
             args_clean = {k: v for k, v in args.items() if k != "image_paths"}
 
@@ -1804,7 +1900,7 @@ def _build_step_level_dataset(output_root: Path) -> "datasets.Dataset":
             "tool_args": Value("string"),
             "robot_idx": Value("int32"),
             "success": Value("bool"),
-            **{col: HFImage() for col in IMAGE_COLUMNS},
+            **{col: HFImage() for col in image_columns},
         }
     )
 
@@ -1817,9 +1913,10 @@ def _build_step_level_dataset(output_root: Path) -> "datasets.Dataset":
 
 def _build_trajectory_level_dataset(output_root: Path) -> "datasets.Dataset":
     """Convert sweep output directory into a trajectory-level dataset."""
-    from datasets import Dataset, Features, Sequence, Value, Image as HFImage
 
-    IMAGE_COLUMNS = [
+    from datasets import Dataset, Features, Image as HFImage, Sequence, Value
+
+    image_columns = [
         "room_view",
         "top_view",
         "map",
@@ -1829,7 +1926,7 @@ def _build_trajectory_level_dataset(output_root: Path) -> "datasets.Dataset":
         "wrist",
     ]
 
-    rows: list[dict] = []
+    rows: list[dict[str, Any]] = []
     for run in _iter_completed_runs(output_root):
         metadata = run["metadata"]
         row = {
@@ -1853,11 +1950,12 @@ def _build_trajectory_level_dataset(output_root: Path) -> "datasets.Dataset":
             "tool_args": [],
             "robot_idx": [],
             "success": [],
-            **{col: [] for col in IMAGE_COLUMNS},
+            **{col: [] for col in image_columns},
         }
 
         for step in metadata.get("steps", []):
-            images = _resolve_step_images(step.get("image_paths"), IMAGE_COLUMNS)
+            images = _resolve_step_images(step.get("image_paths"), image_columns)
+            images = _resolve_step_images(step.get("image_paths"), image_columns)
             args_clean = {
                 k: v for k, v in (step.get("args") or {}).items() if k != "image_paths"
             }
@@ -1867,7 +1965,7 @@ def _build_trajectory_level_dataset(output_root: Path) -> "datasets.Dataset":
             row["tool_args"].append(json.dumps(args_clean, separators=(",", ":")))
             row["robot_idx"].append(step.get("robot_idx", 0))
             row["success"].append(step.get("success", False))
-            for col in IMAGE_COLUMNS:
+            for col in image_columns:
                 row[col].append(images[col])
 
         rows.append(row)
@@ -1890,7 +1988,8 @@ def _build_trajectory_level_dataset(output_root: Path) -> "datasets.Dataset":
             "tool_args": Sequence(Value("string")),
             "robot_idx": Sequence(Value("int32")),
             "success": Sequence(Value("bool")),
-            **{col: Sequence(HFImage()) for col in IMAGE_COLUMNS},
+            **{col: Sequence(HFImage()) for col in image_columns},
+            **{col: Sequence(HFImage()) for col in image_columns},
         }
     )
 
@@ -1905,6 +2004,7 @@ def sweep_output_to_dataset(
     row_granularity: str = "step",
 ) -> "datasets.Dataset":
     """Convert sweep output into a dataset with configurable row granularity."""
+
     if row_granularity == "step":
         return _build_step_level_dataset(output_root)
     if row_granularity == "trajectory":
@@ -1919,6 +2019,7 @@ def build_dataset_card(
     row_granularity: str = "step",
 ) -> str:
     """Build a readable HuggingFace dataset card."""
+
     tasks = sorted(set(ds["task"]))
     episode_ids = ds["episode_id"]
     episodes = len(set(episode_ids))
@@ -1938,7 +2039,10 @@ def build_dataset_card(
             - `execution_metadata_path`
             """
         ).strip()
-        notes_tail = "- Episode JSON sidecars are available in the repo files at the paths referenced by `*_path` columns."
+        notes_tail = (
+            "- Episode JSON sidecars are available in the repo files at the paths "
+            "referenced by `*_path` columns."
+        )
     else:
         avg_steps = sum(ds["num_steps"]) / max(len(ds), 1)
         intro = "This dataset contains one row per RoboCasa trajectory / episode."
@@ -1960,7 +2064,10 @@ def build_dataset_card(
             - `success`
             """
         ).strip()
-        notes_tail = "- This layout is self-contained under `load_dataset()`, but nested sequence columns are less friendly for the HF table viewer."
+        notes_tail = (
+            "- This layout is self-contained under `load_dataset()`, but nested "
+            "sequence columns are less friendly for the HF table viewer."
+        )
     task_list = ", ".join(tasks) if tasks else "Unknown"
     return textwrap.dedent(
         f"""\
@@ -2026,6 +2133,7 @@ def upload_dataset_card(
     row_granularity: str = "step",
 ) -> None:
     """Overwrite the auto-generated Hub README with a readable dataset card."""
+
     from io import BytesIO
 
     from huggingface_hub import HfApi
@@ -2043,9 +2151,14 @@ def upload_dataset_card(
     )
 
 
-def main():
+def main() -> None:
+    load_dotenv_file()
+
     parser = argparse.ArgumentParser(
-        description="Sweep trajectories through the sim executor and optionally publish the dataset.",
+        description=(
+            "Sweep trajectories through the sim executor and optionally publish "
+            "the dataset."
+        ),
         epilog=CLI_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -2114,7 +2227,7 @@ def main():
         help="Environment seeds (default: 42)",
     )
     parser.add_argument("--robots", type=int, default=2)
-    parser.add_argument("--placement", choices=["grid", "continuous"], default="grid")
+    parser.add_argument("--placement", choices=["grid"], default="grid")
     parser.add_argument("--cell-size", type=float, default=0.05)
     parser.add_argument(
         "--render-width",
@@ -2184,7 +2297,8 @@ def main():
         default="trajectory",
         help=(
             "Robot initial placement source. 'sim': all robots at "
-            "init_robot_base_ref. 'trajectory' (default): each robot at its trajectory location."
+            "init_robot_base_ref. 'trajectory' (default): each robot at its "
+            "trajectory location."
         ),
     )
     parser.add_argument(
@@ -2203,7 +2317,10 @@ def main():
         type=str,
         default=None,
         metavar="REPO_ID",
-        help="Push dataset to HuggingFace Hub (e.g. 'username/robocasa-trajectories')",
+        help=(
+            "Push dataset to HuggingFace Hub "
+            "(e.g. 'username/robocasa-trajectories')"
+        ),
     )
     parser.add_argument(
         "--dry-run", action="store_true", help="Print what would run without executing"
@@ -2240,8 +2357,6 @@ def main():
     ):
         parser.error("--shard-index must be in [0, --num-shards).")
 
-    # Child workers inherit this process environment, so set the shared
-    # simulator debug gate before launching any sweep work.
     os.environ["ROBOCASA_SWEEP_VERBOSE"] = "0" if args.quiet else "1"
 
     discovered_entries = discover_trajectories(
@@ -2317,9 +2432,7 @@ def main():
                         seed=seed,
                     )
                     if combo_label:
-                        print(
-                            f"  {task_name}/traj_{traj_idx:06d}{combo_label} -> {out}"
-                        )
+                        print(f"  {task_name}/traj_{traj_idx:06d}{combo_label} -> {out}")
                     else:
                         print(f"  {task_name}/traj_{traj_idx:06d} -> {out}")
             print(f"\n{total_runs} runs (dry run, nothing executed)")
@@ -2349,7 +2462,6 @@ def main():
             cancellation_controller=cancellation_controller,
         )
 
-    # Write sweep summary
     output_root.mkdir(parents=True, exist_ok=True)
     summary = {
         "input_dir": str(input_dir),
@@ -2380,17 +2492,17 @@ def main():
     print(f"Summary: {summary_path}")
 
     if summary["failed"] > 0:
-        print(f"\nFailed runs:")
+        print("\nFailed runs:")
         for r in results:
             if r["status"] == "error":
                 print(
-                    f"  {r['task_dir']}/traj_{r['traj_idx']:06d} L{r['layout']}/S{r['style']}/sd{r['seed']}: {r['error']}"
+                    f"  {r['task_dir']}/traj_{r['traj_idx']:06d} "
+                    f"L{r['layout']}/S{r['style']}/sd{r['seed']}: {r['error']}"
                 )
 
-    # Push to HuggingFace Hub if requested
     if args.push_to_hub:
         if not args.quiet:
-            print(f"\nConverting sweep output to HuggingFace dataset...")
+            print("\nConverting sweep output to HuggingFace dataset...")
         ds = sweep_output_to_dataset(output_root, row_granularity=args.row_granularity)
         if not args.quiet:
             print(f"Pushing to {args.push_to_hub}...")
@@ -2398,13 +2510,14 @@ def main():
         if args.row_granularity == "step":
             if not args.quiet:
                 print("Uploading sweep metadata sidecars...")
-            upload_sweep_sidecars(args.push_to_hub, output_root)
+            upload_sweep_metadata_files(args.push_to_hub, output_root)
         if not args.quiet:
             print("Uploading dataset card...")
         upload_dataset_card(args.push_to_hub, ds, row_granularity=args.row_granularity)
         if not args.quiet:
             print(
-                f"Done! Dataset pushed to https://huggingface.co/datasets/{args.push_to_hub}"
+                "Done! Dataset pushed to "
+                f"https://huggingface.co/datasets/{args.push_to_hub}"
             )
 
 

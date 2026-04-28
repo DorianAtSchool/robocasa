@@ -17,6 +17,38 @@ from .constants import (
 from .types import TaskInstance, TaskPromptBuilder
 
 
+def _canonical_arg_groups_for_prompt(
+    tool_name: str,
+    tool_spec: dict[str, Any],
+) -> list[tuple[str, ...]]:
+    """Render generation-facing arg alternatives without legacy aliases.
+
+    We keep runtime alias support for backward compatibility, but generation
+    prompts should teach one canonical form per semantic role.
+    """
+
+    canonical_overrides: dict[str, list[tuple[str, ...]]] = {
+        "place_on_surface": [("support_id",)],
+        "place_in_receptacle": [("receptacle_id",)],
+        "place_on_object": [("support_object_id",)],
+        "place_under": [("reference_fixture_id",)],
+        "place_next_to": [("reference_object_id", "reference_fixture_id")],
+    }
+    if tool_name in canonical_overrides:
+        return canonical_overrides[tool_name]
+
+    groups: list[tuple[str, ...]] = []
+    for arg_group in tool_spec.get("tool_arg_any_of", ()):
+        if not isinstance(arg_group, (list, tuple)):
+            continue
+        normalized_group = tuple(
+            arg_name for arg_name in arg_group if isinstance(arg_name, str)
+        )
+        if normalized_group:
+            groups.append(normalized_group)
+    return groups
+
+
 def _format_agent_id_list(agent_ids: Sequence[str]) -> str:
     """Formats agent IDs into a short prompt-facing list."""
 
@@ -50,6 +82,7 @@ def _build_fsm_prompt_rules(
     allowed_tool_specs: dict[str, dict[str, Any]],
     *,
     task_preconditions: Sequence[dict[str, Any]] | None = None,
+    task_effects: Sequence[dict[str, Any]] | None = None,
     extra_rules: Sequence[str] | None = None,
 ) -> list[str]:
     """Builds concise prompt rules that mirror the FSM validator."""
@@ -82,23 +115,74 @@ def _build_fsm_prompt_rules(
         prompt_rules.append(
             "Only use a placement tool for the exact object the acting agent is currently holding."
         )
+        prompt_rules.append(
+            "Do not use a movable object that any agent is currently holding as a source, support, receptacle, or reference target. If a bowl, plate, tray, or other movable support needs to receive an item, it must be resting on a fixture surface first."
+        )
     if allowed_tool_names & GIVE_SPACE_TOOL_NAMES:
         prompt_rules.append(
             "Use give_space only at the fixture where that agent is already positioned, after the agents communicate that another agent is about to navigate there, so the yielding agent clears the space before the other agent arrives."
         )
         prompt_rules.append(
+            "Treat cabinet/drawer and its supporting counter as one shared workspace. If one agent is at either side of that workspace, the other agent must not navigate into the paired side until the first agent explicitly gives_space from that workspace."
+        )
+        prompt_rules.append(
+            "Do not use give_space while holding an object unless there is no legal way to finish the current placement first."
+        )
+        prompt_rules.append(
             "After an agent executes give_space, that agent is no longer at the fixture. "
-            "Before that agent can interact there again (pick up, place, open, close, or press_button), "
+            "Before that agent can interact there again (pick up, place, open, close, or use a control), "
             "it must navigate_to_fixture first. Similarly, the arriving agent must give_space in turn "
             "before the original agent can navigate back."
         )
     if allowed_tool_names & INTERACTION_TOOL_NAMES:
         prompt_rules.append(
-            "Interaction tools (press_button) require the agent to be at the target fixture. Navigate to the fixture first."
+            "Interaction tools (press_button, press_lever, set_rotary_control) require the agent to be at the target fixture. Navigate to the fixture first."
+        )
+    for tool_name, tool_spec in allowed_tool_specs.items():
+        for arg_group in _canonical_arg_groups_for_prompt(tool_name, tool_spec):
+            formatted_group = ", ".join(str(arg_name) for arg_name in arg_group)
+            if len(arg_group) == 1:
+                prompt_rules.append(
+                    f"When using {tool_name}, use {formatted_group} as the canonical anchor arg. Do not include alias alternatives."
+                )
+            else:
+                prompt_rules.append(
+                    f"When using {tool_name}, provide exactly one of {formatted_group} and do not include multiple alternatives in the same step."
+                )
+    if "place_next_to" in allowed_tool_names:
+        prompt_rules.append(
+            "For place_next_to, prefer reference_object_id for object-relative placements and reference_fixture_id for fixture-relative placements."
+        )
+        prompt_rules.append(
+            "For place_next_to, reference_object_id must name an object from initial_state.objects and reference_fixture_id must name a fixture from initial_state.fixtures. Never put a fixture id in reference_object_id."
+        )
+    if "place_on_surface" in allowed_tool_names:
+        prompt_rules.append(
+            "For place_on_surface, use support_id as the fixture anchor and use target_site_id for the exact sub-location such as a rack or burner."
+        )
+    if "place_in_receptacle" in allowed_tool_names:
+        prompt_rules.append(
+            "For place_in_receptacle, use receptacle_id as the receptacle anchor and use target_site_id only for the exact interior site."
+        )
+    if "place_under" in allowed_tool_names:
+        prompt_rules.append(
+            "For place_under, prefer reference_fixture_id for the fixture and use target_site_id when the exact dispenser or basin site matters."
         )
     # Keep later references aligned with prior FSM effects.
     prompt_rules.append(
         "Keep object locations consistent across steps. After an object moves, later source_id and destination references must match its new location."
+    )
+    prompt_rules.append(
+        "Treat repeated symbolic objects as distinct physical instances. Do not reuse one concrete object to stand in for two different symbolic ids."
+    )
+    prompt_rules.append(
+        "When a partitioned fixture exposes support_sites such as burners, shelves, basins, bowls, slots, trays, or racks, use the concrete source_site_id or target_site_id when the task depends on that exact sub-location."
+    )
+    prompt_rules.append(
+        "If a step specifies a concrete target_site_id or source_site_id, honor that exact site. Do not silently switch to a different site on the same fixture."
+    )
+    prompt_rules.append(
+        "Each id-valued tool arg must be one concrete symbolic id. Do not concatenate fixture ids, site ids, hardware labels, or free text into one field."
     )
     prompt_rules.append(
         "Stop as soon as the goal state is satisfied. Do not add extra task actions afterward."
@@ -112,11 +196,59 @@ def _build_fsm_prompt_rules(
                 f"{condition['fixture_id']}.{condition['part_id']} before using "
                 f"{condition['tool']} from {condition['source_id']}."
             )
-        elif condition_kind == "object_location_required_for_action":
+        elif condition_kind == "fixture_part_state_required_for_action":
+            arg_name = condition.get("arg_name")
+            arg_value = condition.get("arg_value")
+            action_scope = ""
+            if isinstance(arg_name, str) and isinstance(arg_value, str):
+                action_scope = f" when {arg_name}={arg_value}"
             prompt_rules.append(
-                f"Only use {condition['tool']} after {condition['object_id']} is "
-                f"already at {condition['required_location']}."
+                "Open "
+                f"{condition['fixture_id']}.{condition['part_id']} before using "
+                f"{condition['tool']}{action_scope}."
             )
+        elif condition_kind == "object_location_required_for_action":
+            arg_name = condition.get("arg_name")
+            arg_value = condition.get("arg_value")
+            action_scope = ""
+            if isinstance(arg_name, str) and arg_value is not None:
+                action_scope = f" when {arg_name}={arg_value}"
+            prompt_rules.append(
+                f"Only use {condition['tool']}{action_scope} after "
+                f"{condition['object_id']} is already at {condition['required_location']}."
+            )
+
+    for effect in task_effects or ():
+        if effect.get("kind") != "set_machine_flag_on_action":
+            continue
+        tool_name = effect.get("tool")
+        if not isinstance(tool_name, str):
+            continue
+        required_object_locations = effect.get("required_object_locations") or ()
+        for requirement in required_object_locations:
+            if not isinstance(requirement, dict):
+                continue
+            object_id = requirement.get("object_id")
+            location = requirement.get("location")
+            if isinstance(object_id, str) and isinstance(location, str):
+                prompt_rules.append(
+                    f"Only use {tool_name} after {object_id} is already at {location}."
+                )
+        required_machine_values = effect.get("required_machine_values") or ()
+        for requirement in required_machine_values:
+            if not isinstance(requirement, dict):
+                continue
+            machine_path = requirement.get("machine_path")
+            value = requirement.get("value")
+            if (
+                isinstance(machine_path, list)
+                and machine_path
+                and all(isinstance(part, str) for part in machine_path)
+            ):
+                machine_path_text = ".".join(machine_path)
+                prompt_rules.append(
+                    f"Only use {tool_name} after {machine_path_text} is already {value}."
+                )
 
     for rule in extra_rules or ():
         normalized_rule = " ".join(rule.strip().split())
@@ -142,6 +274,7 @@ def make_task_prompt_builder(
     allowed_tool_specs: dict[str, Any],
     non_communicate_tool_names: Sequence[str],
     task_preconditions: Sequence[dict[str, Any]] | None = None,
+    task_effects: Sequence[dict[str, Any]] | None = None,
     extra_execution_rules: Sequence[str] | None = None,
     agent_ids: Sequence[str] = ("agent_0", "agent_1"),
 ) -> TaskPromptBuilder:
@@ -204,6 +337,7 @@ def make_task_prompt_builder(
             for rule in _build_fsm_prompt_rules(
                 prompt_allowed_tool_specs,
                 task_preconditions=task_preconditions,
+                task_effects=task_effects,
                 extra_rules=prompt_extra_execution_rules,
             )
         )
@@ -224,11 +358,13 @@ Important rules:
 - Simulate both agents: {agent_id_list_text}.
 - Keep track of what object each agent is holding and where the agent's location is at all times.
 - Keep track of all agent's locations which can only be at fixture locations. Be sure that the agent is not "teleporting" across the environment to complete tasks; the agent should navigate first via a tool call.
-- If agent_A plans to navigate to a fixture where agent_B is already positioned, have the agents communicate first about that upcoming navigation, then have agent_B execute give_space(fixture_id) at that fixture before agent_A arrives so they avoid a location conflict.
+- If agent_A plans to navigate to or use a fixture where agent_B is already positioned, have the agents communicate first about that upcoming navigation, then have agent_B execute give_space(fixture_id) at that fixture before agent_A arrives so they avoid a location conflict. Do not navigate to a fixture only to call give_space; give_space is only for an agent already there.
+- Treat cabinet/drawer fixtures and their supporting counters as one shared workspace. If one agent is at the cabinet side or counter side, the other agent must not navigate into the other side until the first agent explicitly gives_space from that workspace.
+- Prefer finishing a held-object placement before calling give_space. Do not give_space while holding an item unless there is no legal alternative.
 - In the initial steps, the agents must coordinate through communication tool calls before any task action. Both agents must communicate during this time.
 - Throughout the trajectory, both agents should actively communicate with each other to communicate intentions, plans, and needs, not just in the initial steps.
 - Each communicate step sends a message to the other agent in the scene, so args.to must be the exact ID of that other agent.
-- For each step, args must contain exactly the argument names required by that tool. Do not omit required args and do not invent extra arg keys.
+- For each step, args must contain every required argument for that tool. Only include optional args when they are useful for the placement you are specifying, and do not invent unsupported arg keys.
 - In args, use the exact IDs shown in the allowed tools block for this task.
 - Keep args as a flat object that contains only that step's tool inputs.
 - If an agent is not performing an action, be sure the agent communicates what the agent is waiting for so that no agent is doing nothing.

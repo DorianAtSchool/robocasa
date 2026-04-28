@@ -64,7 +64,11 @@ def _set_machine_path(
 ) -> None:
     current_value = machine_state
     for path_part in machine_path[:-1]:
-        current_value = current_value.setdefault(path_part, {})
+        next_value = current_value.get(path_part)
+        if not isinstance(next_value, dict):
+            next_value = {}
+            current_value[path_part] = next_value
+        current_value = next_value
     current_value[machine_path[-1]] = value
 
 
@@ -120,6 +124,38 @@ class SpecDrivenTaskValidator(FiniteStateTaskValidator):
                     if machine_value is not None:
                         runtime_state.public_state[public_key] = machine_value
 
+    def _object_location_matches(
+        self,
+        *,
+        runtime_state: TaskRuntimeState,
+        object_id: str,
+        required_location: str,
+    ) -> bool:
+        actual_location = runtime_state.objects[object_id]["location"]
+        if actual_location == required_location:
+            return True
+
+        resolved_actual = self._resolve_reference_location(
+            reference_id=object_id,
+            runtime_state=runtime_state,
+        )
+        if resolved_actual == required_location:
+            return True
+
+        required_fixture_id = self._resolve_fixture_for_location(
+            location_id=required_location,
+            runtime_state=runtime_state,
+        )
+        actual_fixture_id = self._resolve_fixture_for_location(
+            location_id=resolved_actual if isinstance(resolved_actual, str) else actual_location,
+            runtime_state=runtime_state,
+        )
+        return (
+            isinstance(required_fixture_id, str)
+            and isinstance(actual_fixture_id, str)
+            and required_fixture_id == actual_fixture_id
+        )
+
     def validate_task_preconditions(
         self,
         step: dict[str, Any],
@@ -131,7 +167,11 @@ class SpecDrivenTaskValidator(FiniteStateTaskValidator):
                 object_id = condition["object_id"]
                 required_location = condition["location"]
                 actual_location = runtime_state.objects[object_id]["location"]
-                if actual_location != required_location:
+                if not self._object_location_matches(
+                    runtime_state=runtime_state,
+                    object_id=object_id,
+                    required_location=required_location,
+                ):
                     raise TaskPreconditionSemanticValidationError(
                         condition["message"],
                         details={
@@ -160,11 +200,49 @@ class SpecDrivenTaskValidator(FiniteStateTaskValidator):
                             "actual_state": actual_state,
                         },
                     )
+            elif condition_kind == "fixture_part_state_required_for_action":
+                if step["tool"] != condition["tool"]:
+                    continue
+                arg_name = condition.get("arg_name")
+                arg_value = condition.get("arg_value")
+                if isinstance(arg_name, str) and arg_value is not None:
+                    if step["args"].get(arg_name) != arg_value:
+                        continue
+                actual_state = runtime_state.fixtures[condition["fixture_id"]]["parts"][
+                    condition["part_id"]
+                ]["state"]
+                if actual_state != condition["required_state"]:
+                    raise TaskPreconditionSemanticValidationError(
+                        condition["message"],
+                        details={
+                            "tool": step["tool"],
+                            "fixture_id": condition["fixture_id"],
+                            "part_id": condition["part_id"],
+                            "required_state": condition["required_state"],
+                            "actual_state": actual_state,
+                        },
+                    )
             elif condition_kind == "object_location_required_for_action":
                 if step["tool"] != condition["tool"]:
                     continue
+                arg_name = condition.get("arg_name")
+                arg_value = condition.get("arg_value")
+                if isinstance(arg_name, str) and arg_value is not None:
+                    if step["args"].get(arg_name) != arg_value:
+                        continue
+                else:
+                    step_object_id = step["args"].get("object_id")
+                    if (
+                        isinstance(step_object_id, str)
+                        and step_object_id != condition["object_id"]
+                    ):
+                        continue
                 actual_location = runtime_state.objects[condition["object_id"]]["location"]
-                if actual_location != condition["required_location"]:
+                if not self._object_location_matches(
+                    runtime_state=runtime_state,
+                    object_id=condition["object_id"],
+                    required_location=condition["required_location"],
+                ):
                     raise TaskPreconditionSemanticValidationError(
                         condition["message"],
                         details={
@@ -190,7 +268,47 @@ class SpecDrivenTaskValidator(FiniteStateTaskValidator):
                 raise ValueError(f"Unsupported TaskSpec effect kind: {effect_kind}")
             if step["tool"] != effect["tool"]:
                 continue
-            if any(step["args"].get(arg_name) != arg_value for arg_name, arg_value in effect["args"].items()):
+            if any(
+                step["args"].get(arg_name) != arg_value
+                for arg_name, arg_value in effect["args"].items()
+                if not (step["tool"] == "communicate" and arg_name == "message")
+            ):
+                continue
+            required_object_locations = effect.get("required_object_locations") or []
+            if any(
+                not self._object_location_matches(
+                    runtime_state=runtime_state,
+                    object_id=requirement["object_id"],
+                    required_location=requirement["location"],
+                )
+                for requirement in required_object_locations
+                if isinstance(requirement, dict)
+                and isinstance(requirement.get("object_id"), str)
+                and isinstance(requirement.get("location"), str)
+            ):
+                continue
+            required_machine_values = effect.get("required_machine_values") or []
+            if any(
+                _resolve_machine_path(
+                    runtime_state.machine_state,
+                    tuple(requirement["machine_path"]),
+                )
+                != requirement.get("value")
+                for requirement in required_machine_values
+                if isinstance(requirement, dict)
+                and isinstance(requirement.get("machine_path"), list)
+            ):
+                continue
+            required_fixture_controls = effect.get("required_fixture_controls") or []
+            if any(
+                runtime_state.fixtures.get(requirement.get("fixture_id"), {})
+                .get("controls", {})
+                .get(requirement.get("control_id"), {})
+                .get("state")
+                != requirement.get("state")
+                for requirement in required_fixture_controls
+                if isinstance(requirement, dict)
+            ):
                 continue
             _set_machine_path(
                 runtime_state.machine_state,
@@ -209,14 +327,77 @@ class SpecDrivenTaskValidator(FiniteStateTaskValidator):
                     != condition["location"]
                 ):
                     return False
+            elif condition_kind == "object_count_at_location":
+                object_ids = [
+                    object_id
+                    for object_id in condition.get("object_ids", ())
+                    if isinstance(object_id, str)
+                ]
+                actual_count = sum(
+                    1
+                    for object_id in object_ids
+                    if runtime_state.objects.get(object_id, {}).get("location")
+                    == condition.get("location")
+                )
+                if actual_count != condition.get("count"):
+                    return False
+            elif condition_kind == "object_at_location_one_of":
+                loc = runtime_state.objects[condition["object_id"]]["location"]
+                if loc not in condition["locations"]:
+                    return False
             elif condition_kind == "machine_flag_true":
                 if not _resolve_machine_path(
                     runtime_state.machine_state,
                     tuple(condition["machine_path"]),
                 ):
                     return False
+            elif condition_kind == "machine_flag_equals":
+                if _resolve_machine_path(
+                    runtime_state.machine_state,
+                    tuple(condition["machine_path"]),
+                ) != condition.get("value"):
+                    return False
+            elif condition_kind == "fixture_part_state":
+                fixture_state = runtime_state.fixtures.get(condition["fixture_id"], {})
+                if not isinstance(fixture_state, dict):
+                    return False
+                fixture_parts = fixture_state.get("parts", {})
+                if not isinstance(fixture_parts, dict):
+                    return False
+                actual_state = fixture_parts.get(condition["part_id"], {}).get("state")
+                if actual_state != condition.get("state"):
+                    return False
+            elif condition_kind == "fixture_control_state":
+                fixture_state = runtime_state.fixtures.get(condition["fixture_id"], {})
+                if not isinstance(fixture_state, dict):
+                    return False
+                fixture_controls = fixture_state.get("controls", {})
+                if not isinstance(fixture_controls, dict):
+                    return False
+                actual_state = fixture_controls.get(condition["control_id"], {}).get(
+                    "state"
+                )
+                if actual_state != condition.get("state"):
+                    return False
             else:
                 raise ValueError(f"Unsupported TaskSpec goal kind: {condition_kind}")
+
+        # Enforce mutual exclusion for object_at_location_one_of conditions
+        # that opt in with "exclusive": true.
+        exclusive_resolved: list[tuple[str, str, tuple[str, ...]]] = []
+        for condition in self._task_spec.goal_conditions:
+            if condition["kind"] != "object_at_location_one_of":
+                continue
+            if not condition.get("exclusive", False):
+                continue
+            obj_id = condition["object_id"]
+            loc = runtime_state.objects[obj_id]["location"]
+            exclusive_resolved.append((obj_id, loc, tuple(condition["locations"])))
+        for i, (obj_a, loc_a, pool_a) in enumerate(exclusive_resolved):
+            for obj_b, loc_b, pool_b in exclusive_resolved[i + 1 :]:
+                if loc_a == loc_b and set(pool_a) & set(pool_b):
+                    return False
+
         return True
 
 
@@ -232,7 +413,14 @@ def build_task_definition_from_spec(task_spec: TaskSpec) -> TaskDefinition:
         tool_override = {
             key: deepcopy(value)
             for key, value in tool_spec.items()
-            if key not in {"description", "tool_args", "tool_arg_types"}
+            if key
+            not in {
+                "description",
+                "tool_args",
+                "optional_tool_args",
+                "tool_arg_types",
+                "tool_arg_any_of",
+            }
         }
         if tool_override:
             overrides[tool_name] = tool_override
@@ -264,6 +452,7 @@ def build_task_definition_from_spec(task_spec: TaskSpec) -> TaskDefinition:
         allowed_tool_specs=allowed_tool_specs,
         non_communicate_tool_names=non_communicate_tool_names,
         task_preconditions=task_spec.task_preconditions,
+        task_effects=task_spec.task_effects,
         extra_execution_rules=task_spec.extra_execution_rules,
     )
     build_trajectory_record = make_symbolic_trajectory_record_builder(
