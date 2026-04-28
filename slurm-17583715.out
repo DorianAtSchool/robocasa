@@ -1,0 +1,48 @@
+Tasks queued (5):
+  500 runs/task x 4 trajectories/run = 2000 trajectories/task
+  5 tasks x 2000 trajectories/task = 10000 total trajectories
+  [1/5] HotDogSetup
+  [2/5] PrepareCheeseStation
+  [3/5] PrepareCoffee
+  [4/5] PrepareSandwichStation
+  [5/5] PrepareSausageCheese
+Initial projected cost: $7.7244
+/work/hdd/bgjs/mnakamura/robocasa/data_generation/task_level/data/raw/20260413T205634Z/hot_dog_setup
+Generation incomplete for HotDogSetup: 3/500 runs failed.
+Failure: HeldObjectSemanticValidationError: agent_0 must place condiment before using open_hinged_part.
+Failure (3x): HeldObjectSemanticValidationError: agent_1 must place condiment before using open_hinged_part.
+Failure: HeldObjectSemanticValidationError: agent_1 must place sausage before using open_hinged_part.
+24 additional distinct errors omitted.
+Inspect /work/hdd/bgjs/mnakamura/robocasa/data_generation/task_level/data/raw/20260413T205634Z/hot_dog_setup/summary_errors.json for the full error log.
+Initial projected cost: $49.6750
+/work/hdd/bgjs/mnakamura/robocasa/data_generation/task_level/data/raw/20260413T205634Z/prepare_cheese_station
+Generation incomplete for PrepareCheeseStation: 1/500 runs failed.
+Failure: NavigationSemanticValidationError: Step 3 (open_hinged_part): agent_0 is at counter and must use navigate_to_fixture to reach fridge before using open_hinged_part.
+Failure: NavigationSemanticValidationError: Step 3 (open_hinged_part): agent_1 is at counter and must use navigate_to_fixture to reach cabinet before using open_hinged_part.
+Failure: NavigationSemanticValidationError: Step 6 (give_space): agent_1 is at cabinet and must use navigate_to_fixture to reach counter before using give_space.
+14 additional distinct errors omitted.
+Inspect /work/hdd/bgjs/mnakamura/robocasa/data_generation/task_level/data/raw/20260413T205634Z/prepare_cheese_station/summary_errors.json for the full error log.
+Initial projected cost: $8.3024
+/work/hdd/bgjs/mnakamura/robocasa/data_generation/task_level/data/raw/20260413T205634Z/prepare_coffee
+Generation incomplete for PrepareCoffee: 9/500 runs failed.
+Failure (2x): HeldObjectSemanticValidationError: agent_0 must be holding mug before placing it.
+Failure (5x): NavigationSemanticValidationError: Step 10 (give_space): agent_0 is at staging_surface and must use navigate_to_fixture to reach coffee_machine before using give_space.
+Failure: NavigationSemanticValidationError: Step 10 (pick_up_object): agent_1 is at coffee_machine and must use navigate_to_fixture to reach staging_surface before using pick_up_object.
+23 additional distinct errors omitted.
+Inspect /work/hdd/bgjs/mnakamura/robocasa/data_generation/task_level/data/raw/20260413T205634Z/prepare_coffee/summary_errors.json for the full error log.
+Initial projected cost: $6.6252
+/work/hdd/bgjs/mnakamura/robocasa/data_generation/task_level/data/raw/20260413T205634Z/prepare_sandwich_station
+Generation incomplete for PrepareSandwichStation: 1/500 runs failed.
+Failure (2x): NavigationSemanticValidationError: Step 10 (give_space): agent_0 is at staging_surface and must use navigate_to_fixture to reach ingredient_source_fixture before using give_space.
+Failure (2x): NavigationSemanticValidationError: Step 11 (give_space): agent_0 is at staging_surface and must use navigate_to_fixture to reach ingredient_source_fixture before using give_space.
+Failure: NavigationSemanticValidationError: Step 11 (give_space): agent_1 is at staging_surface and must use navigate_to_fixture to reach ingredient_source_fixture before using give_space.
+10 additional distinct errors omitted.
+Inspect /work/hdd/bgjs/mnakamura/robocasa/data_generation/task_level/data/raw/20260413T205634Z/prepare_sandwich_station/summary_errors.json for the full error log.
+Initial projected cost: $48.4250
+/work/hdd/bgjs/mnakamura/robocasa/data_generation/task_level/data/raw/20260413T205634Z/prepare_sausage_cheese
+Generation incomplete for PrepareSausageCheese: 1/500 runs failed.
+Failure: HeldObjectSemanticValidationError: agent_1 cannot pick up a second object while already holding sausage.
+Failure (4x): NavigationSemanticValidationError: Step 10 (give_space): agent_0 is at counter and must use navigate_to_fixture to reach fridge before using give_space.
+Failure: NavigationSemanticValidationError: Step 10 (give_space): agent_0 is at fridge and must use navigate_to_fixture to reach counter before using give_space.
+16 additional distinct errors omitted.
+Inspect /work/hdd/bgjs/mnakamura/robocasa/data_generation/task_level/data/raw/20260413T205634Z/prepare_sausage_cheese/summary_errors.json for the full error log.

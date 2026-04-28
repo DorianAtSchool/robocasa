@@ -1,0 +1,5 @@
+Script started on 2026-04-13 21:29:42-05:00 [<not executed on terminal>]
+Trajectories:   0% 0/2 [00:00<?, ?it/s]Trajectories:   0% 0/2 [00:00<?, ?it/s, copying task files]Trajectories:   0% 0/2 [00:00<?, ?it/s, copying task files]Trajectories:   0% 0/2 [00:00<?, ?it/s, rewriting trajectories]Trajectories:   0% 0/2 [00:00<?, ?it/s, rewriting trajectories]Trajectories: 100% 2/2 [00:00<00:00, 324.89it/s, writing summary]Trajectories: 100% 2/2 [00:00<00:00, 319.32it/s, writing summary]Trajectories: 100% 2/2 [00:00<00:00, 291.36it/s, writing summary]
+Post-processed 2 trajectories from /tmp/tmpdjr_d_q8/data/raw/20260310T000000Z/prepare_coffee/summary.json to /tmp/tmpdjr_d_q8/data/pre_image/20260310T000000Z/prepare_coffee/summary.json.
+
+Script done on 2026-04-13 21:29:42-05:00 [COMMAND_EXIT_CODE="0"]

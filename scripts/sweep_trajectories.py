@@ -171,13 +171,11 @@ _WORKER_EXECUTOR_CACHE: dict[
 
 def _worker_cache_slot() -> tuple[int, int]:
     """Return the process-local worker slot used for executor reuse."""
-
     return (os.getpid(), threading.get_ident())
 
 
 def clear_executor_cache() -> None:
     """Close and clear all cached executors in the current process."""
-
     for _, executor in list(_WORKER_EXECUTOR_CACHE.values()):
         try:
             executor.close()
@@ -314,7 +312,6 @@ def _get_or_create_cached_executor(
     )
     _WORKER_EXECUTOR_CACHE[cache_slot] = (cache_key, executor)
     return executor
-
 
 def _executor_processes(executor: Any) -> list[Any]:
     """Return the worker processes owned by one executor when exposed."""
@@ -552,6 +549,8 @@ class SweepRichProgressDisplay:
 
         if RichProgress is None or Console is None:
             raise RuntimeError("rich progress support is unavailable")
+        # The scheduler still tracks worker slots internally, but the terminal
+        # now renders only the overall runs bar.
         self._worker_count = worker_count
         self._total_runs = total_runs
         self._total_trajectories: int | None = None
@@ -1106,7 +1105,6 @@ def run_one(
     render_height: int = 512,
 ) -> dict:
     """Execute a single trajectory and return summary info."""
-
     from robocasa.utils.trajectory_adapter import execute_trajectory
 
     with open(traj_file) as f:
@@ -1188,7 +1186,6 @@ def run_one(
         output_dir=str(output_dir),
         skip_videos=skip_videos,
     )
-
     steps = metadata.get("steps", [])
     action_steps = [s for s in steps if s.get("tool") != "get_image"]
     n_success = sum(1 for s in action_steps if s.get("success"))
@@ -1231,6 +1228,8 @@ def run_trajectory_entry(
         "MUJOCO_GL": gl_backend,
     }
     if gpu_id is not None:
+        # Constrain each worker invocation to one GPU before constructing any
+        # simulator state so concurrent entries can be spread across GPUs.
         runtime_environment_overrides.update(
             {
                 "CUDA_VISIBLE_DEVICES": str(gpu_id),
@@ -1239,6 +1238,8 @@ def run_trajectory_entry(
             }
         )
     elif gl_backend != "egl":
+        # Clear stale EGL routing when the caller explicitly requested a
+        # non-EGL backend in a process that may have run GPU work earlier.
         runtime_environment_overrides["MUJOCO_EGL_DEVICE_ID"] = None
 
     with _temporary_environment(runtime_environment_overrides):
@@ -1472,6 +1473,8 @@ def execute_sweep(
     process_pool_context = None
     active_executor = None
     if sweep_executor_factory is ProcessPoolExecutor:
+        # Reused MuJoCo / rendering workers are more stable under a spawned
+        # multiprocessing context than the Linux default forked context.
         process_pool_context = multiprocessing.get_context("spawn")
 
     try:
@@ -1548,6 +1551,9 @@ def execute_sweep(
                 executor_kwargs = {"max_workers": max_workers}
                 if process_pool_context is not None:
                     executor_kwargs["mp_context"] = process_pool_context
+                    # Recycling worker processes can reclaim simulator memory
+                    # between trajectory entries when the caller prefers lower
+                    # peak RAM over maximum reuse speed.
                     if max_tasks_per_child is not None:
                         executor_kwargs["max_tasks_per_child"] = max_tasks_per_child
                 with sweep_executor_factory(**executor_kwargs) as executor:
@@ -1682,7 +1688,6 @@ def execute_sweep(
                 active_executor = None
     except KeyboardInterrupt:
         _shutdown_sweep_executor(active_executor, cancel_running=True)
-        clear_executor_cache()
         raise
     finally:
         if progress_display is not None:
@@ -1950,6 +1955,7 @@ def _build_trajectory_level_dataset(output_root: Path) -> "datasets.Dataset":
 
         for step in metadata.get("steps", []):
             images = _resolve_step_images(step.get("image_paths"), image_columns)
+            images = _resolve_step_images(step.get("image_paths"), image_columns)
             args_clean = {
                 k: v for k, v in (step.get("args") or {}).items() if k != "image_paths"
             }
@@ -1982,6 +1988,7 @@ def _build_trajectory_level_dataset(output_root: Path) -> "datasets.Dataset":
             "tool_args": Sequence(Value("string")),
             "robot_idx": Sequence(Value("int32")),
             "success": Sequence(Value("bool")),
+            **{col: Sequence(HFImage()) for col in image_columns},
             **{col: Sequence(HFImage()) for col in image_columns},
         }
     )

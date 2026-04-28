@@ -33,8 +33,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Insert default multi-view image observation steps into trajectories "
-            "referenced by a dataset JSON and write the results to a copied output "
-            "tree."
+            "referenced by a dataset JSON and write the results to an output "
+            "dataset tree."
         )
     )
     parser.add_argument(
@@ -52,6 +52,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Disable the trajectory progress bars.",
     )
     parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Maximum parallel trajectory workers.",
+    )
+    parser.add_argument(
         "--output-dataset",
         type=Path,
         help=(
@@ -61,7 +67,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "data/pre_image/<run_timestamp>/.../summary.json."
         ),
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.workers <= 0:
+        parser.error("--workers must be greater than 0.")
+    return args
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -76,6 +85,7 @@ def main(argv: list[str] | None = None) -> int:
             args.dataset,
             output_dataset_path=output_dataset_path,
             disable_progress=args.disable_progress,
+            workers=args.workers,
         )
     except Exception as exc:
         print(f"Failed to post-process trajectories: {exc}", file=sys.stderr)

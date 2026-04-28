@@ -42,9 +42,12 @@ from data_generation.task_level.generation.raw.outputs import (
     validate_resume_payload,
 )
 from data_generation.task_level.generation.raw.runtime_support import (
+    _expected_saved_trajectory_count,
     _exception_summary,
+    _requested_run_count,
     _raise_if_task_cancelled,
     _resolve_task_definitions_or_raise,
+    _trajectories_per_run,
 )
 from data_generation.task_level.runtime.client import (
     DEFAULT_LOCATION,
@@ -99,6 +102,63 @@ def _create_task_progress_bar(*, total_tasks: int) -> Any:
         disable=not os.isatty(2),
         dynamic_ncols=True,
     )
+
+
+def _format_count_with_label(
+    count: int,
+    *,
+    singular: str,
+    plural: str,
+    suffix: str = "",
+) -> str:
+    """Formats one counted label with minimal pluralization support."""
+
+    label = singular if count == 1 else plural
+    return f"{count} {label}{suffix}"
+
+
+def _format_selected_task_summary(runtime_config: RuntimeConfig) -> str | None:
+    """Formats the selected task list for startup logging on multi-task runs."""
+
+    composite_tasks = runtime_config.composite_tasks
+    total_tasks = len(composite_tasks)
+    if total_tasks <= 1:
+        return None
+
+    requested_run_count = _requested_run_count(runtime_config)
+    trajectories_per_run = _trajectories_per_run(runtime_config)
+    trajectories_per_task = _expected_saved_trajectory_count(runtime_config)
+    total_trajectories = total_tasks * trajectories_per_task
+    task_count_width = len(str(total_tasks))
+    lines = [
+        f"Tasks queued ({total_tasks}):",
+        (
+            "  "
+            f"{_format_count_with_label(requested_run_count, singular='run', plural='runs', suffix='/task')} x "
+            f"{_format_count_with_label(trajectories_per_run, singular='trajectory', plural='trajectories', suffix='/run')} = "
+            f"{_format_count_with_label(trajectories_per_task, singular='trajectory', plural='trajectories', suffix='/task')}"
+        ),
+        (
+            "  "
+            f"{_format_count_with_label(total_tasks, singular='task', plural='tasks')} x "
+            f"{_format_count_with_label(trajectories_per_task, singular='trajectory', plural='trajectories', suffix='/task')} = "
+            f"{_format_count_with_label(total_trajectories, singular='total trajectory', plural='total trajectories')}"
+        ),
+    ]
+    lines.extend(
+        f"  [{task_index:>{task_count_width}}/{total_tasks}] {composite_task}"
+        for task_index, composite_task in enumerate(composite_tasks, start=1)
+    )
+    return "\n".join(lines)
+
+
+def _write_selected_task_summary(runtime_config: RuntimeConfig) -> None:
+    """Writes the selected task list before a multi-task request starts."""
+
+    summary_text = _format_selected_task_summary(runtime_config)
+    if summary_text is None:
+        return
+    tqdm.write(summary_text)
 
 
 def _resume_directory_summary_payload(resume_path: Path) -> dict[str, Any] | None:
@@ -747,6 +807,7 @@ def main(argv: list[str] | None = None) -> int:
         is_complete = _finalize_task_result(task_run_result)
         return 0 if is_complete else GENERATION_ERROR_EXIT_CODE
 
+    _write_selected_task_summary(runtime_config)
     request_summary_path = (
         runtime_config.resume_path / "summary.json"
         if runtime_config.resume_path is not None

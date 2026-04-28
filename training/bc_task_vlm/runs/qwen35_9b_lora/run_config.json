@@ -1,0 +1,63 @@
+{
+  "attn_implementation": "sdpa",
+  "bf16": true,
+  "dataset_root": "/work/hdd/bgjs/mnakamura/robocasa/data_generation/task_level/data/image/20260404T191734Z",
+  "eval_generation_batch_size": 1,
+  "eval_generation_max_samples": null,
+  "eval_max_new_tokens": 256,
+  "eval_steps": 100,
+  "fp16": false,
+  "grad_accum": 8,
+  "gradient_checkpointing": true,
+  "learning_rate": 0.0002,
+  "logging_steps": 10,
+  "lora_alpha": 32,
+  "lora_dropout": 0.05,
+  "lora_r": 16,
+  "lora_target_modules": [
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",
+    "gate_proj",
+    "up_proj",
+    "down_proj"
+  ],
+  "lr_scheduler_type": "cosine",
+  "max_length": null,
+  "model_name_or_path": "Qwen/Qwen3.5-9B",
+  "num_epochs": 3.0,
+  "num_workers": 0,
+  "optim": "adamw_torch",
+  "output_dir": "/work/hdd/bgjs/mnakamura/robocasa/training/bc_task_vlm/runs/qwen35_9b_lora",
+  "per_device_batch_size": 1,
+  "processor_name_or_path": "Qwen/Qwen3.5-9B",
+  "report_to": [
+    "wandb"
+  ],
+  "resume_from_checkpoint": null,
+  "save_steps": 100,
+  "save_total_limit": 2,
+  "seed": 42,
+  "total_params": 9438911728,
+  "train_example_granularity": "decentralized",
+  "train_tasks": [
+    "hot_dog_setup",
+    "prepare_sandwich_station"
+  ],
+  "trainable_params": 29097984,
+  "trust_remote_code": false,
+  "val_tasks": [
+    "prepare_coffee"
+  ],
+  "wandb_entity": null,
+  "wandb_mode": "online",
+  "wandb_project": "robocasa-bc-task-vlm",
+  "wandb_run_name": null,
+  "wandb_tags": [
+    "bc_task_vlm",
+    "qwen3.5",
+    "sft"
+  ],
+  "warmup_ratio": 0.03
+}

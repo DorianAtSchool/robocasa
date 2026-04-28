@@ -1,0 +1,9 @@
+accelerate
+flash-linear-attention
+peft
+Pillow
+torch
+torchvision
+tqdm
+transformers
+wandb

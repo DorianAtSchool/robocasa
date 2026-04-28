@@ -20,6 +20,8 @@ setup(
         "scipy==1.15.3",
         "mujoco==3.3.1",
         "pygame",
+        "rich",
+        "tqdm",
         "Pillow",
         "matplotlib",
         "opencv-python",

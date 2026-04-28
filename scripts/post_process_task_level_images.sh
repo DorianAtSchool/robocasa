@@ -4,16 +4,23 @@ set -euo pipefail
 # Prints the wrapper usage for timestamp-based image post-processing runs.
 usage() {
   cat <<'EOF'
-Usage: bash scripts/post_process_task_level_images.sh <run_timestamp> [image_cli_args...]
+Usage: bash scripts/post_process_task_level_images.sh <run_timestamp> [--workers N] [image_cli_args...]
 
 Post-processes every task summary under:
   data_generation/task_level/data/raw/<run_timestamp>/*/summary.json
 
-Writes the copied post-processed trajectories to:
+Writes the post-processed trajectories and metadata to:
   data_generation/task_level/data/pre_image/<run_timestamp>/*/summary.json
 
 Additional CLI arguments are forwarded to:
   python -m data_generation.task_level.generation.image.cli
+
+For large datasets, forward:
+  --workers 8
+  --disable-progress
+
+`--workers` is forwarded to the image post-processing CLI and parallelizes
+trajectory rewriting within each task summary.
 
 Do not pass --dataset or --output-dataset to this wrapper.
 EOF
@@ -65,6 +72,8 @@ if [[ ${#summary_paths[@]} -eq 0 ]]; then
 fi
 
 for summary_path in "${summary_paths[@]}"; do
+  task_name="$(basename "$(dirname "$summary_path")")"
+  echo "Post-processing $task_name"
   python -m data_generation.task_level.generation.image.cli \
     --dataset "$summary_path" \
     "$@"

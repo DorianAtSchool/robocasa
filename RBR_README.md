@@ -1,4 +1,7 @@
-Set up a local `.venv` and the in-repo `robosuite` dependency before running the examples:
+If this is a fresh clone or first-time setup, follow [`README.md`](README.md) first.
+The steps below assume the base RoboCasa environment, macros, and assets are already set up.
+
+Set up a local `.venv` and the in-repo `robosuite` dependency before running the examples using [uv](https://docs.astral.sh/uv/):
 
 ```bash
 uv venv .venv --python 3.11
@@ -9,14 +12,6 @@ uv pip install -e .
 ```
 
 If you are cloning the repo for the first time, you can also use `git clone --recurse-submodules ...` to fetch `robosuite/` immediately.
-
-Run random policy rollout:
-
-```bash
-python policies/random.py
-```
-
-This writes a rollout video to `test.mp4` at the repo root.
 
 ## Vertex AI trajectory generation
 
@@ -67,7 +62,7 @@ EOF
 The generator automatically loads the repo-root `.env` before CLI parsing. Shell
 environment variables still win if you already exported a value manually.
 
-Authenticate with Application Default Credentials:
+First install [gcloud](https://docs.cloud.google.com/sdk/docs/install-sdk#linux), then authenticate with Application Default Credentials:
 
 ```bash
 gcloud init
@@ -84,11 +79,11 @@ Generate validated symbolic two-agent trajectories for `PrepareCoffee` with base
 
 ```bash
 python -m data_generation.task_level.generation.raw.cli \
-  --tasks PrepareCoffee \
+  --tasks all \
   --num-runs 2 \
   --random-start-location true \
   --sampling base \
-  --model gemini-3.1-flash-lite-preview \
+  --model gemini-3-flash-preview \
   --location global \
   --thinking-level low \
   --max-workers 4 \
@@ -101,16 +96,16 @@ trajectories plus a probability label for each one:
 
 ```bash
 python -m data_generation.task_level.generation.raw.cli \
-  --tasks PrepareCoffee \
-  --num-runs 2 \
+  --tasks all \
+  --num-runs 20 \
   --random-start-location true \
   --sampling verbalized \
-  --verbalized-k 3 \
-  --model gemini-3.1-flash-lite-preview \
+  --verbalized-k 4 \
+  --model gemini-3-flash-preview \
   --location global \
   --thinking-level low \
-  --max-workers 4 \
-  --max-retries 5 \
+  --max-workers 10 \
+  --max-retries 1 \
   --enable-validation
 ```
 
@@ -119,12 +114,12 @@ applies to each task, so the example below runs 25 model calls total:
 
 ```bash
 python -m data_generation.task_level.generation.raw.cli \
-  --tasks PrepareCoffee HotDogSetup PrepareSandwichStation PrepareSausageCheese PrepareCheeseStation \
+  --tasks all \
   --num-runs 5 \
   --random-start-location true \
   --paralleize-tasks \
-  --sampling base \
-  --model gemini-3.1-flash-lite-preview \
+  --sampling verbalized \
+  --model gemini-3-flash-preview \
   --location global \
   --thinking-level low \
   --max-workers 4 \
@@ -265,15 +260,21 @@ place, skips completed runs, and retries only the pending run indices.
 ### Adding Images via Post-Processing of Raw Data
 
 After the raw data is generated via LLM, run post-processing to add default multi-view
-`get_image` observation steps and deterministic `image_paths` fields in a copied
-dataset tree under `data/image/`. The output path mirrors the source tree after
-`data/raw/`, so
+`get_image` observation steps and deterministic `image_paths` fields in a
+materialized dataset under `data/pre_image/`. The summary path mirrors the source
+tree after `data/raw/`, so
 `data/raw/{timestamp}/{task}/summary.json` becomes
-`data/image/{timestamp}/{task}/summary.json`. The source dataset stays unchanged:
+`data/pre_image/{timestamp}/{task}/summary.json`. The source dataset stays unchanged.
+The post-processing step writes rewritten trajectories plus lightweight task-level
+metadata needed downstream; it does not duplicate the raw `prompts/` and
+`outputs/` directories into `pre_image/`.
+The normal entrypoint is the timestamp wrapper:
 
 ```bash
-python -m data_generation.task_level.generation.image.cli \
-  --dataset data_generation/task_level/data/raw/{timestamp}/{task}/summary.json
+bash scripts/post_process_task_level_images.sh {timestamp}
+
+# Parallelize trajectory rewriting within each task summary.
+bash scripts/post_process_task_level_images.sh {timestamp} --workers 8 --disable-progress
 ```
 
 Default post-processing behavior:
@@ -285,19 +286,13 @@ Default post-processing behavior:
 - Store the rendered artifacts for each inserted observation step in `image_paths`,
   ordered to match the requested `views`.
 
-To post-process every task summary inside one multi-task run directory, pass the
-raw run timestamp to the helper script:
-
-```bash
-bash scripts/post_process_task_level_images.sh {timestamp}
-```
-
 The wrapper expands `{timestamp}` to
 `data_generation/task_level/data/raw/{timestamp}/*/summary.json` and runs the
-image post-processing CLI once per task. It writes the copied post-processed
+image post-processing CLI once per task. It writes the post-processed
 trajectories to `data_generation/task_level/data/pre_image/{timestamp}/...`.
 You can pass shared CLI flags after the timestamp, for example
-`--disable-progress`.
+`--workers 8 --disable-progress`. `--workers` parallelizes trajectory rewriting
+within each task summary.
 
 To sweep one post-processed timestamp through the simulator, use the matching
 timestamp wrapper:
@@ -399,6 +394,21 @@ Row granularity tradeoffs:
   sidecar `*_path` columns.
 - `trajectory`: self-contained rows with inline episode JSON and per-step
   sequence columns, but less convenient in the Hugging Face table viewer.
+For multi-GPU cluster runs, request the GPUs from your scheduler and forward
+GPU allocation flags to the sweep CLI. Example: 8 workers spread evenly across
+4 GPUs with EGL rendering:
+
+```bash
+bash scripts/generate_and_insert_images.sh {timestamp} \
+  --workers 8 \
+  --gpu-ids 0 1 2 3 \
+  --procs-per-gpu 2 2 2 2 \
+  --gl-backend egl
+```
+
+If your scheduler masks GPUs per job, use the GPU ordinals visible inside the
+job shell, which are usually `0..N-1`. You can verify that with
+`echo $CUDA_VISIBLE_DEVICES`.
 
 The raw generator writes artifacts next to the dataset summary:
 - `trajectories/`: saved trajectory JSON

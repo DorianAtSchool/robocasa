@@ -25,6 +25,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Sequence
@@ -83,6 +84,50 @@ _PLACEABLE_FIXTURE_TYPES: set[int] = {
     FixtureType.DISH_RACK,
 }
 
+# Per-robot cameras to keep, in priority order.
+# Not all robots have agentview cameras (robot1 often only has robotview + eye_in_hand).
+_AGENT_CAMERA_SUFFIXES = [
+    "agentview_center",
+    "agentview_left",
+    "agentview_right",
+    "eye_in_hand",
+]
+
+# Room-view framing parameters. These are intentionally separate from top-view
+# distance tuning so we can keep the oblique room camera tighter around the
+# active task workspace while preserving enough margin to avoid accidental
+# cropping.
+ROOM_VIEW_FIXTURE_RADIUS = 1.35
+ROOM_VIEW_XY_MARGIN = 1.36
+ROOM_VIEW_Z_LOOKAT_FRACTION = 0.45
+ROOM_VIEW_BASE_DISTANCE_SCALE = 1.00
+ROOM_VIEW_MIN_DISTANCE = 4.0
+TOP_VIEW_XY_MARGIN = 1.12
+TOP_VIEW_MIN_DISTANCE = 6.0
+DEFAULT_MULTI_ROBOT_COLORS: tuple[tuple[float, float, float, float], ...] = (
+    (1.0, 1.0, 1.0, 1.0),  # white
+    (1.0, 0.55, 0.10, 1.0),  # orange
+)
+
+
+def _configure_mujoco_gl_backend(gl_backend: str) -> str:
+    """Keep the requested MuJoCo backend aligned with robosuite runtime state."""
+
+    normalized_backend = str(gl_backend).strip().lower()
+    os.environ["MUJOCO_GL"] = normalized_backend
+    if normalized_backend != "egl":
+        # Remove stale EGL routing when the caller switches a reused process
+        # back to CPU rendering.
+        os.environ.pop("MUJOCO_EGL_DEVICE_ID", None)
+
+    binding_utils = sys.modules.get("robosuite.utils.binding_utils")
+    if binding_utils is not None:
+        # Robosuite caches the chosen backend at import time, so update the
+        # cached value before any new render context is created.
+        binding_utils._MUJOCO_GL = normalized_backend
+    return normalized_backend
+
+
 def _classify_fixture(fixture: Fixture) -> str | None:
     """Return the most specific FixtureType name for a fixture, or None."""
     # Check specific types before general ones to get the most useful label.
@@ -132,7 +177,8 @@ def _get_interactions(fixture: Fixture) -> list[str]:
     if hasattr(fixture, "_joint_infos"):
         skip_patterns = ("door", "drawer", "stack")
         non_door = [
-            j for j in fixture._joint_infos
+            j
+            for j in fixture._joint_infos
             if not any(p in j.lower() for p in skip_patterns)
         ]
         if non_door:
@@ -144,9 +190,11 @@ def _get_interactions(fixture: Fixture) -> list[str]:
 # Data classes
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class FixtureInfo:
     """Scene description of a single fixture for the LLM."""
+
     fixture_id: str
     fixture_type: str
     position: list[float]
@@ -162,6 +210,7 @@ class FixtureInfo:
 @dataclass
 class ObjectInfo:
     """Scene description of a single object."""
+
     object_id: str
     object_type: str
     # Either a fixture_id or another object_id when object-on-object support is
@@ -175,6 +224,7 @@ class ObjectInfo:
 @dataclass
 class StepResult:
     """Visual observations for one trajectory step."""
+
     step_index: int
     agent_id: str
     action: str
@@ -191,13 +241,17 @@ class StepResult:
         for phase in ("before", "after"):
             images = getattr(self, phase)
             for cam_name, img in images.items():
-                path = output_dir / f"step_{self.step_index:03d}_{phase}_{cam_name}.{format}"
+                path = (
+                    output_dir
+                    / f"step_{self.step_index:03d}_{phase}_{cam_name}.{format}"
+                )
                 imageio.imwrite(str(path), img, **kwargs)
 
 
 @dataclass
 class AgentStepView:
     """One step from a single agent's perspective."""
+
     step_index: int
     action: str | None  # the action taken, or None if this agent didn't act
     args: dict | None
@@ -209,6 +263,7 @@ class AgentStepView:
 @dataclass
 class AgentTrajectory:
     """Per-agent view of a trajectory, for VLM training."""
+
     agent_id: str
     camera_names: list[str]
     initial_obs: dict[str, np.ndarray]
@@ -224,12 +279,17 @@ class AgentTrajectory:
         kwargs = {"quality": 85} if format in ("jpg", "jpeg") else {}
 
         for cam_name, img in self.initial_obs.items():
-            imageio.imwrite(str(output_dir / f"initial_{cam_name}.{format}"), img, **kwargs)
+            imageio.imwrite(
+                str(output_dir / f"initial_{cam_name}.{format}"), img, **kwargs
+            )
         for step in self.steps:
             for phase in ("before", "after"):
                 images = getattr(step, phase)
                 for cam_name, img in images.items():
-                    path = output_dir / f"step_{step.step_index:03d}_{phase}_{cam_name}.{format}"
+                    path = (
+                        output_dir
+                        / f"step_{step.step_index:03d}_{phase}_{cam_name}.{format}"
+                    )
                     imageio.imwrite(str(path), img, **kwargs)
 
         meta = {
@@ -252,6 +312,7 @@ class AgentTrajectory:
 @dataclass
 class TrajectoryResult:
     """Full result from running a trajectory."""
+
     initial_obs: dict[str, np.ndarray]
     steps: list[StepResult]
     scene: dict
@@ -264,7 +325,9 @@ class TrajectoryResult:
         output_dir.mkdir(parents=True, exist_ok=True)
         kwargs = {"quality": 85} if format in ("jpg", "jpeg") else {}
         for cam_name, img in self.initial_obs.items():
-            imageio.imwrite(str(output_dir / f"initial_{cam_name}.{format}"), img, **kwargs)
+            imageio.imwrite(
+                str(output_dir / f"initial_{cam_name}.{format}"), img, **kwargs
+            )
         for step in self.steps:
             step.save_images(output_dir, format=format)
         with open(output_dir / "scene.json", "w") as f:
@@ -290,7 +353,9 @@ class TrajectoryResult:
             shared = [c for c in all_cameras if c == "room_view"]
             return agent_cams + shared if agent_cams else all_cameras
 
-        def filter_cameras(images: dict[str, np.ndarray], cameras: list[str]) -> dict[str, np.ndarray]:
+        def filter_cameras(
+            images: dict[str, np.ndarray], cameras: list[str]
+        ) -> dict[str, np.ndarray]:
             return {k: v for k, v in images.items() if k in cameras}
 
         result = {}
@@ -307,14 +372,16 @@ class TrajectoryResult:
                     if to == agent_id:
                         message_received = (step.args or {}).get("message")
 
-                agent_steps.append(AgentStepView(
-                    step_index=step.step_index,
-                    action=step.action if is_actor else None,
-                    args=step.args if is_actor else None,
-                    message_received=message_received,
-                    before=filter_cameras(step.before, cams),
-                    after=filter_cameras(step.after, cams),
-                ))
+                agent_steps.append(
+                    AgentStepView(
+                        step_index=step.step_index,
+                        action=step.action if is_actor else None,
+                        args=step.args if is_actor else None,
+                        message_received=message_received,
+                        before=filter_cameras(step.before, cams),
+                        after=filter_cameras(step.after, cams),
+                    )
+                )
 
             result[agent_id] = AgentTrajectory(
                 agent_id=agent_id,
@@ -362,7 +429,7 @@ class TrajectoryRunner(TrajectoryRunnerRenderingMixin):
         trajectory_object_types: list[str] | tuple[str, ...] | None = None,
         trajectory_object_specs: dict | list | None = None,
     ):
-        os.environ.setdefault("MUJOCO_GL", gl_backend)
+        gl_backend = _configure_mujoco_gl_backend(gl_backend)
 
         self._full_scene_view = full_scene_view
         self._num_robots = robots
@@ -412,14 +479,20 @@ class TrajectoryRunner(TrajectoryRunnerRenderingMixin):
         # Build fixture index and the active occupancy-grid placement helpers.
         self._fixtures: dict[str, Fixture] = dict(self.env.fixtures)
         _ = placement  # Grid is the only supported placement backend today.
-        grid_kwargs = dict(cell_size=cell_size, align_to_wall=align_to_wall,
-                           standoff=standoff, sample_spacing=sample_spacing)
+        grid_kwargs = dict(
+            cell_size=cell_size,
+            align_to_wall=align_to_wall,
+            standoff=standoff,
+            sample_spacing=sample_spacing,
+        )
         self._occupancy_grid = OccupancyGrid(self._fixtures, **grid_kwargs)
 
         base_room_cam_config = CamUtils.LAYOUT_CAMS.get(
             self.env.layout_id, CamUtils.DEFAULT_LAYOUT_CAM
         )
-        self._room_cam_config = self._compute_room_cam_config(dict(base_room_cam_config))
+        self._room_cam_config = self._compute_room_cam_config(
+            dict(base_room_cam_config)
+        )
         self._top_cam_config = self._compute_top_cam_config(self._room_cam_config)
 
         self._scene: dict | None = None
@@ -485,7 +558,10 @@ class TrajectoryRunner(TrajectoryRunnerRenderingMixin):
         model = sim.model
         data = sim.data
         prefixes = []
-        for prefix in (getattr(fixture, "naming_prefix", None), getattr(fixture, "name", None)):
+        for prefix in (
+            getattr(fixture, "naming_prefix", None),
+            getattr(fixture, "name", None),
+        ):
             if isinstance(prefix, str) and prefix:
                 prefixes.append(prefix)
 
@@ -523,8 +599,10 @@ class TrajectoryRunner(TrajectoryRunnerRenderingMixin):
                 explicit_handle_names.append(candidate)
 
         handle_positions = [
-            pos for pos in
-            (self._lookup_named_world_xy(name) for name in explicit_handle_names)
+            pos
+            for pos in (
+                self._lookup_named_world_xy(name) for name in explicit_handle_names
+            )
             if pos is not None
         ]
         if handle_positions:
@@ -532,7 +610,8 @@ class TrajectoryRunner(TrajectoryRunnerRenderingMixin):
 
         handle_positions = self._scan_fixture_named_world_xy(
             fixture,
-            lambda name: "handle" in name and ("main" in name or name.endswith("_handle")),
+            lambda name: "handle" in name
+            and ("main" in name or name.endswith("_handle")),
         )
         if handle_positions:
             return np.mean(np.stack(handle_positions), axis=0)
@@ -582,7 +661,10 @@ class TrajectoryRunner(TrajectoryRunnerRenderingMixin):
                 # positions outside walls, loose enough for the robot to stand
                 # in front of wall-adjacent fixtures.
                 margin = 0.3
-                self._kitchen_aabb = (arr.min(axis=0) - margin, arr.max(axis=0) + margin)
+                self._kitchen_aabb = (
+                    arr.min(axis=0) - margin,
+                    arr.max(axis=0) + margin,
+                )
             else:
                 self._kitchen_aabb = (np.array([-100, -100]), np.array([100, 100]))
         return self._kitchen_aabb
@@ -809,7 +891,10 @@ class TrajectoryRunner(TrajectoryRunnerRenderingMixin):
             robot_cells.append(self._occupancy_grid._world_to_grid(other_pos))
             robot_positions.append(other_pos)
         return self._occupancy_grid.find_placement(
-            fixture, robot_cells, ref_pos, robot_positions=robot_positions,
+            fixture,
+            robot_cells,
+            ref_pos,
+            robot_positions=robot_positions,
             require_front=require_front,
         )
 
@@ -929,7 +1014,9 @@ class TrajectoryRunner(TrajectoryRunnerRenderingMixin):
             if yaw is not None:
                 # ori from compute_robot_base_placement_pose is an euler [0,0,yaw]
                 # The yaw joint is relative to the robot's anchor orientation
-                anchor_ori = getattr(self.env, "init_robot_base_ori_anchors", [None] * (robot_idx + 1))[robot_idx]
+                anchor_ori = getattr(
+                    self.env, "init_robot_base_ori_anchors", [None] * (robot_idx + 1)
+                )[robot_idx]
                 if anchor_ori is not None:
                     self.env.sim.data.qpos[addr] = yaw - anchor_ori[2]
                 else:
@@ -991,7 +1078,11 @@ class TrajectoryRunner(TrajectoryRunnerRenderingMixin):
             if ftype is None:
                 continue
 
-            pos = fxtr.pos.tolist() if hasattr(fxtr, "pos") and fxtr.pos is not None else [0, 0, 0]
+            pos = (
+                fxtr.pos.tolist()
+                if hasattr(fxtr, "pos") and fxtr.pos is not None
+                else [0, 0, 0]
+            )
             fixture_positions[name] = np.array(pos[:2])
 
             interactions = _get_interactions(fxtr)
@@ -1025,9 +1116,13 @@ class TrajectoryRunner(TrajectoryRunnerRenderingMixin):
         # Compute parent fixture: which counter/surface each fixture sits on.
         # Uses the same containment logic as env.get_fixture(ref=...).
         counter_fixtures = {
-            name: fxtr for name, fxtr in self._fixtures.items()
-            if any(fixture_is_type(fxtr, ft) for ft in _PLACEABLE_FIXTURE_TYPES
-                   if ft in FixtureType.__members__.values())
+            name: fxtr
+            for name, fxtr in self._fixtures.items()
+            if any(
+                fixture_is_type(fxtr, ft)
+                for ft in _PLACEABLE_FIXTURE_TYPES
+                if ft in FixtureType.__members__.values()
+            )
         }
         for name, info in fixtures_info.items():
             if info.fixture_type in ("counter", "dining_counter"):
@@ -1100,10 +1195,12 @@ class TrajectoryRunner(TrajectoryRunnerRenderingMixin):
             robot_pos = self.env.sim.data.body_xpos[
                 self.env.sim.model.body_name2id(robot.robot_model.root_body)
             ]
-            robots_info.append({
-                "robot_id": f"agent_{i}",
-                "position": [round(float(p), 3) for p in robot_pos],
-            })
+            robots_info.append(
+                {
+                    "robot_id": f"agent_{i}",
+                    "position": [round(float(p), 3) for p in robot_pos],
+                }
+            )
 
         # Task instruction
         task_lang = None
@@ -1112,7 +1209,10 @@ class TrajectoryRunner(TrajectoryRunnerRenderingMixin):
 
         # Robot spawn fixture (ground truth from the task definition)
         init_robot_base_ref_id = None
-        if hasattr(self.env, "init_robot_base_ref") and self.env.init_robot_base_ref is not None:
+        if (
+            hasattr(self.env, "init_robot_base_ref")
+            and self.env.init_robot_base_ref is not None
+        ):
             ref = self.env.init_robot_base_ref
             if isinstance(ref, str):
                 init_robot_base_ref_id = ref
@@ -1251,7 +1351,9 @@ class TrajectoryRunner(TrajectoryRunnerRenderingMixin):
                     height=self.render_height,
                     width=self.render_width,
                     camera_name=cam_name,
-                )[::-1]  # flip vertical (MuJoCo convention)
+                )[
+                    ::-1
+                ]  # flip vertical (MuJoCo convention)
                 images[cam_name] = frame
             except Exception:
                 continue
@@ -1315,7 +1417,9 @@ class TrajectoryRunner(TrajectoryRunnerRenderingMixin):
         count = min(_OBJECT_PLACEMENT_MAX_AXIS_SAMPLES, max(2, approx_count))
         return np.linspace(axis_min, axis_max, num=count, dtype=float)
 
-    def _get_object_placement_metadata(self, object_id: str) -> dict[str, np.ndarray | float]:
+    def _get_object_placement_metadata(
+        self, object_id: str
+    ) -> dict[str, np.ndarray | float]:
         """Return bbox-derived placement metadata for an object."""
         obj = self.env.objects[object_id]
         qpos = self.env.sim.data.get_joint_qpos(obj.joints[0]).copy()
@@ -1608,8 +1712,13 @@ class TrajectoryRunner(TrajectoryRunnerRenderingMixin):
         obj_quat = collision_context["obj_quat"]
         obj_radius = float(collision_context["obj_radius"])
 
-        for other_obj, other_pos, other_quat, other_radius in collision_context["object_obstacles"]:
-            if np.linalg.norm(other_pos[:2] - candidate_pos[:2]) > obj_radius + other_radius + 0.30:
+        for other_obj, other_pos, other_quat, other_radius in collision_context[
+            "object_obstacles"
+        ]:
+            if (
+                np.linalg.norm(other_pos[:2] - candidate_pos[:2])
+                > obj_radius + other_radius + 0.30
+            ):
                 continue
             try:
                 if OU.objs_intersect(
@@ -1624,8 +1733,13 @@ class TrajectoryRunner(TrajectoryRunnerRenderingMixin):
             except Exception:
                 continue
 
-        for fixture, fixture_pos, fixture_radius in collision_context["fixture_obstacles"]:
-            if np.linalg.norm(fixture_pos[:2] - candidate_pos[:2]) > obj_radius + fixture_radius + 0.30:
+        for fixture, fixture_pos, fixture_radius in collision_context[
+            "fixture_obstacles"
+        ]:
+            if (
+                np.linalg.norm(fixture_pos[:2] - candidate_pos[:2])
+                > obj_radius + fixture_radius + 0.30
+            ):
                 continue
             try:
                 if OU.objs_intersect(
@@ -1669,7 +1783,9 @@ class TrajectoryRunner(TrajectoryRunnerRenderingMixin):
             target_pos[2] += 0.02
             return target_pos
 
-        preferred = None if preferred_xy is None else np.asarray(preferred_xy, dtype=float)[:2]
+        preferred = (
+            None if preferred_xy is None else np.asarray(preferred_xy, dtype=float)[:2]
+        )
         candidates = self._iter_object_target_candidates(
             target_fxtr,
             object_id,
@@ -1684,7 +1800,11 @@ class TrajectoryRunner(TrajectoryRunnerRenderingMixin):
             ignored_fixture_ids=ignored_fixture_ids,
         )
 
-        target_xy = preferred if preferred is not None else np.asarray(target_fxtr.pos[:2], dtype=float)
+        target_xy = (
+            preferred
+            if preferred is not None
+            else np.asarray(target_fxtr.pos[:2], dtype=float)
+        )
         valid: list[tuple[float, np.ndarray]] = []
         rejected_outside_fixture = 0
         rejected_scene_overlap = 0
@@ -1727,7 +1847,9 @@ class TrajectoryRunner(TrajectoryRunnerRenderingMixin):
         )
 
     def _validate_object_on_fixture(
-        self, obj_pos: np.ndarray, fixture_id: str,
+        self,
+        obj_pos: np.ndarray,
+        fixture_id: str,
     ) -> bool:
         """Return True if *obj_pos* is geometrically inside *fixture_id*."""
         fxtr = self._fixtures.get(fixture_id)
@@ -1841,7 +1963,8 @@ class TrajectoryRunner(TrajectoryRunnerRenderingMixin):
         elif action == "turn_on":
             if hasattr(fxtr, "_joint_infos"):
                 non_door = [
-                    j for j in fxtr._joint_infos
+                    j
+                    for j in fxtr._joint_infos
                     if "door" not in j.lower() and "drawer" not in j.lower()
                 ]
                 if non_door:
@@ -1851,7 +1974,8 @@ class TrajectoryRunner(TrajectoryRunnerRenderingMixin):
         elif action == "turn_off":
             if hasattr(fxtr, "_joint_infos"):
                 non_door = [
-                    j for j in fxtr._joint_infos
+                    j
+                    for j in fxtr._joint_infos
                     if "door" not in j.lower() and "drawer" not in j.lower()
                 ]
                 if non_door:
@@ -1917,7 +2041,9 @@ class TrajectoryRunner(TrajectoryRunnerRenderingMixin):
                     )
                     ref_override = move_target_pos[:2]
                 self._move_robot_near_fixture(
-                    robot_idx, target_fixture, ref_pos_override=ref_override,
+                    robot_idx,
+                    target_fixture,
+                    ref_pos_override=ref_override,
                 )
 
             # Render before
@@ -1944,7 +2070,9 @@ class TrajectoryRunner(TrajectoryRunnerRenderingMixin):
             elif action == "move_away":
                 to_agent = args.get("to_agent", "")
                 obj_id = args.get("object", "")
-                to_robot = int(to_agent.replace("agent_", "")) if to_agent else (1 - robot_idx)
+                to_robot = (
+                    int(to_agent.replace("agent_", "")) if to_agent else (1 - robot_idx)
+                )
                 self.hand_off_object(robot_idx, obj_id, to_robot)
             elif action == "give_space":
                 fixture_id = args.get("fixture") or args.get("fixture_id", "")
@@ -1962,14 +2090,16 @@ class TrajectoryRunner(TrajectoryRunnerRenderingMixin):
             # Render after
             after = self.render()
 
-            step_results.append(StepResult(
-                step_index=i,
-                agent_id=agent_id,
-                action=action,
-                args=step.get("args") or step.get("tool_args", {}),
-                before=before,
-                after=after,
-            ))
+            step_results.append(
+                StepResult(
+                    step_index=i,
+                    agent_id=agent_id,
+                    action=action,
+                    args=step.get("args") or step.get("tool_args", {}),
+                    before=before,
+                    after=after,
+                )
+            )
 
         return TrajectoryResult(
             initial_obs=initial_obs,
