@@ -145,7 +145,9 @@ class SweepTrajectoryWorkerTests(unittest.TestCase):
                                         )
 
         console_cls.assert_called_once_with(stderr=True)
-        eta_column_cls.assert_called_once_with()
+        eta_column_cls.assert_called_once()
+        self.assertEqual(len(eta_column_cls.call_args.args), 1)
+        self.assertTrue(callable(eta_column_cls.call_args.args[0]))
         self.assertEqual(
             rich_progress.call_args.kwargs["console"], mock.sentinel.console
         )

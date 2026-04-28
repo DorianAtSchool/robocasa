@@ -114,6 +114,18 @@ _FRONT_READY_MAX_CENTER_DISTANCE = 1.0
 _SWEEP_VERBOSE_ENV_VAR = "ROBOCASA_SWEEP_VERBOSE"
 _SETTLE_STEPS = 2
 _PLACEMENT_SETTLE_STEPS = 6
+_FIXTURE_RUNTIME_ATTR_NAMES = (
+    "_turned_on",
+    "_state",
+    "_num_steps_on",
+    "_cooldown",
+    "_cooldown_time",
+    "_last_lid_update",
+    "_target_lid_angle",
+    "_lid",
+    "_lid_speed",
+    "water_temp_state",
+)
 _SITE_TOKEN_RE = re.compile(r"[a-z0-9]+")
 _SITE_STOPWORDS = frozenset(
     {"support", "site", "surface", "region", "placement", "place", "burner"}
@@ -409,6 +421,7 @@ class SimToolExecutor(
         # load_initial_state when trajectory agent locations are applied.
         self._place_robots_at_spawn()
         self._initialize_support_graph_from_scene()
+        self._capture_baseline_state()
 
     def _place_robots_at_spawn(self):
         """Move all robots to init_robot_base_ref — the task's ground truth spawn."""
@@ -442,6 +455,79 @@ class SimToolExecutor(
             location = object_info.get("location")
             if isinstance(location, str):
                 self._support_parents[object_id] = location
+
+    def _snapshot_fixture_runtime_state(self) -> dict[str, dict[str, Any]]:
+        """Capture Python-side fixture fields that live outside MuJoCo state."""
+        runtime_state: dict[str, dict[str, Any]] = {}
+        for fixture_id, fixture in self.runner._fixtures.items():
+            fixture_state: dict[str, Any] = {}
+            for attr_name in _FIXTURE_RUNTIME_ATTR_NAMES:
+                if hasattr(fixture, attr_name):
+                    fixture_state[attr_name] = deepcopy(getattr(fixture, attr_name))
+            if fixture_state:
+                runtime_state[fixture_id] = fixture_state
+        return runtime_state
+
+    def _restore_fixture_runtime_state(self) -> None:
+        """Restore cached fixture runtime fields before update_state syncs visuals."""
+        for fixture_id, fixture_state in self._baseline_fixture_runtime_state.items():
+            fixture = self.runner._fixtures.get(fixture_id)
+            if fixture is None:
+                continue
+            for attr_name, attr_value in fixture_state.items():
+                setattr(fixture, attr_name, deepcopy(attr_value))
+
+    def _capture_baseline_state(self) -> None:
+        """Snapshot the clean post-construction simulator state for reuse."""
+        self.env.sim.forward()
+        self._baseline_sim_state = np.array(
+            self.env.sim.get_state().flatten(),
+            copy=True,
+        )
+        self._baseline_scene = deepcopy(self.runner.get_scene_description())
+        self._baseline_object_locations = dict(self.runner._object_locations)
+        self._baseline_fixture_runtime_state = self._snapshot_fixture_runtime_state()
+        self._baseline_model_site_rgba = np.array(
+            self.env.sim.model.site_rgba,
+            copy=True,
+        )
+        self._baseline_model_site_size = np.array(
+            self.env.sim.model.site_size,
+            copy=True,
+        )
+        self._baseline_model_geom_rgba = np.array(
+            self.env.sim.model.geom_rgba,
+            copy=True,
+        )
+
+    def restore_baseline_state(self) -> None:
+        """Return the live simulator to its clean post-construction baseline."""
+        self.env.sim.set_state_from_flattened(self._baseline_sim_state.copy())
+        self.env.sim.forward()
+        self.env.sim.model.site_rgba[:] = self._baseline_model_site_rgba
+        self.env.sim.model.site_size[:] = self._baseline_model_site_size
+        self.env.sim.model.geom_rgba[:] = self._baseline_model_geom_rgba
+        self._restore_fixture_runtime_state()
+        self._held_objects.clear()
+        self._held_object_offsets.clear()
+        self._recent_opened_sliding_fixture.clear()
+        self.runner._object_locations = dict(self._baseline_object_locations)
+        self.runner._scene = deepcopy(self._baseline_scene)
+        self._support_parents.clear()
+        for object_id, object_info in (self._baseline_scene.get("objects") or {}).items():
+            if not isinstance(object_id, str) or not isinstance(object_info, dict):
+                continue
+            location = object_info.get("location")
+            if isinstance(location, str):
+                self._support_parents[object_id] = location
+        if hasattr(self.env, "update_sites"):
+            self.env.update_sites()
+        if hasattr(self.env, "update_state"):
+            self.env.update_state()
+        self.env.sim.forward()
+        invalidate_visual_cache = getattr(self, "_invalidate_visual_cache", None)
+        if callable(invalidate_visual_cache):
+            invalidate_visual_cache()
 
     def _set_support_parent(self, object_id: str, parent_id: str | None) -> None:
         if parent_id is None:
