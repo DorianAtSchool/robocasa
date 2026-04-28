@@ -451,7 +451,6 @@ class SimToolExecutor(
         self._place_robots_at_spawn()
         self._initialize_support_graph_from_scene()
         self._capture_baseline_state()
-        self._capture_baseline_state()
 
     def _place_robots_at_spawn(self):
         """Move all robots to init_robot_base_ref — the task's ground truth spawn."""
@@ -567,29 +566,6 @@ class SimToolExecutor(
                 continue
             for attr_name, attr_value in fixture_state.items():
                 setattr(fixture, attr_name, deepcopy(attr_value))
-
-    def _capture_baseline_state(self) -> None:
-        """Snapshot the clean post-construction simulator state for reuse."""
-        self.env.sim.forward()
-        self._baseline_sim_state = np.array(
-            self.env.sim.get_state().flatten(),
-            copy=True,
-        )
-        self._baseline_scene = deepcopy(self.runner.get_scene_description())
-        self._baseline_object_locations = dict(self.runner._object_locations)
-        self._baseline_fixture_runtime_state = self._snapshot_fixture_runtime_state()
-        self._baseline_model_site_rgba = np.array(
-            self.env.sim.model.site_rgba,
-            copy=True,
-        )
-        self._baseline_model_site_size = np.array(
-            self.env.sim.model.site_size,
-            copy=True,
-        )
-        self._baseline_model_geom_rgba = np.array(
-            self.env.sim.model.geom_rgba,
-            copy=True,
-        )
 
     def restore_baseline_state(self) -> None:
         """Return the live simulator to its clean post-construction baseline."""
