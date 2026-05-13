@@ -84,6 +84,7 @@ celerybeat-schedule
 
 # virtualenv
 .venv
+.venv_d
 venv/
 ENV/
 
@@ -187,3 +188,8 @@ AGENTS.md
 
 tmp/
 .codex
+
+slurm_logs/
+training/bc_task_vlm/runs/
+
+training/bc_task_vlm/preprocessed/*

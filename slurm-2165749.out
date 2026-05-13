@@ -1,0 +1,175 @@
+CUDA ready: torch=2.10.0+cu128, cuda=12.8, visible_gpus=1, gpu0=NVIDIA GH200 120GB, bf16_supported=True
+CUDA allocation sanity check passed
+CUDA GEMM probe passed: rows=2834, in_features=4096, out_features=8192, dtype=torch.float32, allow_tf32=False, output_shape=(2834, 8192), elapsed_s=0.622
+Dataset root: /work/hdd/bgjs/mnakamura/robocasa/data_generation/task_level/data/image/20260413T205634Z
+Model path/ref: Qwen/Qwen3.5-9B
+Output dir: /work/hdd/bgjs/mnakamura/robocasa/training/bc_task_vlm/runs/bc-task-vlm-gh200-test-20260420T223059Z
+Run name: bc-task-vlm-gh200-test-20260420T223059Z
+Max length: unbounded
+NUM_PROCESSES: auto-detect
+Running: /work/hdd/bgjs/mnakamura/robocasa/training/bc_task_vlm/launch_multigpu.sh --model-name-or-path Qwen/Qwen3.5-9B --processor-name-or-path Qwen/Qwen3.5-9B --output-dir /work/hdd/bgjs/mnakamura/robocasa/training/bc_task_vlm/runs/bc-task-vlm-gh200-test-20260420T223059Z --report-to none --wandb-mode disabled --wandb-run-name bc-task-vlm-gh200-test-20260420T223059Z --per-device-batch-size 1 --grad-accum 8 --num-epochs 1 --save-steps 1000 --eval-steps 1000 --logging-steps 10 --eval-generation-max-samples 1 --dataset-root /work/hdd/bgjs/mnakamura/robocasa/data_generation/task_level/data/image/20260413T205634Z --train-tasks hot_dog_setup\,prepare_sandwich_station\,prepare_cheese_station\,prepare_sausage_cheese --val-tasks prepare_coffee --example-build-workers 8
+[17:40:06] Starting task VLM training run in /work/hdd/bgjs/mnakamura/robocasa/training/bc_task_vlm/runs/bc-task-vlm-gh200-test-20260420T223059Z
+[17:40:06] Using precision bf16
+[17:40:06] Using image pixel budget min=262144 max=1048576
+[17:40:06] Building training data from raw trajectories in /work/hdd/bgjs/mnakamura/robocasa/data_generation/task_level/data/image/20260413T205634Z
+[17:42:44] Loaded train examples for task hot_dog_setup (1/4) from cache /work/hdd/bgjs/mnakamura/robocasa/.cache/bc_task_vlm/examples/2665f462d582a075/train/hot_dog_setup.json
+[17:42:44] Finished train task hot_dog_setup: 35562 examples (35562 cumulative)
+[17:45:41] Loaded train examples for task prepare_sandwich_station (2/4) from cache /work/hdd/bgjs/mnakamura/robocasa/.cache/bc_task_vlm/examples/2665f462d582a075/train/prepare_sandwich_station.json
+[17:45:41] Finished train task prepare_sandwich_station: 27140 examples (62702 cumulative)
+[17:49:46] Loaded train examples for task prepare_cheese_station (3/4) from cache /work/hdd/bgjs/mnakamura/robocasa/.cache/bc_task_vlm/examples/2665f462d582a075/train/prepare_cheese_station.json
+[17:49:46] Finished train task prepare_cheese_station: 27442 examples (90144 cumulative)
+[17:53:59] Loaded train examples for task prepare_sausage_cheese (4/4) from cache /work/hdd/bgjs/mnakamura/robocasa/.cache/bc_task_vlm/examples/2665f462d582a075/train/prepare_sausage_cheese.json
+[17:53:59] Finished train task prepare_sausage_cheese: 27760 examples (117904 cumulative)
+[17:57:41] Loaded validation examples for task prepare_coffee (1/1) from cache /work/hdd/bgjs/mnakamura/robocasa/.cache/bc_task_vlm/examples/2665f462d582a075/centralized/prepare_coffee.json
+[17:57:41] Finished validation task prepare_coffee: 30706 examples (30706 cumulative)
+[17:57:41] Building split manifest
+[17:57:42] Prepared 117904 training samples and 30706 validation samples from raw
+[17:57:42] Loading processor from Qwen/Qwen3.5-9B
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+[17:57:58] Loading model weights from Qwen/Qwen3.5-9B (dtype=bfloat16)
+Loading weights:   0%|          | 0/760 [00:00<?, ?it/s]Loading weights:   0%|          | 1/760 [00:00<01:45,  7.21it/s]Loading weights:   1%|          | 4/760 [00:00<01:00, 12.41it/s]Loading weights:   8%|▊         | 63/760 [00:00<00:03, 198.63it/s]Loading weights:  18%|█▊        | 139/760 [00:00<00:01, 372.21it/s]Loading weights:  25%|██▌       | 193/760 [00:00<00:01, 420.15it/s]Loading weights:  33%|███▎      | 253/760 [00:00<00:01, 471.33it/s]Loading weights:  41%|████▏     | 314/760 [00:00<00:00, 510.96it/s]Loading weights:  50%|████▉     | 377/760 [00:00<00:00, 542.17it/s]Loading weights:  58%|█████▊    | 442/760 [00:01<00:00, 572.71it/s]Loading weights:  71%|███████   | 537/760 [00:01<00:00, 683.06it/s]Loading weights:  88%|████████▊ | 667/760 [00:01<00:00, 865.18it/s]Loading weights: 100%|██████████| 760/760 [00:01<00:00, 580.39it/s]
+[18:00:45] Using LoRA target modules: all-linear
+[18:00:47] Model loaded (51,265,024 trainable / 9,461,078,768 total parameters)
+[18:00:47] Saving run metadata
+warmup_ratio is deprecated and will be removed in v5.2. Use `warmup_steps` instead.
+[18:00:49] Initializing Trainer
+[18:01:07] Starting trainer.train() with 117904 training samples and 30706 validation samples
+  0%|          | 0/14738 [00:00<?, ?it/s]Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/work/hdd/bgjs/mnakamura/robocasa/training/bc_task_vlm/main.py", line 1080, in <module>
+    main()
+  File "/work/hdd/bgjs/mnakamura/robocasa/training/bc_task_vlm/main.py", line 1035, in main
+    train_result = trainer.train(resume_from_checkpoint=config.resume_from_checkpoint)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/hdd/bgjs/mnakamura/robocasa/.venv_gh/lib/python3.11/site-packages/transformers/trainer.py", line 1425, in train
+    return inner_training_loop(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/work/hdd/bgjs/mnakamura/robocasa/.venv_gh/lib/python3.11/site-packages/transformers/trainer.py", line 1507, in _inner_training_loop
+    self._run_epoch(
+  File "/work/hdd/bgjs/mnakamura/robocasa/.venv_gh/lib/python3.11/site-packages/transformers/trainer.py", line 1735, in _run_epoch
+    tr_loss_step = self.training_step(model, inputs, num_items_in_batch)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/hdd/bgjs/mnakamura/robocasa/.venv_gh/lib/python3.11/site-packages/transformers/trainer.py", line 1907, in training_step
+    loss = self.compute_loss(model, inputs, num_items_in_batch=num_items_in_batch)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/hdd/bgjs/mnakamura/robocasa/.venv_gh/lib/python3.11/site-packages/transformers/trainer.py", line 1979, in compute_loss
+    outputs = model(**inputs)
+              ^^^^^^^^^^^^^^^
+  File "/work/hdd/bgjs/mnakamura/robocasa/.venv_gh/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/hdd/bgjs/mnakamura/robocasa/.venv_gh/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/hdd/bgjs/mnakamura/robocasa/.venv_gh/lib/python3.11/site-packages/accelerate/utils/operations.py", line 823, in forward
+    return model_forward(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/hdd/bgjs/mnakamura/robocasa/.venv_gh/lib/python3.11/site-packages/accelerate/utils/operations.py", line 811, in __call__
+    return convert_to_fp32(self.model_forward(*args, **kwargs))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/hdd/bgjs/mnakamura/robocasa/.venv_gh/lib/python3.11/site-packages/torch/amp/autocast_mode.py", line 44, in decorate_autocast
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/work/hdd/bgjs/mnakamura/robocasa/.venv_gh/lib/python3.11/site-packages/peft/peft_model.py", line 1993, in forward
+    return self.base_model(
+           ^^^^^^^^^^^^^^^^
+  File "/work/hdd/bgjs/mnakamura/robocasa/.venv_gh/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/hdd/bgjs/mnakamura/robocasa/.venv_gh/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/hdd/bgjs/mnakamura/robocasa/.venv_gh/lib/python3.11/site-packages/peft/tuners/tuners_utils.py", line 330, in forward
+    return self.model.forward(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/hdd/bgjs/mnakamura/robocasa/.venv_gh/lib/python3.11/site-packages/transformers/utils/generic.py", line 876, in wrapper
+    output = func(self, *args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/hdd/bgjs/mnakamura/robocasa/.venv_gh/lib/python3.11/site-packages/transformers/models/qwen3_5/modeling_qwen3_5.py", line 1916, in forward
+    outputs = self.model(
+              ^^^^^^^^^^^
+  File "/work/hdd/bgjs/mnakamura/robocasa/.venv_gh/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/hdd/bgjs/mnakamura/robocasa/.venv_gh/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/hdd/bgjs/mnakamura/robocasa/.venv_gh/lib/python3.11/site-packages/transformers/utils/generic.py", line 876, in wrapper
+    output = func(self, *args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/hdd/bgjs/mnakamura/robocasa/.venv_gh/lib/python3.11/site-packages/transformers/models/qwen3_5/modeling_qwen3_5.py", line 1640, in forward
+    image_outputs: BaseModelOutputWithPooling = self.get_image_features(
+                                                ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/hdd/bgjs/mnakamura/robocasa/.venv_gh/lib/python3.11/site-packages/transformers/utils/generic.py", line 876, in wrapper
+    output = func(self, *args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/hdd/bgjs/mnakamura/robocasa/.venv_gh/lib/python3.11/site-packages/transformers/models/qwen3_5/modeling_qwen3_5.py", line 1511, in get_image_features
+    vision_output: BaseModelOutputWithPooling = self.visual(
+                                                ^^^^^^^^^^^^
+  File "/work/hdd/bgjs/mnakamura/robocasa/.venv_gh/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/hdd/bgjs/mnakamura/robocasa/.venv_gh/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/hdd/bgjs/mnakamura/robocasa/.venv_gh/lib/python3.11/site-packages/transformers/utils/generic.py", line 952, in wrapper
+    output = func(self, *args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/hdd/bgjs/mnakamura/robocasa/.venv_gh/lib/python3.11/site-packages/transformers/utils/output_capturing.py", line 248, in wrapper
+    outputs = func(self, *args, **kwargs)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/hdd/bgjs/mnakamura/robocasa/.venv_gh/lib/python3.11/site-packages/transformers/models/qwen3_5/modeling_qwen3_5.py", line 1170, in forward
+    hidden_states = blk(
+                    ^^^^
+  File "/work/hdd/bgjs/mnakamura/robocasa/.venv_gh/lib/python3.11/site-packages/transformers/modeling_layers.py", line 92, in __call__
+    return self._gradient_checkpointing_func(partial(super().__call__, **kwargs), *args)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/hdd/bgjs/mnakamura/robocasa/.venv_gh/lib/python3.11/site-packages/torch/_compile.py", line 54, in inner
+    return disable_fn(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/hdd/bgjs/mnakamura/robocasa/.venv_gh/lib/python3.11/site-packages/torch/_dynamo/eval_frame.py", line 1181, in _fn
+    return fn(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^
+  File "/work/hdd/bgjs/mnakamura/robocasa/.venv_gh/lib/python3.11/site-packages/torch/utils/checkpoint.py", line 512, in checkpoint
+    ret = function(*args, **kwargs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/hdd/bgjs/mnakamura/robocasa/.venv_gh/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/hdd/bgjs/mnakamura/robocasa/.venv_gh/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/hdd/bgjs/mnakamura/robocasa/.venv_gh/lib/python3.11/site-packages/transformers/models/qwen3_5/modeling_qwen3_5.py", line 984, in forward
+    hidden_states = hidden_states + self.attn(
+                                    ^^^^^^^^^^
+  File "/work/hdd/bgjs/mnakamura/robocasa/.venv_gh/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/hdd/bgjs/mnakamura/robocasa/.venv_gh/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/hdd/bgjs/mnakamura/robocasa/.venv_gh/lib/python3.11/site-packages/transformers/models/qwen3_5/modeling_qwen3_5.py", line 902, in forward
+    self.qkv(hidden_states).reshape(seq_length, 3, self.num_heads, -1).permute(1, 0, 2, 3).unbind(0)
+    ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/hdd/bgjs/mnakamura/robocasa/.venv_gh/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/hdd/bgjs/mnakamura/robocasa/.venv_gh/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/hdd/bgjs/mnakamura/robocasa/.venv_gh/lib/python3.11/site-packages/peft/tuners/lora/layer.py", line 969, in forward
+    result = result + lora_B(lora_A(dropout(x))) * scaling
+                             ^^^^^^^^^^^^^^^^^^
+  File "/work/hdd/bgjs/mnakamura/robocasa/.venv_gh/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/hdd/bgjs/mnakamura/robocasa/.venv_gh/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/hdd/bgjs/mnakamura/robocasa/.venv_gh/lib/python3.11/site-packages/torch/nn/modules/linear.py", line 134, in forward
+    return F.linear(input, self.weight, self.bias)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+RuntimeError: CUDA error: CUBLAS_STATUS_INVALID_VALUE when calling `cublasGemmEx( handle, opa, opb, m, n, k, &falpha, a, CUDA_R_16BF, lda, b, CUDA_R_16BF, ldb, &fbeta, c, std::is_same_v<C_Dtype, float> ? CUDA_R_32F : CUDA_R_16BF, ldc, compute_type, CUBLAS_GEMM_DEFAULT_TENSOR_OP)`
+  0%|          | 0/14738 [00:45<?, ?it/s]
+bash: line 1: --preprocessed-data-dir: command not found
