@@ -56,6 +56,7 @@ from data_generation.task_level.runtime.client import (
     TrajectoryGenerationError,
     load_dotenv_file,
 )
+from data_generation.task_level.sampling import SAMPLING_STRATEGIES
 from data_generation.task_level.tasks import supported_task_names
 
 
@@ -588,7 +589,7 @@ def parse_args(argv: list[str] | None = None) -> RuntimeConfig:
     parser.add_argument(
         "--sampling",
         type=str,
-        choices=("base", "verbalized"),
+        choices=tuple(sorted(SAMPLING_STRATEGIES)),
         default="base",
         help="Trajectory sampling strategy.",
     )
