@@ -8,6 +8,13 @@ from data_generation.task_level.sampling.base import (
     SampledTrajectoryCandidate,
     SamplingStrategy,
 )
+from data_generation.task_level.sampling.high_temperature import (
+    HighTemperatureSamplingStrategy,
+)
+from data_generation.task_level.sampling.random_number import (
+    RandomNumberSamplingStrategy,
+    RandomSamplingStrategy,
+)
 from data_generation.task_level.sampling.verbalized import (
     VerbalizedSamplingStrategy,
     VerbalizedSamplingValidationError,
@@ -16,6 +23,9 @@ from data_generation.task_level.sampling.verbalized import (
 
 SAMPLING_STRATEGIES: dict[str, SamplingStrategy] = {
     "base": BaseSamplingStrategy(),
+    "high_temperature": HighTemperatureSamplingStrategy(),
+    "random": RandomSamplingStrategy(),
+    "random_number": RandomNumberSamplingStrategy(),
     "verbalized": VerbalizedSamplingStrategy(),
 }
 
@@ -34,6 +44,9 @@ def get_sampling_strategy(name: str) -> SamplingStrategy:
 
 __all__ = [
     "BaseSamplingStrategy",
+    "HighTemperatureSamplingStrategy",
+    "RandomSamplingStrategy",
+    "RandomNumberSamplingStrategy",
     "SampledTrajectoryCandidate",
     "SAMPLING_STRATEGIES",
     "SamplingStrategy",

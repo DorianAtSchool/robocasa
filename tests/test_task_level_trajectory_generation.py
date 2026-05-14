@@ -5,6 +5,7 @@ import runpy
 import sys
 import threading
 import unittest
+import uuid
 from unittest import mock
 from datetime import datetime, timezone
 from io import StringIO
@@ -26,6 +27,13 @@ from data_generation.task_level.runtime.client import (
     validate_google_auth,
 )
 from data_generation.task_level.sampling.base import BaseSamplingStrategy
+from data_generation.task_level.sampling.high_temperature import (
+    HighTemperatureSamplingStrategy,
+)
+from data_generation.task_level.sampling.random_number import (
+    RandomNumberSamplingStrategy,
+    RandomSamplingStrategy,
+)
 from data_generation.task_level.sampling.verbalized import (
     VerbalizedSamplingStrategy,
     VerbalizedSamplingValidationError,
@@ -1512,7 +1520,10 @@ class DotenvLoadingTests(unittest.TestCase):
                 allowed_tool_specs=allowed_tool_specs,
             )
 
-        self.assertIn("Unknown part/control 'left_door' for fixture 'cabinet'", str(context.exception))
+        self.assertIn(
+            "Unknown part/control 'left_door' for fixture 'cabinet'",
+            str(context.exception),
+        )
 
     def test_static_referential_validation_rejects_fixture_id_as_target_site_id(self):
         candidate = {
@@ -1558,7 +1569,9 @@ class DotenvLoadingTests(unittest.TestCase):
                 allowed_tool_specs=allowed_tool_specs,
             )
 
-        self.assertIn("fixture id 'dining_counter' as target_site_id", str(context.exception))
+        self.assertIn(
+            "fixture id 'dining_counter' as target_site_id", str(context.exception)
+        )
 
     def test_parse_args_accepts_thinking_level_flag_and_alias(self):
         dashed_runtime_config = parse_args(["--thinking-level", "minimal"])
@@ -1602,6 +1615,24 @@ class DotenvLoadingTests(unittest.TestCase):
 
         self.assertEqual(runtime_config.sampling, "verbalized")
         self.assertEqual(runtime_config.verbalized_k, 3)
+
+    def test_parse_args_accepts_random_number_sampling(self):
+        runtime_config = parse_args(["--sampling", "random_number"])
+
+        self.assertEqual(runtime_config.sampling, "random_number")
+        self.assertEqual(runtime_config.verbalized_k, 1)
+
+    def test_parse_args_accepts_random_sampling(self):
+        runtime_config = parse_args(["--sampling", "random"])
+
+        self.assertEqual(runtime_config.sampling, "random")
+        self.assertEqual(runtime_config.verbalized_k, 1)
+
+    def test_parse_args_accepts_high_temperature_sampling(self):
+        runtime_config = parse_args(["--sampling", "high_temperature"])
+
+        self.assertEqual(runtime_config.sampling, "high_temperature")
+        self.assertEqual(runtime_config.verbalized_k, 1)
 
     def test_parse_args_accepts_tasks_flag_for_single_task(self):
         runtime_config = parse_args(["--tasks", "PrepareCoffee"])
@@ -2715,7 +2746,7 @@ class FiniteStateTaskValidatorTests(unittest.TestCase):
                         "fixture_id": "blender_1",
                         "control_id": "power_button",
                         "state": "on",
-                    }
+                    },
                 ],
                 "task_effects": [],
                 "grounding": {"objects": {}, "fixtures": {}},
@@ -2821,7 +2852,7 @@ class FiniteStateTaskValidatorTests(unittest.TestCase):
                         "fixture_id": "sink_1",
                         "control_id": "handle_joint",
                         "state": "on",
-                    }
+                    },
                 ],
                 "task_effects": [],
                 "grounding": {"objects": {}, "fixtures": {}},
@@ -3496,6 +3527,96 @@ class PrepareCoffeeValidatorTests(unittest.TestCase):
         )
 
         self.assertNotIn("Output requirements:", prompt)
+        self.assertNotIn("Base sampling instructions:", prompt)
+        self.assertNotIn("responses array", prompt)
+
+    def test_random_number_sampling_strategy_prepends_uuid_sample_id(self):
+        strategy = RandomNumberSamplingStrategy()
+        sample_id = uuid.UUID("12345678-1234-5678-1234-567812345678")
+
+        with mock.patch(
+            "data_generation.task_level.sampling.random_number.uuid.uuid4",
+            return_value=sample_id,
+        ):
+            prompt = strategy.build_prompt(
+                task_definition=PREPARE_COFFEE_TASK,
+                runtime_config=RuntimeConfig(
+                    composite_task="PrepareCoffee",
+                    num_runs=1,
+                    model="gemini-3-flash-preview",
+                    sdk="google-genai",
+                    project="demo-project",
+                    location="global",
+                    temperature=0.5,
+                    max_workers=1,
+                    max_retries=1,
+                    sampling="random_number",
+                ),
+                task_instance=make_prepare_coffee_task_instance(0),
+                variation_key="traj-000000-attempt-00",
+            )
+
+        self.assertTrue(
+            prompt.startswith("Sample ID: 12345678-1234-5678-1234-567812345678\n\n")
+        )
+        self.assertNotIn("Base sampling instructions:", prompt)
+        self.assertNotIn("responses array", prompt)
+
+    def test_random_sampling_strategy_prepends_uuid_sample_id(self):
+        strategy = RandomSamplingStrategy()
+        sample_id = uuid.UUID("12345678-1234-5678-1234-567812345678")
+
+        with mock.patch(
+            "data_generation.task_level.sampling.random_number.uuid.uuid4",
+            return_value=sample_id,
+        ):
+            prompt = strategy.build_prompt(
+                task_definition=PREPARE_COFFEE_TASK,
+                runtime_config=RuntimeConfig(
+                    composite_task="PrepareCoffee",
+                    num_runs=1,
+                    model="gemini-3-flash-preview",
+                    sdk="google-genai",
+                    project="demo-project",
+                    location="global",
+                    temperature=0.5,
+                    max_workers=1,
+                    max_retries=1,
+                    sampling="random",
+                ),
+                task_instance=make_prepare_coffee_task_instance(0),
+                variation_key="traj-000000-attempt-00",
+            )
+
+        self.assertEqual(strategy.name, "random")
+        self.assertTrue(
+            prompt.startswith("Sample ID: 12345678-1234-5678-1234-567812345678\n\n")
+        )
+        self.assertNotIn("Base sampling instructions:", prompt)
+        self.assertNotIn("responses array", prompt)
+
+    def test_high_temperature_sampling_strategy_preserves_task_prompt(self):
+        strategy = HighTemperatureSamplingStrategy()
+
+        prompt = strategy.build_prompt(
+            task_definition=PREPARE_COFFEE_TASK,
+            runtime_config=RuntimeConfig(
+                composite_task="PrepareCoffee",
+                num_runs=1,
+                model="gemini-3-flash-preview",
+                sdk="google-genai",
+                project="demo-project",
+                location="global",
+                temperature=1.0,
+                max_workers=1,
+                max_retries=1,
+                sampling="high_temperature",
+            ),
+            task_instance=make_prepare_coffee_task_instance(0),
+            variation_key="traj-000000-attempt-00",
+        )
+
+        self.assertEqual(strategy.name, "high_temperature")
         self.assertNotIn("Base sampling instructions:", prompt)
         self.assertNotIn("responses array", prompt)
 

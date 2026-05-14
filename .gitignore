@@ -176,6 +176,7 @@ data_generation/task_level/data/**/*.jsonl
 videos/
 videos_batch/
 data_generation/task_level/data
+data_generation/task_level/data_k3
 
 # Cluster commands
 CLUSTER.md
@@ -193,3 +194,5 @@ slurm_logs/
 training/bc_task_vlm/runs/
 
 training/bc_task_vlm/preprocessed/*
+
+PROGRESS.md

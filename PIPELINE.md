@@ -130,6 +130,28 @@ python -m data_generation.task_level.generation.raw.cli \
 Use `--paralleize-tasks` to run the selected tasks concurrently. `--max-workers`
 still controls the per-task run workers inside each task.
 
+Generate the standard raw sampling-method sweep for the 52 verified tasks:
+
+```bash
+bash scripts/generate_raw_sampling_methods.sh
+```
+
+The wrapper writes one request directory per method:
+
+```text
+data_generation/task_level/data/raw/sampling_methods/
+├── base/
+├── random/
+├── verbalized/
+└── high_temperature/
+```
+
+By default it saves 20 trajectories per verified task for each method. Base,
+random, and high-temperature each run 20 model calls per task. Verbalized
+sampling defaults to `--verbalized-k 4`, so it runs 5 model calls per task and
+saves 20 flattened trajectories per task. Existing method directories with a
+`summary.json` are resumed in place.
+
 To add a new simple task that fits the current symbolic primitives, create one
 new JSON file under `data_generation/task_level/tasks/specs/` with:
 - `initial_state`
@@ -426,7 +448,11 @@ Sampling notes:
   `--tasks PrepareCoffee HotDogSetup PrepareSandwichStation PrepareSausageCheese PrepareCheeseStation --num-runs 5`
   launches 25 runs total.
 - `--sampling base` saves one trajectory per successful run.
+- `--sampling random` prepends a UUID sample id to the base prompt and saves one
+  trajectory per successful run.
 - `--sampling verbalized` saves `--verbalized-k` flattened trajectories per successful run.
+- `--sampling high_temperature` uses base prompting with a distinct sampling
+  label; set `--temperature` to the desired high-temperature value.
 - Verbalized trajectories include `sampling_metadata` with the parsed probability.
 - The task files may define a template agent location such as `staging_area`, but
   actual per-run agent start positions are sampled from the task's allowed fixture
