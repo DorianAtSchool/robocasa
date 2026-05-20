@@ -123,10 +123,10 @@ def _default_spec_directories() -> tuple[Path, ...]:
     """Choose the checked-in spec inventories used when no override is configured."""
 
     directories: list[Path] = []
-    if any(SPEC_DIRECTORY.glob("*.json")):
-        directories.append(SPEC_DIRECTORY)
     if VERIFIED_SPEC_DIRECTORY.is_dir():
         directories.append(VERIFIED_SPEC_DIRECTORY)
+    if any(SPEC_DIRECTORY.glob("*.json")):
+        directories.append(SPEC_DIRECTORY)
     if not directories:
         directories.append(SPEC_DIRECTORY)
     return tuple(directories)
