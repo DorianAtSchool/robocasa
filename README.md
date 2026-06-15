@@ -104,6 +104,16 @@ Note: If using SpaceMouse, you may need to modify the product ID to your appropr
 ## Tasks, datasets, policy learning, and additional use cases
 Please refer to the [documentation page](https://robocasa.ai/docs/introduction/overview.html) for information about tasks, datasets, benchmarking, and more.
 
+### Multi-Agent VLA Evaluation
+
+This fork also contains multi-agent VLA evaluation utilities under `model_evals/`. That folder is separate from the core RoboCasa environment code and is intended for comparing pretrained VLA models under one-robot and two-robot conditions.
+
+Start with:
+
+```sh
+model_evals/README.md
+```
+
 -------
 ## Releases
 * [2/18/2026] **v1.0**: RoboCasa365 release, with 365 tasks, 2500+ kitchen scenes, 2200+ hours of robot demonstration data, and benchmarking support.

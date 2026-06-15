@@ -312,6 +312,17 @@ class RoboCasaGymEnv(gym.Env):
 
     def step(self, action_dict):
         action_dict = self.key_converter.unmap_action(action_dict)
+        for robot in self.env.robots:
+            cc = robot.composite_controller
+            pf = robot.robot_model.naming_prefix
+            for part_name, controller in cc.part_controllers.items():
+                start_idx, end_idx = cc._action_split_indexes[part_name]
+                action_dict.setdefault(
+                    f"{pf}{part_name}",
+                    np.zeros(end_idx - start_idx, dtype=np.float32),
+                )
+            if isinstance(cc, HybridMobileBase):
+                action_dict.setdefault(f"{pf}base_mode", -1.0)
 
         env_action = []
         for robot in self.env.robots:

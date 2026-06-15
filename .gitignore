@@ -196,3 +196,10 @@ training/bc_task_vlm/runs/
 training/bc_task_vlm/preprocessed/*
 
 PROGRESS.md
+
+# model evaluation outputs
+logs/
+external/
+model_evals/backends/*/assets/
+model_evals/backends/*/ckpts/
+model_evals/backends/*/logs/

@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "world-action-model"
+version = "0.1.0"
+description = "GigaWorld-Policy — RoboCasa inference / evaluation"
+requires-python = ">=3.11"
+# Inference-only dependency set for the server (`gwp`) env. PyTorch +
+# torchvision are installed separately (see README) because they need a
+# CUDA-tagged wheel index. Client-side deps (gymnasium, imageio, tqdm, ...)
+# live in the `rc` env and are listed in README §1.2.
+dependencies = [
+    "accelerate>=1.11.0",
+    "diffusers>=0.35.2",
+    "huggingface-hub",
+    "msgpack>=1.0",
+    "numpy>=1.26.3",
+    "pillow>=11.3.0",
+    "safetensors>=0.6.2",
+    "transformers>=4.57.1",
+    "websockets>=13.0",
+]
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["world_action_model*"]
